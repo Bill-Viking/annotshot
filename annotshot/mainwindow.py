@@ -6,11 +6,13 @@ import warnings
 from functools import lru_cache
 from pathlib import Path
 
-from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QSettings, QSize,
-                            Qt, QTimer)
+import shiboken6
+
+from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QRect, QSettings,
+                            QSize, Qt, QTimer)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QFontMetrics,
-                           QIcon, QImage, QKeySequence, QPainter, QPixmap,
-                           QUndoGroup)
+                           QGuiApplication, QIcon, QImage, QKeySequence,
+                           QPainter, QPixmap, QUndoGroup)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
                                QColorDialog, QComboBox, QFileDialog,
@@ -44,6 +46,14 @@ NO_ALPHA_FORMATS = ("JPEG", "BMP")
 JPEG_QUALITY = 92
 DEFAULT_DIR = Path.home() / "Pictures" / "Annotshot"
 CAPTURE_DELAY_MS = 250
+# The window: it opens centered at a moderate size (never maximized), at
+# most SCREEN_SHARE of the screen's free area, never smaller than MIN_SIZE
+# (logical px). After a capture it grows to the picture at 100 %.
+START_SIZE = QSize(1100, 720)
+MIN_SIZE = QSize(900, 600)
+SCREEN_SHARE = 0.8
+# Buttons that show only their icon (the tooltip names them).
+ICON_ONLY = ("Undo", "Redo", "Duplicate", "Front", "Back", "Delete")
 
 
 # -- icons ----------------------------------------------------------------
@@ -209,7 +219,10 @@ class ColorButton(QToolButton):
         self.setText(color_name(self._color))
 
     def _choose(self) -> None:
-        c = QColorDialog.getColor(self._color, self.window(), self._title,
+        start = QColor(self._color)
+        if start.alpha() == 0:      # after "No fill": start opaque, same hue
+            start.setAlpha(255)
+        c = QColorDialog.getColor(start, self.window(), self._title,
                                   QColorDialog.ShowAlphaChannel)
         if c.isValid():
             self.set_color(c)
@@ -241,7 +254,10 @@ class MainWindow(QMainWindow):
         self.view.toolDone.connect(
             lambda: self.tool_actions[Tool.SELECT].setChecked(True))
         self._bind(self.doc)
-        self.resize(1100, 720)          # the size when un-maximized
+        area = self._screen_area()
+        self.setMinimumSize(MIN_SIZE.boundedTo(self._cap(area)))
+        saved = self.settings.value("window/size", START_SIZE, type=QSize)
+        self._place(saved if saved.isValid() else START_SIZE, area)
         self.view.setFocus()
         bar.showMessage("Ctrl+N to capture a region or a window", 8000)
 
@@ -297,8 +313,10 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         """Row 1: Capture, Open, Save, Copy image | Undo, Redo. Row 2: the
-        tools | the item actions. (The property strip is row 3.) Every
-        button is an icon with its label beside it."""
+        tools | the item actions. (The property strip is row 3.) Capture,
+        Open, Save, Copy image and the tools are an icon with its label
+        beside it; Undo, Redo and the item actions are icon-only (ICON_ONLY),
+        named by their tooltips."""
         def new_bar(title: str, name: str, height: int) -> QToolBar:
             bar = QToolBar(title, self)
             bar.setObjectName(name)
@@ -324,7 +342,7 @@ class MainWindow(QMainWindow):
                                         checked="#FFFFFF", disabled="#DCE9F5"))
         self.a_copy.setIcon(svg_icon("copy-image", ink="#0866AC"))
 
-        bar = new_bar("Main", "main", 64)
+        bar = new_bar("Main", "main", 40)
         for a in (self.a_capture, self.a_open, self.a_save, self.a_copy):
             bar.addAction(a)
         spacer(bar)                     # Undo, Redo keep the right edge
@@ -335,7 +353,7 @@ class MainWindow(QMainWindow):
         bar.widgetForAction(self.a_copy).setObjectName("outline")
         bar.widgetForAction(self.a_redo).setObjectName("last")
         self.addToolBar(bar)
-        bar = new_bar("Tools", "tools", 56)
+        bar = new_bar("Tools", "tools", 36)
         for a in self.tool_actions.values():
             bar.addAction(a)
         spacer(bar)
@@ -345,6 +363,10 @@ class MainWindow(QMainWindow):
         bar.widgetForAction(self.a_delete).setObjectName("last")
         self.addToolBarBreak()
         self.addToolBar(bar)
+        for b in (self.findChild(QToolBar, "main"), bar):
+            for a in b.actions():
+                if a.text() in ICON_ONLY:
+                    b.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonIconOnly)
 
     def _button(self, text: str, tip: str, slot, checkable=False) -> QToolButton:
         b = QToolButton(self)
@@ -381,21 +403,27 @@ class MainWindow(QMainWindow):
                                     lambda c: set_({"border_color": c}, "Border"))
         self.b_noborder = self._button("No border", "No border",
                                        lambda: set_({"border_color": _clear_alpha}, "No border"))
-        self.b_nofill.setObjectName("field")
-        self.b_noborder.setObjectName("field")
+        for b, name in ((self.b_nofill, "No fill"), (self.b_noborder, "No border")):
+            b.setObjectName("field")
+            b.setText("")
+            b.setAccessibleName(name)
+            b.setIcon(svg_icon("clear", 14))
+            b.setIconSize(QSize(14, 14))
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.s_width = self._spin(0, 40, "Border width",
                                   lambda v: set_({"border_width": v}, "Border width"))
         self.f_font = QFontComboBox(self)
         self.f_font.setToolTip("Font")
         self.f_font.setSizeAdjustPolicy(
             QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.f_font.setMinimumContentsLength(12)
+        self.f_font.setMinimumContentsLength(8)
+        self.f_font.setFixedWidth(150)
         self.f_font.currentFontChanged.connect(
             lambda f: set_({"font_family": f.family()}, "Font"))
         self.s_size = self._spin(6, 400, "Font size (pixels)",
                                  lambda v: set_({"font_px": v}, "Font size"))
         for w in (self.f_font, self.s_size, self.s_width):
-            w.setMinimumHeight(32)
+            w.setMinimumHeight(28)
         self.b_bold = self._button("B", "Bold", lambda on: set_({"bold": on}, "Bold"), True)
         self.b_italic = self._button("I", "Italic",
                                      lambda on: set_({"italic": on}, "Italic"), True)
@@ -415,7 +443,7 @@ class MainWindow(QMainWindow):
             self.align_buttons[key] = b
         self.sl_opacity = QSlider(Qt.Horizontal, self)
         self.sl_opacity.setRange(0, 100)
-        self.sl_opacity.setFixedWidth(120)
+        self.sl_opacity.setFixedWidth(112)
         self.sl_opacity.setToolTip("Opacity")
         self.sl_opacity.sliderPressed.connect(self._new_slider_session)
         self.sl_opacity.actionTriggered.connect(self._slider_action)
@@ -449,30 +477,30 @@ class MainWindow(QMainWindow):
         strip = QWidget(self)
         strip.setObjectName("strip")
         rows = QVBoxLayout(strip)
-        rows.setContentsMargins(14, 6, 14, 5)
-        rows.setSpacing(2)
+        rows.setContentsMargins(8, 2, 8, 2)
+        rows.setSpacing(0)
 
         def row(height: int, *parts) -> None:
             w = QWidget(strip)
             w.setMinimumHeight(height)
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(15)
+            h.setSpacing(6)
             for part in parts:
                 h.addWidget(part)
             h.addStretch(1)
             rows.addWidget(w)
 
-        row(48,
-            self._group(None, self.sel_mark, self.sel_heading, gap=8),
+        row(36,
+            self._group(None, self.sel_mark, self.sel_heading, gap=6),
             self._divider(),
             self._group("Font", self.f_font),
             self._group("Size", self.s_size),
             self._divider(),
             self._group("Style", self._segment(self.b_bold, self.b_italic)),
             self._group("Align", self._segment(*self.align_buttons.values())))
-        row(50,
-            self._group("Text color", self.c_text),
+        row(36,
+            self._group("Text", self.c_text),
             self._divider(),
             self._group("Fill", self.c_fill, self.b_nofill),
             self._divider(),
@@ -480,7 +508,7 @@ class MainWindow(QMainWindow):
             self._group("Width", self.s_width),
             self._divider(),
             self._group("Opacity", self.sl_opacity, self.opacity_label,
-                        gap=9))
+                        gap=6))
 
         # In a window narrower than the strip, it scrolls sideways instead
         # of widening the window.
@@ -497,6 +525,8 @@ class MainWindow(QMainWindow):
         sideways = scroll.horizontalScrollBar()
 
         def fit_height(*_):
+            if not shiboken6.isValid(sideways):     # at teardown
+                return
             extra = sideways.sizeHint().height() if sideways.maximum() > 0 else 0
             scroll.setFixedHeight(strip.sizeHint().height() + extra)
         sideways.rangeChanged.connect(fit_height)
@@ -515,7 +545,7 @@ class MainWindow(QMainWindow):
         self.addToolBarBreak()
         self.addToolBar(bar)
 
-    def _group(self, label: str | None, *widgets, gap: int = 7) -> QWidget:
+    def _group(self, label: str | None, *widgets, gap: int = 5) -> QWidget:
         """A field label (if any) and its controls, side by side."""
         box = QWidget(self)
         h = QHBoxLayout(box)
@@ -858,9 +888,58 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self._capture is None and self.maybe_discard():
+            size = (self.normalGeometry().size() if self.isMaximized()
+                    or self.isFullScreen() else self.size())
+            self.settings.setValue("window/size", size)
             event.accept()
         else:
             event.ignore()
+
+    # -- window size --------------------------------------------------------
+    def _screen_area(self) -> QRect:
+        """The free area (without the taskbar or menu bar) of the window's
+        screen, else the primary screen's."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        return screen.availableGeometry() if screen else QRect(0, 0, 1280, 800)
+
+    @staticmethod
+    def _cap(area: QRect) -> QSize:
+        return QSize(int(area.width() * SCREEN_SHARE),
+                     int(area.height() * SCREEN_SHARE))
+
+    def _place(self, size: QSize, area: QRect) -> None:
+        """Resize to `size`, capped at SCREEN_SHARE of `area` and no smaller
+        than the minimum, then center the window in `area`."""
+        size = size.boundedTo(self._cap(area)).expandedTo(self.minimumSize())
+        self.resize(size)
+        frame = self.frameGeometry()        # the title bar and borders too
+        extra = frame.size() - self.geometry().size()
+        box = QRect(0, 0, size.width() + extra.width(),
+                    size.height() + extra.height())
+        box.moveCenter(area.center())
+        self.move(box.topLeft())
+
+    def _chrome(self) -> QSize:
+        """The window's size around the picture area: the toolbar rows, the
+        property strip, the status line and the view's frame."""
+        self.layout().setGeometry(self.rect())  # laid out at today's size
+        view = self.view.geometry().size()
+        frame = 2 * self.view.frameWidth()
+        return QSize(self.width() - view.width() + frame,
+                     self.height() - view.height() + frame)
+
+    def fit_to_picture(self, area: QRect | None = None) -> None:
+        """After a capture: size the window to show the picture at 100 %
+        (capped at SCREEN_SHARE of the screen's free area; a larger picture
+        is then zoomed to fit), centered."""
+        area = area or self._screen_area()
+        img = self.doc.base.size()
+        dpr = max(1.0, self.devicePixelRatioF())
+        chrome = self._chrome()
+        want = QSize(round(img.width() / dpr) + chrome.width() + 4,
+                     round(img.height() / dpr) + chrome.height() + 4)
+        self._place(want, area)
+        self.view.fit_after_resize()
 
     # -- capture ----------------------------------------------------------
     def capture(self) -> None:
@@ -887,6 +966,7 @@ class MainWindow(QMainWindow):
         if result is None:
             return
         self._bind(Document(result.image))
+        self.fit_to_picture()
         size = f"{result.image.width()} × {result.image.height()}"
         self.statusBar().showMessage(
             f"Captured {size}" + (f" — {result.title}" if result.title else ""),

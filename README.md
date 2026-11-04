@@ -7,12 +7,12 @@ Annotshot is a Windows screenshot app with PowerPoint-style editing. Capture a r
 ## Download the app
 
 <p>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-windows.zip"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.2/Annotshot-0.1.2-windows.zip"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.2/Annotshot-0.1.2-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.2/Annotshot-0.1.2-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
 </p>
 
-Version 0.1.1. Each button downloads one zip file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
+Version 0.1.2. Each button downloads one zip file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
 
 ![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
 
@@ -20,16 +20,16 @@ Version 0.1.1. Each button downloads one zip file into your **Downloads** folder
 
 ### Windows (10 and 11) — three steps
 
-1. **Download:** click **Download for Windows** above. `Annotshot-0.1.1-windows.zip` appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.1.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** click **Download for Windows** above. `Annotshot-0.1.2-windows.zip` appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.1.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). The first time, Windows may show a blue box, **Windows protected your PC**: click **More info**, then **Run anyway**. That box appears once.
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
 ### macOS — four steps
 
-1. **Download:** click **Download for macOS** above. `Annotshot-0.1.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** above. `Annotshot-0.1.2-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -40,8 +40,8 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** above. `Annotshot-0.1.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** above. `Annotshot-0.1.2-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again. Tested on Ubuntu 24.04 (X11); Wayland is untested.
 
 **You should see** — on every system — a window titled **Annotshot — Untitled** with a blue **Capture** button at the top left.

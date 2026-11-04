@@ -38,20 +38,21 @@ QToolTip { color: #25313D; background: #FFFFFF; border: 1px solid #C8D0DA;
            padding: 4px 6px; }
 
 /* the two toolbar rows */
-QToolBar { border: none; spacing: 6px; padding: 0px; }
+QToolBar { border: none; spacing: 4px; padding: 0px; }
 QToolBar#main { background: #FFFFFF; border-bottom: 1px solid #DCE1E6; }
 QToolBar#tools { background: #FBFCFD; border-bottom: 1px solid #D6DDE4;
-                 spacing: 3px; }
-QToolBar::separator { background: #D7DDE4; width: 1px; margin: 16px 3px; }
+                 spacing: 2px; }
+QToolBar::separator { background: #D7DDE4; width: 1px; margin: 11px 2px; }
 QToolBar#main QToolButton, QToolBar#tools QToolButton {
     color: #293846; background: transparent;
-    border: 1px solid transparent; border-radius: 4px; padding: 8px 11px; }
-QToolBar#tools QToolButton { color: #334454; padding: 6px 10px; }
-/* the rows' 12 px side insets (a toolbar's padding is one value) */
+    border: 1px solid transparent; border-radius: 4px; padding: 3px 6px;
+    font-size: 12px; }
+QToolBar#tools QToolButton { color: #334454; padding: 3px 6px; }
+/* the rows' 8 px side insets (a toolbar's padding is one value) */
 QToolBar#main QToolButton#primary, QToolBar#tools QToolButton#first {
-    margin-left: 12px; }
+    margin-left: 8px; }
 QToolBar#main QToolButton#last, QToolBar#tools QToolButton#last {
-    margin-right: 12px; }
+    margin-right: 8px; }
 QToolBar#main QToolButton:hover, QToolBar#tools QToolButton:hover {
     background: #F1F5FA; }
 QToolBar#main QToolButton:pressed, QToolBar#tools QToolButton:pressed {
@@ -62,7 +63,7 @@ QToolBar#tools QToolButton:checked {
     color: #086DBE; background: #E8F4FF; border-color: #B5D9F7; }
 QToolBar#main QToolButton#primary {
     color: #FFFFFF; background: #0878D5; border-color: #0870C6;
-    font-weight: 600; padding: 8px 15px; }
+    font-weight: 600; padding: 3px 10px; }
 QToolBar#main QToolButton#primary:hover { background: #0A6DC0; }
 QToolBar#main QToolButton#primary:pressed { background: #075FA8; }
 QToolBar#main QToolButton#outline {
@@ -87,8 +88,9 @@ QLabel#objectMark { background: #E7F3FD; border: 1px solid #98BEE1;
 QFrame#divider { background: #D9E0E6; border: none; }
 QToolButton#colorField, QToolButton#field {
     color: #30404D; background: #FFFFFF; border: 1px solid #BBC6D1;
-    border-radius: 4px; padding: 0px 8px; min-height: 30px;
-    max-height: 30px; }
+    border-radius: 4px; padding: 0px 6px; min-height: 28px;
+    max-height: 28px; font-size: 12px; }
+QToolButton#field { min-width: 22px; padding: 0px 4px; }
 QToolButton#colorField { min-width: 72px; }
 QToolButton#colorField:hover, QToolButton#field:hover {
     border-color: #8FA6BB; }
@@ -101,7 +103,7 @@ QFrame#segment { background: #FFFFFF; border: 1px solid #BFC9D2;
 QFrame#segment QToolButton {
     color: #31404D; background: transparent; border: none;
     border-left: 1px solid #D7DEE5; border-radius: 0px;
-    min-width: 19px; min-height: 30px; max-height: 30px;
+    min-width: 19px; min-height: 28px; max-height: 28px;
     padding: 0px 8px; }
 QFrame#segment QToolButton#first { border-left: none; }
 QFrame#segment QToolButton:hover { background: #F1F5FA; }
@@ -173,6 +175,6 @@ def make_app(argv=None) -> QApplication:
 
 def main(argv=None) -> int:
     app = make_app(argv)
-    window = MainWindow()
-    window.showMaximized()
+    window = MainWindow()           # centered at a moderate size
+    window.show()
     return app.exec()

@@ -90,9 +90,9 @@ def test_check_entry_prints_ok():
     done = _run("--check")
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.stdout.strip() == f"Annotshot {annotshot.__version__} OK"
-    assert annotshot.__version__ == "0.1.1"
+    assert annotshot.__version__ == "0.1.2"
 
 
 def test_version_entry_prints_the_version():
     done = _run("--version")
-    assert done.returncode == 0 and done.stdout.strip() == "0.1.1"
+    assert done.returncode == 0 and done.stdout.strip() == "0.1.2"

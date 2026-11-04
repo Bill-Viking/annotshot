@@ -27,3 +27,6 @@ desktop.ini
 captures/
 *.log
 .pytest_tmp/
+
+# field photos and scans of test screens (private, never shipped)
+docs/field/

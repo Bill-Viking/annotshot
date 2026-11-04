@@ -14,16 +14,16 @@ Download the app from the repository's Releases page — the three download butt
 
 ### Windows (10 and 11) — three steps
 
-1. **Download:** click **Download for Windows** above. `Annotshot-0.1.1-windows.zip` appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.1.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** click **Download for Windows** above. `Annotshot-0.1.2-windows.zip` appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.1.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). The first time, Windows may show a blue box, **Windows protected your PC**: click **More info**, then **Run anyway**. That box appears once.
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
 ### macOS — four steps
 
-1. **Download:** click **Download for macOS** above. `Annotshot-0.1.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** above. `Annotshot-0.1.2-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -34,8 +34,8 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** above. `Annotshot-0.1.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** above. `Annotshot-0.1.2-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again. Tested on Ubuntu 24.04 (X11); Wayland is untested.
 
 **You should see** — on every system — a window titled **Annotshot — Untitled** with a blue **Capture** button at the top left.
@@ -50,6 +50,8 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 Now click **Text**, click on the picture, and type.
 
 ## The editor, row by row
+
+The Annotshot window opens in the middle of your screen at a moderate size, never full screen, and it remembers the size you leave it at. After a capture it grows to fit the picture, up to 80 % of your screen; a bigger picture scrolls or zooms inside the window.
 
 The bottom of the window shows the picture's size in pixels and the zoom level. Hold **Ctrl** and turn the mouse wheel to zoom. Zoom changes only your view, never the picture.
 
@@ -67,6 +69,8 @@ The bottom of the window shows the picture's size in pixels and the zoom level. 
 ### Row 2: the tools and the object buttons
 
 On the left are the tools: **Select, Text, Rect, Ellipse, Arrow, Highlight, Pen, Crop**. On the right are the buttons that act on what you have selected: **Duplicate, Front, Back, Delete**.
+
+**Undo, Redo, Duplicate, Front, Back and Delete show only a small picture, no word.** Hover over one to see its name and its shortcut.
 
 After you draw one object (or crop), Annotshot switches back to **Select** by itself, so you can move or change what you just made.
 
@@ -95,7 +99,7 @@ While you are drawing with any tool, a right-click cancels that drawing.
 | **Size** | The text size, in pixels (6 to 400). | Text box |
 | **Style** | **B** bold, *I* italic. | Text box |
 | **Align** | Left, center or right inside the box. | Text box |
-| **Text color** | The color of the letters only. | Text box |
+| **Text** | The color of the letters only (it was called "Text color" before). | Text box |
 | **Fill** | The background color inside the shape. Changing it never changes the text color. | Text box, rectangle, ellipse, highlight (color only) |
 | **No fill** | Makes the inside see-through. | Text box, rectangle, ellipse |
 | **Border** | The outline color. For an arrow or pen stroke, this is the line color. | Text box, rectangle, ellipse, arrow, pen stroke |

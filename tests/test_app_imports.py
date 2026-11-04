@@ -110,7 +110,7 @@ def test_properties_bar_follows_the_selection(window):
 
 def test_the_property_strip_is_two_labelled_rows(window):
     """The strip under the tools: row 1 what is selected, Font, Size, Style,
-    Align; row 2 Text color, Fill + No fill, Border + No border, Width,
+    Align; row 2 Text (its color), Fill + No fill, Border + No border, Width,
     Opacity. Each label names the control beside it."""
     from PySide6.QtWidgets import QLabel, QVBoxLayout
     strip = window.prop_strip
@@ -122,11 +122,12 @@ def test_the_property_strip_is_two_labelled_rows(window):
         "Font": window.f_font, "Size": window.s_size,
         "Style": window.b_bold.parentWidget(),
         "Align": window.align_buttons["left"].parentWidget(),
-        "Text color": window.c_text, "Fill": window.c_fill,
+        "Text": window.c_text, "Fill": window.c_fill,
         "Border": window.c_border, "Width": window.s_width,
         "Opacity": window.sl_opacity}
-    assert window.b_nofill.text() == "No fill"
-    assert window.b_noborder.text() == "No border"
+    assert window.b_nofill.toolTip() == "No fill"
+    assert window.b_noborder.toolTip() == "No border"
+    assert window.b_nofill.text() == "" and not window.b_nofill.icon().isNull()
 
     def row_of(w):
         while w.parentWidget() is not strip:
@@ -139,7 +140,9 @@ def test_the_property_strip_is_two_labelled_rows(window):
                                 window.b_nofill, window.c_border,
                                 window.b_noborder, window.s_width,
                                 window.sl_opacity)} == {1}
-    assert strip.sizeHint().height() >= 100           # the 112 px strip
+    assert 75 <= strip.sizeHint().height() <= 85      # the ~80 px strip
+    assert window.f_font.width() == 150 and window.sl_opacity.width() == 112
+    assert window.c_text.accessibleName() == "Text color"
 
 
 @pytest.mark.skipif(sys.platform != "win32",
@@ -351,13 +354,122 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     main = bars["main"]
     assert main.widgetForAction(window.a_capture).objectName() == "primary"
     assert main.widgetForAction(window.a_copy).objectName() == "outline"
-    # The buttons show the whole label, "…" included, beside the icon.
+    # The buttons show the whole label, "…" included, beside the icon;
+    # Undo, Redo and the item actions show only the icon, named by the
+    # tooltip, and keep their shortcuts.
     assert main.toolButtonStyle() == Qt.ToolButtonTextBesideIcon
     assert window.a_open.iconText() == "Open…"
+    icon_only = {"Undo", "Redo", "Duplicate", "Front", "Back", "Delete"}
+    for name in ("main", "tools"):
+        bar = bars[name]
+        for a in bar.actions():
+            if a.isSeparator() or not a.text():
+                continue
+            style = bar.widgetForAction(a).toolButtonStyle()
+            if a.text() in icon_only:
+                assert style == Qt.ToolButtonIconOnly, a.text()
+                assert a.toolTip().startswith(
+                    {"Front": "Bring to front", "Back": "Send to back"}.get(
+                        a.text(), a.text())), a.toolTip()
+                assert "(Ctrl+" in a.toolTip() or a.text() == "Delete"
+            else:
+                assert style == Qt.ToolButtonTextBesideIcon, a.text()
+    assert window.a_dup.shortcut().toString() == "Ctrl+D"
+    assert window.a_delete.shortcut().toString() == "Del"
+    assert window.a_undo.shortcut().toString() == "Ctrl+Z"
+
+
+def laid_out(window, width, height):
+    """Lay the hidden window out at width x height (it is never shown):
+    the main window's layout, then each toolbar's own layout, which places
+    or hides the toolbar's overflow (») button."""
+    from PySide6.QtWidgets import QToolBar
+    window.setMinimumSize(1, 1)
+    window.resize(width, height)
+    QApplication.processEvents()
+    window.layout().setGeometry(window.rect())
+    for bar in window.findChildren(QToolBar):
+        bar.layout().activate()
+    QApplication.processEvents()
+
+
+def test_nothing_hides_behind_the_overflow_at_900_px(window):
+    """At 900 x 600 logical, rows 1 and 2 show every button: no » button,
+    and the buttons' widths add up to less than the row. The strip's rows
+    fit too, so it needs no sideways scroll bar."""
+    from PySide6.QtWidgets import QToolBar, QToolButton
+    laid_out(window, 900, 600)
+    for name in ("main", "tools"):
+        bar = window.findChild(QToolBar, name)
+        assert bar.width() == 900
+        ext = bar.findChild(QToolButton, "qt_toolbar_ext_button")
+        assert ext is not None and not ext.isVisibleTo(window), name
+        for a in bar.actions():
+            w = bar.widgetForAction(a)
+            if w is not None and not a.isSeparator():
+                assert w.isVisibleTo(window), (name, a.text())
+        assert bar.sizeHint().width() <= 900, (name, bar.sizeHint())
+    strip = window.prop_strip
+    assert strip.sizeHint().width() <= 900
+
+
+def test_the_window_is_moderate_not_maximized(window):
+    """It opens centered at a moderate size, never maximized; after a
+    capture it fits the picture at 100 % plus the chrome, capped at 80 % of
+    the screen's free area, and stays centered."""
+    from PySide6.QtGui import QGuiApplication
+    from annotshot.mainwindow import SCREEN_SHARE
+    from annotshot.scene import Document
+    assert not window.isMaximized() and not window.isFullScreen()
+    area = QGuiApplication.primaryScreen().availableGeometry()
+    assert window.width() <= area.width() * SCREEN_SHARE
+    assert window.height() <= area.height() * SCREEN_SHARE
+    assert window.minimumWidth() <= 900 and window.minimumHeight() <= 600
+    big = QImage(1920, 1200, QImage.Format_RGB32)
+    big.fill(QColor("#FFFFFF"))
+    window._bind(Document(big))
+    window.fit_to_picture()                       # the offscreen screen
+    assert not window.isMaximized()
+    assert window.width() <= area.width() * SCREEN_SHARE
+    assert window.height() <= area.height() * SCREEN_SHARE
+    # On a 1920 x 1200 screen: capped at 80 %, centered.
+    screen = QRect(0, 0, 1920, 1200)
+    window.fit_to_picture(screen)
+    assert (window.width(), window.height()) == (1536, 960)
+    assert window.frameGeometry().center() == screen.center()
+    # A small picture: the window shows it at 100 % plus the chrome.
+    small = QImage(1000, 500, QImage.Format_RGB32)
+    small.fill(QColor("#FFFFFF"))
+    window._bind(Document(small))
+    window.fit_to_picture(screen)
+    window.layout().setGeometry(window.rect())
+    view = window.view.geometry()
+    assert view.width() >= 1000 and view.height() >= 500
+    assert window.width() < 1536 and window.height() < 960
+    assert window.frameGeometry().center() == screen.center()
+
+
+def test_the_window_size_is_remembered(window, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSize
+    from annotshot.mainwindow import MainWindow
+    ini = str(tmp_path / "settings.ini")
+    s = QSettings(ini, QSettings.IniFormat)
+    window.settings = s
+    window.resize(640, 620)
+    window.close()                                # nothing to save: accepted
+    s.sync()
+    assert QSettings(ini, QSettings.IniFormat).value(
+        "window/size", type=QSize) == QSize(640, 620)
+    monkeypatch.setattr("annotshot.mainwindow.QSettings",
+                        lambda *a: QSettings(ini, QSettings.IniFormat))
+    again = MainWindow()
+    assert again.size() == QSize(640, 620)
+    again.deleteLater()
 
 
 def test_toolbar_actions_have_icons_and_labels(window):
-    """Every toolbar button has a label and an icon drawn from an SVG file
+    """Every toolbar button has a label (shown, or the tooltip of an
+    icon-only button) and an icon drawn from an SVG file
     that exists in annotshot/icons (and draws something)."""
     from PySide6.QtCore import QSize
     from PySide6.QtWidgets import QToolBar
@@ -540,3 +652,29 @@ def test_pen_tool_drag_draws_one_stroke_then_select(window):
     drag(view, QPoint(400, 300), QPoint(402, 301))
     assert doc.annotation_items() == [pen]
     assert view.tool is Tool.SELECT
+
+
+def test_the_fill_picker_starts_opaque_after_no_fill(window, monkeypatch):
+    """After "No fill" (alpha 0) the color dialog must start opaque, else
+    every hue picked comes back transparent and the fill never shows."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QColorDialog
+    from annotshot.items import TextBoxItem
+    doc = window.doc
+    t = TextBoxItem()
+    t.set_geom((10, 10, 200, 50))
+    doc.add_items([t])
+    doc.select_only([t])
+    window.b_nofill.click()
+    assert QColor(t.props["fill_color"]).alpha() == 0
+    seen = []
+
+    def fake(initial, *a, **k):
+        seen.append(QColor(initial))
+        return QColor(0, 128, 255)
+    monkeypatch.setattr(QColorDialog, "getColor", fake)
+    window.c_fill.click()
+    assert seen and seen[0].alpha() == 255
+    assert QColor(t.props["fill_color"]).alpha() == 255
+    assert QColor(t.props["fill_color"]).name() == "#0080ff"
+    assert window.c_fill.text() != "None"

@@ -7,7 +7,7 @@ capture shows sharp and unscaled on a scaled display. Zoom is view-only.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QTransform
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView
 
@@ -68,6 +68,20 @@ class EditorView(QGraphicsView):
                   vp.height() * self._dpr() / size.height()) * 0.98
         self.set_zoom(min(1.0, fit))
         self.centerOn(self.doc.sceneRect().center())
+
+    def fit_after_resize(self) -> None:
+        """Fit (or 100 %) once the window has taken its new size."""
+        self._fit_pending = True
+        QTimer.singleShot(0, self._fit_if_pending)
+
+    def _fit_if_pending(self) -> None:
+        if self._fit_pending and self.isVisible():
+            self.zoom_to_fit_or_100()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit_pending and self.isVisible():
+            self.zoom_to_fit_or_100()
 
     def showEvent(self, event):
         super().showEvent(event)
