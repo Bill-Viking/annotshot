@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Annotshot candidate 3: the letter A as a callout, its left foot a pen tail. Colors: #2563EB blue, #FFFFFF white, #111827 near-black. -->
+  <!-- A body; the left foot sweeps out into a callout/pen tail -->
+  <path d="M100 28 H156 L234 208 H172 L160 178 H96 L86 206 L22 240 L46 182 Z"
+        fill="#2563EB" stroke="#2563EB" stroke-width="12" stroke-linejoin="round"/>
+  <!-- counter -->
+  <path d="M128 90 L146 138 H110 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="round"/>
+  <!-- pen nib slit on the tail -->
+  <path d="M38 228 L66 200" stroke="#111827" stroke-width="9" stroke-linecap="round"/>
+</svg>

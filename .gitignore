@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# build output
+build/
+dist/
+
+# Node / Electron
+node_modules/
+out/
+
+# .NET
+bin/
+obj/
+
+# editors and Windows
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# local captures and logs
+captures/
+*.log
+.pytest_tmp/
