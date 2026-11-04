@@ -28,6 +28,6 @@ captures/
 *.log
 .pytest_tmp/
 
-# field photos and scans of test screens (private, never shipped)
+# local test-screen material (private, never shipped)
 docs/field/
 
