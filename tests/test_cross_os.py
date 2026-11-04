@@ -89,10 +89,11 @@ def _run(*args):
 def test_check_entry_prints_ok():
     done = _run("--check")
     assert done.returncode == 0, done.stdout + done.stderr
-    assert done.stdout.strip() == f"Annotshot {annotshot.__version__} OK"
-    assert annotshot.__version__ == "0.1.2"
+    assert done.stdout.strip().splitlines() == [
+        "office export OK", f"Annotshot {annotshot.__version__} OK"]
+    assert annotshot.__version__ == "0.2.0"
 
 
 def test_version_entry_prints_the_version():
     done = _run("--version")
-    assert done.returncode == 0 and done.stdout.strip() == "0.1.2"
+    assert done.returncode == 0 and done.stdout.strip() == "0.2.0"

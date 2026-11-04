@@ -1,0 +1,3 @@
+# The GNU licence texts must stay byte for byte as published: no line-ending
+# conversion on any checkout (their fingerprints are checked).
+packaging/licenses/*.txt -text

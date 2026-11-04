@@ -19,6 +19,23 @@ def pytest_configure(config):
             os.environ.setdefault("QT_QPA_FONTDIR", str(fonts))
 
 
+# Every module of the app that builds a QSettings; each test gets its own.
+SETTINGS_MODULES = ("annotshot.mainwindow",)
+
+
+@pytest.fixture(autouse=True)
+def private_settings(monkeypatch, tmp_path):
+    """No test reads or writes this machine's real Annotshot settings: the
+    app's QSettings(...) becomes an ini file in the test's own folder."""
+    import importlib
+    from PySide6.QtCore import QSettings
+    ini = str(tmp_path / "settings.ini")
+    for name in SETTINGS_MODULES:
+        monkeypatch.setattr(importlib.import_module(name), "QSettings",
+                            lambda *a, **k: QSettings(ini, QSettings.IniFormat))
+    return ini
+
+
 @pytest.fixture(scope="session")
 def qapp():
     from PySide6.QtWidgets import QApplication

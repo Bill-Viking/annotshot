@@ -19,8 +19,8 @@ if (-not (Test-Path $Py)) {
     if ($null -eq $cmd) { Stop-Build 'no Python: neither .venv\Scripts\python.exe nor python on PATH' }
     $Py = $cmd.Source
 }
-try { & $Py -c "import PyInstaller, PySide6" 2>$null } catch { }
-if ($LASTEXITCODE -ne 0) { Stop-Build "PyInstaller or PySide6 missing: $Py -m pip install pyinstaller PySide6-Essentials" }
+try { & $Py -c "import PyInstaller, PySide6, docx, pptx" 2>$null } catch { }
+if ($LASTEXITCODE -ne 0) { Stop-Build "PyInstaller, PySide6, python-docx or python-pptx missing: $Py -m pip install pyinstaller==6.22.3 PySide6-Essentials==6.12.0 python-docx==1.2.0 python-pptx==1.0.2" }
 $Version = (& $Py -c "import annotshot; print(annotshot.__version__)").Trim()
 if ($LASTEXITCODE -ne 0 -or -not $Version) { Stop-Build 'could not read annotshot.__version__' }
 Step 1 "python $Py . Annotshot $Version"
@@ -43,7 +43,7 @@ $Out = Join-Path $Work 'check-stdout.txt'
 Remove-Item $Txt, $Out -ErrorAction SilentlyContinue
 $p = Start-Process -FilePath $Exe -ArgumentList '--check' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $Out
 $stdout = ''
-if (Test-Path $Out) { $stdout = (Get-Content $Out -Raw); if ($stdout) { $stdout = $stdout.Trim() } }
+if (Test-Path $Out) { $lines = @(Get-Content $Out | Where-Object { $_.Trim() -ne '' }); if ($lines.Count) { $stdout = $lines[-1].Trim() } }   # the last line is the verdict; earlier lines are the check's own steps
 $filed = ''
 if (Test-Path $Txt) { $filed = (Get-Content $Txt -Raw).Trim(); Remove-Item $Txt }
 $want = "Annotshot $Version OK"

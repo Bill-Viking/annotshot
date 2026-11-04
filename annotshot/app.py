@@ -1,13 +1,15 @@
 """Application setup (name, icon, Fusion style, the look) and main()."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
-from . import __version__
+from . import __version__, filetype
 from .mainwindow import MainWindow
 
 if sys.platform == "win32":
@@ -173,8 +175,81 @@ def make_app(argv=None) -> QApplication:
     return app
 
 
+OTHER_PROGRAM = ("Windows opens .annotshot files with another program — "
+                 "right-click one, Open with, Choose another app, Annotshot, "
+                 "Always use this app")
+
+
+class FileOpenFilter(QObject):
+    """macOS: Finder's double-click and a drop on the Dock icon arrive as a
+    FileOpen event on the application; the window opens the file.
+
+    The window's own open guard does the rest: a file that arrives while
+    an open is still running (Open…'s or another file's "Save your
+    changes?" question is on screen) is kept, not opened inside that
+    question; only the newest such file is kept, and it opens when the
+    running open returns. So one question at a time, and the last file
+    chosen is the one left open."""
+
+    def __init__(self, window: MainWindow):
+        super().__init__(window)
+        self._window = window
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.FileOpen:
+            path = event.file()
+            if path:
+                self._open(path)
+            return True
+        return False
+
+    def _open(self, path: str) -> None:
+        self._window.open_path(path)    # kept by the window while it is busy
+
+
+def file_argument(argv) -> str | None:
+    """The first argument after the program that is not an option and names
+    an existing editable file."""
+    for arg in list(argv)[1:]:
+        if not arg.startswith("-") and filetype.is_editable_file(arg):
+            return arg
+    return None
+
+
+def argument_problem(argv) -> str | None:
+    """The status line for an argument that names an editable file which is
+    not there, or a folder with an editable name; None when there is none.
+    Options and arguments with other names stay silent."""
+    for arg in list(argv)[1:]:
+        if arg.startswith("-"):
+            continue
+        plain = os.path.normpath(arg)   # x.annotshot/ is the folder x.annotshot
+        if not plain.lower().endswith(filetype.EXTENSIONS):
+            continue
+        name = os.path.basename(plain)
+        if os.path.isdir(arg):
+            return f"{name} is a folder, not a file"
+        if not os.path.exists(arg):
+            return f"Could not find {name}"
+    return None
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv if argv is None else argv)
     app = make_app(argv)
     window = MainWindow()           # centered at a moderate size
+    filetype.register()             # Windows: the double-click, repaired
+    choice = filetype.user_choice()
+    if choice and not filetype.is_ours(choice):
+        window.statusBar().showMessage(OTHER_PROGRAM, 10000)
+    app._annotshot_file_filter = FileOpenFilter(window)
+    app.installEventFilter(app._annotshot_file_filter)
     window.show()
+    path = file_argument(argv)
+    if path:
+        window.open_path(path)
+    else:
+        problem = argument_problem(argv)
+        if problem:
+            window.statusBar().showMessage(problem, 10000)
     return app.exec()

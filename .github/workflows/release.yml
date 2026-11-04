@@ -53,7 +53,7 @@ jobs:
       - name: Python packages
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "PySide6-Essentials==6.12.0" "pyinstaller==6.22.3" pytest
+          python -m pip install "PySide6-Essentials==6.12.0" "python-docx==1.2.0" "python-pptx==1.0.2" "lxml==6.1.3" "pillow==13.0.0" "typing_extensions==4.16.0" "xlsxwriter==3.3.1" "pyinstaller==6.22.3" pytest
 
       - name: Version
         id: version
@@ -81,8 +81,39 @@ jobs:
           esac
           out=$("$exe" --check | tr -d '\r')
           echo "$out"
-          test "$out" = "Annotshot ${{ steps.version.outputs.version }} OK"
+          test "$(printf '%s\n' "$out" | tail -n 1)" = "Annotshot ${{ steps.version.outputs.version }} OK"
           rm -f "$(dirname "$exe")/check.txt"
+
+      # The LGPL lets the zips carry Qt as separate libraries only when its
+      # notice and licence text ride along: the bundle must hold both GNU
+      # texts, and the public repository's builds also its LICENSE and
+      # notices. Found by search inside the folder the zip step packs
+      # (dist/Annotshot.app on macOS, dist/Annotshot elsewhere), so an
+      # incomplete bundle never passes on the strength of another build
+      # beside it.
+      - name: Licence texts in the bundle
+        env:
+          PUBLIC: ${{ github.repository == 'Bill-Viking/annotshot' }}
+        run: |
+          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt"
+          if [[ "$PUBLIC" == "true" ]]; then
+            need="$need LICENSE THIRD-PARTY-NOTICES.md"
+          fi
+          bundle=dist/Annotshot
+          if [[ "$RUNNER_OS" == "macOS" ]]; then bundle=dist/Annotshot.app; fi
+          ok=""
+          while IFS= read -r hit; do
+            root=$(dirname "$(dirname "$hit")")
+            missing=""
+            for n in $need; do [[ -e "$root/$n" ]] || missing="$missing $n"; done
+            if [[ -z "$missing" ]]; then ok="$root"; break; fi
+            echo "in $root, missing:$missing"
+          done < <(find "$bundle" -path '*/licenses/LGPL-3.0.txt')
+          if [[ -z "$ok" ]]; then
+            echo "STOP the bundle $bundle does not hold all of: $need"
+            exit 1
+          fi
+          echo "licence texts OK in $ok: $need"
 
       - name: Zip (Windows)
         if: runner.os == 'Windows'

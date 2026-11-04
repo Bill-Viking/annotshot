@@ -231,8 +231,6 @@ def test_an_exported_picture_counts_as_saved(window, monkeypatch, tmp_path):
                         staticmethod(lambda *a, **k: (str(png), "PNG image (*.png)")))
     monkeypatch.setattr(window, "_default_path", lambda *a: str(png))
     monkeypatch.setattr(window, "_remember", lambda *a: None)
-    monkeypatch.setattr(window, "settings", QSettings(
-        str(tmp_path / "settings.ini"), QSettings.IniFormat))
     doc, stack = window.doc, window.doc.undo_stack
     r = RectItem()
     r.set_geom((10, 10, 80, 60))
@@ -449,20 +447,15 @@ def test_the_window_is_moderate_not_maximized(window):
     assert window.frameGeometry().center() == screen.center()
 
 
-def test_the_window_size_is_remembered(window, monkeypatch, tmp_path):
+def test_the_window_size_is_remembered(window, private_settings):
     from PySide6.QtCore import QSize
     from annotshot.mainwindow import MainWindow
-    ini = str(tmp_path / "settings.ini")
-    s = QSettings(ini, QSettings.IniFormat)
-    window.settings = s
     window.resize(640, 620)
     window.close()                                # nothing to save: accepted
-    s.sync()
-    assert QSettings(ini, QSettings.IniFormat).value(
+    window.settings.sync()
+    assert QSettings(private_settings, QSettings.IniFormat).value(
         "window/size", type=QSize) == QSize(640, 620)
-    monkeypatch.setattr("annotshot.mainwindow.QSettings",
-                        lambda *a: QSettings(ini, QSettings.IniFormat))
-    again = MainWindow()
+    again = MainWindow()                          # the same private file
     assert again.size() == QSize(640, 620)
     again.deleteLater()
 
@@ -508,8 +501,6 @@ def test_save_follows_the_chosen_file_type(window, monkeypatch, tmp_path):
             img.setPixelColor(x, y, QColor("#FF0000"))
     monkeypatch.setattr(window.doc, "render_image", lambda: QImage(img))
     monkeypatch.setattr(mainwindow, "DEFAULT_DIR", tmp_path)
-    monkeypatch.setattr(window, "settings", QSettings(
-        str(tmp_path / "settings.ini"), QSettings.IniFormat))
     calls, answers = [], []
 
     def dialog(parent, caption, folder, filters, selected):
@@ -525,6 +516,7 @@ def test_save_follows_the_chosen_file_type(window, monkeypatch, tmp_path):
     assert folder.endswith(".png")
     assert filters == ("PNG image (*.png);;JPEG image (*.jpg *.jpeg);;"
                        "BMP image (*.bmp);;WebP image (*.webp);;"
+                       "Word document (*.docx);;PowerPoint slide (*.pptx);;"
                        "Annotshot editable (*.annotshot)")
     jpg = QImage(str(tmp_path / "shot.jpg"))
     assert not jpg.isNull() and not jpg.hasAlphaChannel()
@@ -559,8 +551,6 @@ def test_save_as_editable_then_ctrl_s_saves_again(window, monkeypatch,
     from annotshot.items import RectItem
     from annotshot.scene import Document
     monkeypatch.setattr(mainwindow, "DEFAULT_DIR", tmp_path)
-    monkeypatch.setattr(window, "settings", QSettings(
-        str(tmp_path / "settings.ini"), QSettings.IniFormat))
     calls, answers = [], []
 
     def dialog(parent, caption, folder, filters, selected):

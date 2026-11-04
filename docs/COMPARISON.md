@@ -4,7 +4,7 @@ Tuesday 2026-11-03 · Annotshot 0.1 (the first version)
 
 Annotshot is a first version with one job: capture part of the screen, mark it up with PowerPoint-style text boxes and shapes, then copy or save it. The tools below are mature and most do far more. This page is meant to help you choose, not to sell Annotshot.
 
-Facts about other tools were checked against their own websites or documentation on the date above, with the links listed under Sources. "Unverified" means we could not confirm the fact from a reliable page. Prices are in US dollars and change often.
+Facts about other tools were checked against their own websites or documentation on the date above, with the links listed under Sources. "Unverified" means we could not confirm the fact from a reliable page. "Not checked" marks a row added with Annotshot 0.2.0 whose other columns have not been looked up yet. Prices are in US dollars and change often.
 
 ## The table
 
@@ -14,6 +14,7 @@ Facts about other tools were checked against their own websites or documentation
 | **Platforms** | Windows; macOS and Linux builds | Windows and macOS [1][2] | Windows only [3][4] | Windows; Mac app last updated 2020 [5][7] | Windows [9] | macOS 13 or newer only [10] | Linux, Windows, macOS [12][13] | Windows 10 and 11 [15] |
 | **Region and window capture** | Region everywhere; click-a-window on Windows only | Yes [2] | Yes, plus monitor and "last region" [3] | Yes [5] | Yes [9] | Yes [11] | Region and full screen; window capture not documented [12] | Rectangle, window, full screen, freeform [15] |
 | **Text box with its own fill** | Yes: text color, fill and border are three separate controls | Yes: the Callout tool has Fill and Font Color [17] | Partly: the Speech Balloon has fill, border and text color; the plain Text tool has no fill [4] | Partly: elements can have a fill color [6]; a 2016 report says text and border share one color [18]; current behavior unverified | Text boxes exist [9]; a separate fill color is unverified | 7 preset text styles [11]; a fill color of your choice is unverified | No background option documented; a request for better text contrast is open [19] | A text tool with font, size and color was reported in testing in late 2025 [16]; no fill reported; general release unverified |
+| **Save straight to Word / PowerPoint** | Yes: `.docx` and `.pptx` | Not checked | Not checked | Not checked | Not checked | Not checked | Not checked | Not checked |
 | **Editable save format** | Yes: `.annotshot` | Yes: `.snagx` [20] | No: annotations stay editable only until the image is saved [4] | Yes: `.greenshot` [8] | Yes: `.fsc` [9] | Yes: CleanShot project files [11] | None documented [13] | None documented [15] |
 | **Scrolling capture** | No | Yes [2] | Yes [3] | Only from Internet Explorer [5] | Yes [9] | Yes, vertical and horizontal [11] | Not documented [12] | No [14] |
 | **Screen recording** | No | Yes [2] | Yes, video and GIF [3] | Not offered [5] | Yes, MP4 and WMV, with a video editor [9] | Yes, video and GIF [11] | Not documented [12] | Yes, video snips [15] |

@@ -1,6 +1,6 @@
 # Annotshot user manual
 
-Tuesday 2026-11-03 · for Annotshot 0.1 (the first version)
+Wednesday 2026-11-04 · for Annotshot 0.2.0
 
 ## What Annotshot is
 
@@ -14,16 +14,18 @@ Download the app from the repository's Releases page — the three download butt
 
 ### Windows (10 and 11) — three steps
 
-1. **Download:** click **Download for Windows** above. `Annotshot-0.1.2-windows.zip` appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.1.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.2.0-windows.zip` appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.2.0-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.2.0-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). The first time, Windows may show a blue box, **Windows protected your PC**: click **More info**, then **Run anyway**. That box appears once.
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
 ### macOS — four steps
 
-1. **Download:** click **Download for macOS** above. `Annotshot-0.1.2-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
+
+1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.2.0-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.2.0-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -34,11 +36,28 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** above. `Annotshot-0.1.2-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
-3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again. Tested on Ubuntu 24.04 (X11); Wayland is untested.
+1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.2.0-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.2.0-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
+
+No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
+
+- **Wayland:** Qt's screen grab returns an empty picture on Wayland, the default session on new GNOME and KDE desktops, so a capture there comes back blank. Until Annotshot uses the desktop's own screenshot service, log in to an X11 (**Xorg**) session where the login screen offers one (for example **Ubuntu on Xorg**, behind the gear button on the login screen).
+- **A missing library:** if Annotshot does not start and a terminal shows that the Qt platform plugin **xcb** could not be loaded, install it with `sudo apt install libxcb-cursor0` (Debian, Ubuntu and relatives), then start Annotshot again.
 
 **You should see** — on every system — a window titled **Annotshot — Untitled** with a blue **Capture** button at the top left.
+
+### After installing
+
+- **Windows:** start Annotshot once before you double-click a saved `.annotshot` file; it registers the file type each time it starts. If Windows still asks **How do you want to open this file?** or opens another program, right-click the file, choose **Open with**, then **Choose another app**, pick **Annotshot**, tick **Always use this app to open .annotshot files**, and click **OK**. On a computer managed by an organisation, apps that are not signed may be blocked: if the blue box shows no **Run anyway**, or **Annotshot.exe** will not start, the computer's administrator has to allow it.
+- **macOS:** the first **Capture** asks for screen recording, as in step 4 above. A double-click on a saved `.annotshot` file in Finder opens it in Annotshot once the app is in **Applications**.
+- **Linux:** no double-click on saved files yet. Use **Open…** inside Annotshot, or start Annotshot with the file's name after it: `~/Apps/Annotshot/Annotshot picture.annotshot`.
+
+### Updating to a new version
+
+- **Windows:** close Annotshot, delete the old `Annotshot` folder, unzip the new download in its place, and start it once so a double-click on a saved file uses the new copy.
+- **macOS:** drag the new **Annotshot.app** into **Applications** and choose **Replace**. Run the Terminal line from step 3 again (every new download is flagged again). If macOS asks about screen recording again, click **Allow**.
+- **Linux:** close Annotshot and replace the `Annotshot` folder with the one from the new zip.
 
 ## The first ten seconds
 
@@ -47,7 +66,7 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 3. Either **drag** a box around the part you want (a size label shows its width × height in pixels), or **click** a window to take the whole window. On Windows the window under the mouse lights up with a red frame and its title before you click.
 4. Your capture opens in the editor. Press **Esc** or right-click during capture to cancel.
 
-Now click **Text**, click on the picture, and type.
+Now click **Text**, click on the picture, and type. Then **Copy image** and paste it anywhere, or **Save…** as a picture, a Word document or a PowerPoint slide.
 
 ## The editor, row by row
 
@@ -134,6 +153,8 @@ Click **Save…** to open the Save window. Pick a file type from the "Save as ty
 | **JPEG image** | The finished picture as a smaller file. See-through parts become white. |
 | **BMP image** | The finished picture, uncompressed. See-through parts become white. |
 | **WebP image** | The finished picture as a small modern file. |
+| **Word document (.docx)** | The finished picture on page 1 of a Word document, centred. |
+| **PowerPoint slide (.pptx)** | The finished picture on one PowerPoint slide, centred. |
 | **Annotshot editable (.annotshot)** | Your work, kept editable. |
 
 **What "editable" means:** a PNG or JPEG is a flat photo. Once saved, the text is part of the picture, and you cannot fix a typo without painting over it. A `.annotshot` file keeps the screenshot and every text box, arrow and shape as separate objects. Open it again later with **Open…** and you can still double-click the text to retype it, change its colors, move an arrow or delete a shape. Keep a `.annotshot` copy whenever you may need to change something later.
@@ -143,6 +164,10 @@ Pictures save to the `Annotshot` folder inside your Pictures folder unless you c
 Once you have saved an editable file, **Ctrl+S** saves it again straight away without asking. **Ctrl+Shift+S** always opens the Save window.
 
 The window title shows the file name, with a `*` when there are changes not yet saved.
+
+## Word and PowerPoint
+
+Pick **Word document** or **PowerPoint slide** in the Save window and the finished picture goes straight into an Office file — no copy and paste. In Word it is centred on page 1, as wide as the space between the margins (never wider than the picture itself, and never taller than the page). In PowerPoint it is one blank slide with the picture centred and fitted, with a small margin all round. Saving either one counts as done, like saving a picture: closing or capturing again does not ask.
 
 ## Copy image and paste anywhere
 
@@ -160,6 +185,8 @@ Copying or saving a picture counts as "done": the next **Capture** will not ask 
 ## Opening an editable file
 
 Click **Open…** (Ctrl+O) and choose a `.annotshot` file. Everything comes back as you left it, still editable. **Open…** opens only Annotshot editable files; it does not open ordinary PNG or JPEG pictures in this version.
+
+You can also double-click a `.annotshot` file in File Explorer (Windows) or Finder (macOS): Annotshot starts and opens it. Annotshot registers the file type itself each time it starts, so start it once before your first double-click. If Windows still asks "How do you want to open this file?" or opens another program, right-click the file, choose **Open with**, then **Choose another app**, pick **Annotshot**, tick **Always use this app to open .annotshot files**, and click **OK**; Windows lets only you make that choice, and Annotshot's status line reminds you when another program holds it. On Linux, start Annotshot with the file as its argument, for example `Annotshot picture.annotshot`.
 
 ## Keyboard shortcuts
 
@@ -187,17 +214,23 @@ On a Mac, use the **Command (⌘)** key wherever this table says Ctrl.
 - **Clicking a window to capture it works on Windows only.** On macOS and Linux, drag a region instead; a click without dragging takes the whole screen.
 - **One screen per capture.** A region cannot stretch across two monitors.
 - **No scrolling capture, no screen recording, no picture library, no capture delay and no global hotkey yet.** Annotshot must be open, and you start each capture from its window.
-- **Linux:** not yet tested on Wayland desktops, where screen capture is often restricted. An X11 session is the safer choice for now.
+- **Linux on Wayland:** Qt's screen grab returns an empty picture on Wayland, the default session on new GNOME and KDE desktops, so a capture there comes back blank. Until Annotshot uses the desktop's own screenshot service, use an X11 (Xorg) session where the login screen offers one. No one has run the Linux build by hand yet.
+- **Linux:** no double-click on saved `.annotshot` files yet. Use **Open…**, or start Annotshot with the file's name after it.
 - **One style per text box.** You cannot make one word bold and the next one plain inside the same box; use two boxes.
+
+## Licence
+
+Annotshot is MIT-licensed. It uses Qt for Python and Qt 6 under the LGPL v3, and python-docx, python-pptx and their helpers under their own licences. The licence texts travel inside the app's folder: a `licenses` folder with the GNU texts, plus `LICENSE` and `THIRD-PARTY-NOTICES.md` in the public download.
 
 ## For developers
 
 ### From the source code (any system with Python 3.12)
 
-In the Annotshot folder, make a virtual environment, install Qt for Python, and start the app:
+In the Annotshot folder, make a virtual environment, install Qt for Python, the Word / PowerPoint libraries and pytest (for the tests: `python -m pytest -q`), and start the app. If a Word or PowerPoint save says this copy needs two more parts, run the `pip install` line the message shows.
 
 ```
 python -m venv .venv
-.venv/bin/pip install PySide6-Essentials        (Windows: .venv\Scripts\pip install PySide6-Essentials)
+.venv/bin/pip install PySide6-Essentials==6.12.0 python-docx==1.2.0 python-pptx==1.0.2 pytest
+        (Windows: .venv\Scripts\pip install PySide6-Essentials==6.12.0 python-docx==1.2.0 python-pptx==1.0.2 pytest)
 .venv/bin/python -m annotshot                       (Windows: .venv\Scripts\python -m annotshot)
 ```

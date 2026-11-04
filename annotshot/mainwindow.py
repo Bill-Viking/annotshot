@@ -2,7 +2,16 @@
 actions, and the capture flow."""
 from __future__ import annotations
 
+import errno
+import json
+import ntpath
+import os
+import re
+import shlex
+import sys
 import warnings
+import zipfile
+import zlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +32,7 @@ from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
 
 from .capture import CaptureSession
 from .items import HighlightItem, without_alpha
+from .office import OFFICE_FORMATS, export
 from .scene import Document
 from .tools import Tool
 from .view import EditorView
@@ -39,6 +49,8 @@ SAVE_TYPES = (
     ("JPEG image (*.jpg *.jpeg)", ("jpg", "jpeg"), "JPEG"),
     ("BMP image (*.bmp)", ("bmp",), "BMP"),
     ("WebP image (*.webp)", ("webp",), "WEBP"),
+    ("Word document (*.docx)", ("docx",), "DOCX"),
+    ("PowerPoint slide (*.pptx)", ("pptx",), "PPTX"),
     (PROJECT_FILTER, ("annotshot",), PROJECT_FORMAT),
 )
 SAVE_FILTERS = ";;".join(t[0] for t in SAVE_TYPES)
@@ -173,6 +185,60 @@ def typed_path_for(path: str, exts: tuple) -> str:
     return f"{path}.{exts[0]}"
 
 
+def open_warning(path: str, error: Exception) -> str:
+    """The plain sentence for a file that could not be opened."""
+    name = Path(path).name
+    if isinstance(error, FileNotFoundError):
+        return f"The file is no longer there:\n{name}"
+    if isinstance(error, IsADirectoryError) or os.path.isdir(path):
+        # Windows says "permission denied" for a folder
+        return f"This is a folder, not a file:\n{name}"
+    if isinstance(error, (zipfile.BadZipFile, zlib.error, KeyError,
+                          json.JSONDecodeError, UnicodeDecodeError)):
+        return f"This is not an Annotshot file, or it is damaged:\n{name}"
+    return f"Could not open {name}:\n{error}"
+
+
+def save_problem(path: str, error: OSError) -> str:
+    """The plain sentence for a Word or PowerPoint file that could not be
+    written; it names the file the user chose, never a temp file."""
+    if isinstance(error, FileNotFoundError):
+        reason = "the folder is missing"
+    elif isinstance(error, PermissionError):
+        reason = "no permission"
+    elif error.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
+        reason = "the disk is full"
+    else:
+        reason = error.strerror or str(error)
+    return f"Could not save {Path(path).name}: {reason}"
+
+
+# What a path may hold and still be typed into PowerShell bare.
+_PLAIN_WINDOWS_PATH = re.compile(r"[A-Za-z0-9_.:\\/-]+")
+OFFICE_PINS = "python-docx==1.2.0 python-pptx==1.0.2"
+
+
+def pip_command(executable: str | None = None, platform: str | None = None,
+                isfile=os.path.isfile) -> str:
+    """The one line that adds the Word / PowerPoint parts to the running
+    Python. On Windows pythonw.exe has no console, so python.exe beside it
+    is named; a path that needs quotes gets PowerShell's call operator."""
+    python = sys.executable if executable is None else executable
+    platform = sys.platform if platform is None else platform
+    if platform == "win32":
+        if python.lower().endswith("pythonw.exe"):
+            console = ntpath.join(ntpath.dirname(python), "python.exe")
+            if isfile(console):
+                python = console
+        if not _PLAIN_WINDOWS_PATH.fullmatch(python):
+            # inside double quotes PowerShell still reads ` and $
+            python = '& "{}"'.format(
+                python.replace("`", "``").replace("$", "`$"))
+    else:
+        python = shlex.quote(python)
+    return f"{python} -m pip install {OFFICE_PINS}"
+
+
 class SaveAction(QAction):
     """The Save… action. It remembers which shortcut triggered it, so a
     plain Ctrl+S can save an editable file again without asking, while the
@@ -237,6 +303,11 @@ class MainWindow(QMainWindow):
         self.doc = Document()
         self._bound: Document | None = None
         self._capture: CaptureSession | None = None
+        # One open at a time: Open…, open_path and macOS's FileOpen events
+        # share this flag; a file that arrives meanwhile is kept (the newest
+        # wins) and opens when the running open returns.
+        self._opening = False
+        self._kept: str | None = None
         self._slider_session = 0
         self._refreshing = False
         self._marks: dict = {}          # the heading's kind marks
@@ -816,14 +887,31 @@ class MainWindow(QMainWindow):
         if not path:
             return False
         name_filter, exts, fmt = types.get(chosen, preset)
-        path = typed_path_for(path, exts)
+        typed, path = path, typed_path_for(path, exts)
+        if (os.path.normcase(path) != os.path.normcase(typed)
+                and os.path.exists(path) and not self._ask_replace(path)):
+            return False
         if fmt == PROJECT_FORMAT:
             ok = self._save_editable(path)
+        elif fmt in OFFICE_FORMATS:
+            ok = self._save_office(path, fmt)
         else:
             ok = self._save_picture(path, fmt)
         if ok:
             self._remember("save", path, name_filter)
         return ok
+
+    def _ask_replace(self, path: str) -> bool:
+        """The Save window asked about the name the user typed; when the
+        chosen type changed that name to one that is already there, ask
+        here. True replaces it; the default answer is No."""
+        p = Path(path)
+        folder = p.parent.name or str(p.parent)
+        answer = QMessageBox.question(
+            self, "Annotshot",
+            f"Replace {p.name}?\n\nA file with this name is already in {folder}.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
 
     def _save_picture(self, path: str, fmt: str) -> bool:
         """The rendered picture with every edit (white under JPEG / BMP)."""
@@ -833,6 +921,34 @@ class MainWindow(QMainWindow):
         quality = JPEG_QUALITY if fmt == "JPEG" else -1
         if not img.save(path, fmt, quality):
             self._warn(f"Could not write {path}")
+            return False
+        self._exported()
+        self.statusBar().showMessage(f"Saved {Path(path).name}", 3000)
+        return True
+
+    def _save_office(self, path: str, fmt: str) -> bool:
+        """The picture in a Word document or on a PowerPoint slide."""
+        try:
+            export(fmt, self.doc.render_image(), path)
+        except ModuleNotFoundError as e:
+            if (e.name or "").split(".")[0] not in ("docx", "pptx"):
+                self._warn(f"Could not save {Path(path).name}:\n{e}")
+                return False
+            # A copy run from source that never installed the two Word /
+            # PowerPoint libraries: say how to add them (the versions are
+            # the release workflow's pins).
+            self._warn(
+                "Saving as Word or PowerPoint needs two more parts that this "
+                "copy of Annotshot does not have yet.\n"
+                "In a terminal, run:\n"
+                f"{pip_command()}")
+            return False
+        except OSError as e:            # the folder, the rights, the disk
+            self._warn(save_problem(path, e))
+            return False
+        except Exception as e:          # noqa: BLE001 - the libraries raise
+            # their own kinds (zip, XML) as well as OSError
+            self._warn(f"Could not save {Path(path).name}:\n{e}")
             return False
         self._exported()
         self.statusBar().showMessage(f"Saved {Path(path).name}", 3000)
@@ -852,24 +968,68 @@ class MainWindow(QMainWindow):
         return True
 
     def open_project(self) -> None:
-        if not self.maybe_discard():
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open", str(self._folder("project")), OPEN_FILTER)
-        if not path:
-            return
+        """Open…: the discard question, then the Open window. A file chosen
+        in the Open window is the newest choice, so it replaces one that
+        arrived from Finder meanwhile."""
+        if self._opening:
+            return                      # one open at a time
+
+        def run() -> bool:
+            if not self.maybe_discard():
+                return False
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open", str(self._folder("project")), OPEN_FILTER)
+            if not path:
+                return False
+            self._kept = None           # chosen after anything kept
+            return self._open_now(path, ask=False)
+        self._one_open(run)
+
+    def open_path(self, path: str, ask: bool = True) -> bool:
+        """Open the editable file at `path` (a double-click, the command
+        line, Finder, or Open…). True when it loaded; a bad file shows the
+        plain warning and the current document stays. While another open is
+        running (its question on screen) the file is kept instead, and it
+        opens when that open returns; False then."""
+        path = os.path.abspath(path)    # never a folder relative to the cwd
+        if self._opening:
+            self._kept = path           # the newest wins
+            return False
+        return self._one_open(lambda: self._open_now(path, ask))
+
+    def _one_open(self, first) -> bool:
+        """Run `first`, then every file kept meanwhile, one at a time. When
+        an open raises, the kept file goes too, so it never opens later."""
+        self._opening = True
+        try:
+            ok = first()
+            while self._kept is not None:
+                path, self._kept = self._kept, None
+                self._open_now(path, ask=True)
+        except BaseException:
+            self._kept = None
+            raise
+        finally:
+            self._opening = False
+        return ok
+
+    def _open_now(self, path: str, ask: bool) -> bool:
+        path = os.path.abspath(path)
+        if ask and not self.maybe_discard():
+            return False
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 doc = Document.load(path)
         except Exception as e:          # never a bare traceback from Open
-            self._warn(f"Could not open {Path(path).name}:\n{e}")
-            return
+            self._warn(open_warning(path, e))
+            return False
         self._bind(doc)
         self._remember("project", path)
         if caught:
             self.statusBar().showMessage(
                 "; ".join(str(w.message) for w in caught), 8000)
+        return True
 
     def maybe_discard(self) -> bool:
         """True when it is fine to replace the document (asks only when the

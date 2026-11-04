@@ -11,6 +11,8 @@ import os
 import re
 import sys
 
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+
 ROOT = os.path.dirname(SPECPATH)            # the repository root
 with open(os.path.join(ROOT, "annotshot", "__init__.py"), encoding="utf-8") as f:
     VERSION = re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
@@ -27,6 +29,28 @@ datas = [
     (at("annotshot.ico"), "."),
     (at("icon.png"), "."),
 ]
+# The Word / PowerPoint libraries open their own blank document and
+# presentation (and their default XML parts) from package data files.
+datas += collect_data_files("docx") + collect_data_files("pptx")
+
+# The licence texts ride inside the app. Qt is bundled as separate libraries
+# under the LGPL, which asks that its notice and licence text travel with it:
+# the two GNU texts go into licenses/ (the frozen --check looks for them).
+datas += [
+    (at("packaging", "licenses", "LGPL-3.0.txt"), "licenses"),
+    (at("packaging", "licenses", "GPL-3.0.txt"), "licenses"),
+]
+# The project's own licence and the third-party notices sit at the bundle's
+# root when the repository has them (the public repository does; a copy
+# without them builds without them).
+for name in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+    if os.path.isfile(at(name)):
+        datas.append((at(name), "."))
+# Every bundled library's own metadata folder, with the licence files it
+# ships, rides along too.
+for dist in ("PySide6-Essentials", "shiboken6", "python-docx", "python-pptx",
+             "lxml", "pillow", "typing_extensions", "xlsxwriter"):
+    datas += copy_metadata(dist)
 
 if sys.platform == "win32":
     icon = at("annotshot.ico")
@@ -88,6 +112,22 @@ if sys.platform == "darwin":
         name="Annotshot.app",
         icon=icon,
         bundle_identifier="com.annotshot.Annotshot",
-        info_plist={"NSHighResolutionCapable": True,
-                    "CFBundleShortVersionString": VERSION},
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleShortVersionString": VERSION,
+            # The editable file: Finder opens a .annotshot file in the app.
+            "CFBundleDocumentTypes": [{
+                "CFBundleTypeName": "Annotshot editable file",
+                "CFBundleTypeRole": "Editor",
+                "LSHandlerRank": "Owner",
+                "LSItemContentTypes": ["com.annotshot.editable"],
+            }],
+            "UTExportedTypeDeclarations": [{
+                "UTTypeIdentifier": "com.annotshot.editable",
+                "UTTypeDescription": "Annotshot editable file",
+                "UTTypeConformsTo": ["public.zip-archive", "public.data"],
+                "UTTypeTagSpecification": {
+                    "public.filename-extension": ["annotshot"]},
+            }],
+        },
     )
