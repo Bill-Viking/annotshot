@@ -10,44 +10,37 @@ This is a first version. It does one job: capture, mark up, copy or save. It has
 
 ## Install and start
 
-Always download from the repository's Releases page — the green Code button gives the source code, not the app.
+Download the app from the repository's Releases page — the three download buttons at the top of the README — never from the green Code button, which is the source code.
 
-**Windows (10 and 11)**
+### Windows (10 and 11) — three steps
 
-1. Download `Annotshot-<version>-windows.zip`.
-2. Right-click it and choose **Extract All…**. Keep the whole folder together. `Annotshot.exe` needs the files beside it.
-3. Open the folder and double-click `Annotshot.exe`.
+1. **Download:** click **Download for Windows** above. `Annotshot-0.1.1-windows.zip` appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.1.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). The first time, Windows may show a blue box, **Windows protected your PC**: click **More info**, then **Run anyway**. That box appears once.
 
-Annotshot is not signed yet, so Windows may show "Windows protected your PC" the first time. Click **More info**, then **Run anyway**.
+To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
-**macOS**
+### macOS — three steps
 
-1. Download `Annotshot-<version>-macos.zip`, open **Downloads** and double-click it. `Annotshot.app` appears beside it (a blue A icon). If you see a folder named `annotshot-main` instead, you downloaded the source code from the green **Code** button — go back to the Releases page.
-2. Move `Annotshot.app` to your Applications folder and open it.
-3. Annotshot is not signed by Apple yet. If macOS says it cannot check the app, open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Annotshot.
-4. If macOS instead says **“Annotshot” is damaged and can’t be opened**, that is the missing signature, not real damage. Open **Terminal** (press ⌘-Space, type Terminal, press Return) and paste this one line, then press Return and open the app again:
+1. **Download:** click **Download for macOS** above. `Annotshot-0.1.1-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+3. **Start it:** open **Applications** and double-click **Annotshot**. The first time, macOS shows one of two messages:
+   - **"Annotshot" cannot be opened because the developer cannot be verified** → click **Done**, open **System Settings → Privacy & Security**, scroll down to the line about Annotshot and click **Open Anyway**, then **Open**.
+   - **"Annotshot" is damaged and can't be opened** → it is not damaged; the app is not signed by Apple yet. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste the line below, press Return, then double-click Annotshot again:
 
-   ```
-   xattr -cr /Applications/Annotshot.app
-   ```
+     ```
+     xattr -cr /Applications/Annotshot.app
+     ```
 
-5. The first time you click **Capture**, macOS asks to let Annotshot record your screen. Say yes. If the capture shows only your desktop background and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, then quit Annotshot and open it again.
+   The first time you click **Capture**, macOS asks to let Annotshot record your screen — click **Allow**. If a capture shows only your wallpaper and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, quit Annotshot and start it again.
 
-**Linux**
+### Linux — three steps
 
-1. Download `Annotshot-<version>-linux.zip` and unzip it.
-2. Open a terminal in the unzipped folder and run `./Annotshot`.
-3. If it says "permission denied", run `chmod +x Annotshot` once, then `./Annotshot` again.
+1. **Download:** click **Download for Linux** above. `Annotshot-0.1.1-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again. Tested on Ubuntu 24.04 (X11); Wayland is untested.
 
-**From the source code (any system with Python 3.12)**
-
-In the Annotshot folder, make a virtual environment, install Qt for Python, and start the app:
-
-```
-python -m venv .venv
-.venv/bin/pip install PySide6-Essentials        (Windows: .venv\Scripts\pip install PySide6-Essentials)
-.venv/bin/python -m annotshot                       (Windows: .venv\Scripts\python -m annotshot)
-```
+**You should see** — on every system — a window titled **Annotshot — Untitled** with a blue **Capture** button at the top left.
 
 ## The first ten seconds
 
@@ -194,3 +187,15 @@ On a Mac, use the **Command (⌘)** key wherever this table says Ctrl.
 - **No scrolling capture, no screen recording, no picture library, no capture delay and no global hotkey yet.** Annotshot must be open, and you start each capture from its window.
 - **Linux:** not yet tested on Wayland desktops, where screen capture is often restricted. An X11 session is the safer choice for now.
 - **One style per text box.** You cannot make one word bold and the next one plain inside the same box; use two boxes.
+
+## For developers
+
+### From the source code (any system with Python 3.12)
+
+In the Annotshot folder, make a virtual environment, install Qt for Python, and start the app:
+
+```
+python -m venv .venv
+.venv/bin/pip install PySide6-Essentials        (Windows: .venv\Scripts\pip install PySide6-Essentials)
+.venv/bin/python -m annotshot                       (Windows: .venv\Scripts\python -m annotshot)
+```

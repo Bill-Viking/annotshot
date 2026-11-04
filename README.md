@@ -2,131 +2,57 @@
 
 # Annotshot
 
-**New here? Read the user manual: [docs/USER-MANUAL.md](docs/USER-MANUAL.md)**
+Annotshot is a Windows screenshot app with PowerPoint-style editing. Capture a region or a window, then edit it like a slide: text boxes with their own text color and background fill, arrows, shapes, highlights, crop and undo. Copy the image or save a PNG in one click, and save the project to keep editing later.
 
 ## Download the app
 
-Get Annotshot from the **Releases page**, not from the green **Code** button — that button downloads the source code, not the app.
+<p>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-windows.zip"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
+</p>
 
-Latest release **0.1.1** — click the one for your system; the zip lands in your **Downloads** folder:
-
-- **Windows:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-windows.zip
-- **macOS:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-macos.zip
-- **Linux:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-linux.zip
-
-Then follow the install walk for your system below.
-
-Annotshot is a Windows screenshot app with PowerPoint-style editing. Capture a region or a window, then edit it like a slide: text boxes with their own text color and background fill, arrows, shapes, highlights, crop and undo. Copy the image or save a PNG in one click, and save the project to keep editing later.
-
-![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
-
-Version 0.1.1 · Windows 10 and 11 first; macOS and Linux builds too · MIT licence
+Version 0.1.1. Each button downloads one zip file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
 
 ## Install
 
-Annotshot comes as one zip per system on this repository's
-[Releases page](../../releases). Pick the newest release, then follow the walk
-for your system. `<version>` below is that release's number, for example
-`0.1.1`.
+### Windows (10 and 11) — three steps
 
-### Windows (10 and 11)
+1. **Download:** click **Download for Windows** above. `Annotshot-0.1.1-windows.zip` appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.1.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.1.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). The first time, Windows may show a blue box, **Windows protected your PC**: click **More info**, then **Run anyway**. That box appears once.
 
-1. On the [Releases page](../../releases) (or the Download links above), under **Assets**, click
-   `Annotshot-<version>-windows.zip`. It lands in your **Downloads** folder.
-2. Open **Downloads**, right-click `Annotshot-<version>-windows.zip` and choose
-   **Extract All…**, then click **Extract**. A folder with the same name opens.
-3. Open the `Annotshot` folder inside it. Keep the whole folder together:
-   `Annotshot.exe` needs the files beside it.
-4. Double-click `Annotshot.exe`.
-5. Annotshot is not signed yet, so the first time Windows may show a blue box,
-   **Windows protected your PC**. Click **More info**, then **Run anyway**.
+To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
-You should see: a window titled Annotshot — Untitled
+### macOS — three steps
 
-### macOS
+1. **Download:** click **Download for macOS** above. `Annotshot-0.1.1-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+3. **Start it:** open **Applications** and double-click **Annotshot**. The first time, macOS shows one of two messages:
+   - **"Annotshot" cannot be opened because the developer cannot be verified** → click **Done**, open **System Settings → Privacy & Security**, scroll down to the line about Annotshot and click **Open Anyway**, then **Open**.
+   - **"Annotshot" is damaged and can't be opened** → it is not damaged; the app is not signed by Apple yet. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste the line below, press Return, then double-click Annotshot again:
 
-1. On the [Releases page](../../releases), under **Assets**, click
-   `Annotshot-<version>-macos.zip`. It lands in your **Downloads** folder.
-2. Open **Downloads** and double-click `Annotshot-<version>-macos.zip`.
-   `Annotshot.app` appears beside it (a blue A icon). If you see a folder named
-   `annotshot-main` instead, you downloaded the source code from the green
-   **Code** button — go back to the Releases link above.
-3. Drag `Annotshot.app` into your **Applications** folder, then double-click it.
-4. Annotshot is not signed by Apple yet. If macOS says it cannot check the app,
-   click **Done**, open **System Settings → Privacy & Security**, scroll down
-   and click **Open Anyway** next to Annotshot, then **Open**.
-5. If macOS instead says **“Annotshot” is damaged and can’t be opened**, that is
-   the missing signature, not real damage. Open **Terminal** (press ⌘-Space,
-   type Terminal, press Return) and paste this one line, then press Return and
-   open the app again:
+     ```
+     xattr -cr /Applications/Annotshot.app
+     ```
 
-   ```
-   xattr -cr /Applications/Annotshot.app
-   ```
+   The first time you click **Capture**, macOS asks to let Annotshot record your screen — click **Allow**. If a capture shows only your wallpaper and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, quit Annotshot and start it again.
 
-6. The first time you click **Capture**, macOS asks to let Annotshot record
-   your screen: say yes. If the capture shows only your desktop background and
-   no windows, open **System Settings → Privacy & Security → Screen & System
-   Audio Recording**, switch Annotshot on, then quit Annotshot and open it again.
+### Linux — three steps
 
-You should see: a window titled Annotshot — Untitled
+1. **Download:** click **Download for Linux** above. `Annotshot-0.1.1-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.1.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again. Tested on Ubuntu 24.04 (X11); Wayland is untested.
 
-### Linux
+**You should see** — on every system — a window titled **Annotshot — Untitled** with a blue **Capture** button at the top left.
 
-1. On the [Releases page](../../releases) (or the Download links above), under **Assets**, click
-   `Annotshot-<version>-linux.zip`. It lands in your **Downloads** folder.
-2. Unzip it (right-click → **Extract Here**, or `unzip Annotshot-<version>-linux.zip`).
-   A folder named `Annotshot` appears.
-3. Open a terminal in that `Annotshot` folder and make the program runnable once:
+## Your first screenshot
 
-   ```
-   chmod +x Annotshot
-   ```
+1. Click **Capture** (or press Ctrl+N; ⌘N on a Mac). Your screen freezes and dims.
+2. Drag a box around the part you want, or click a window to take all of it.
+3. Click **Text**, click on the picture, type — then **Copy image** and paste it anywhere, or **Save…**.
 
-4. Start it:
-
-   ```
-   ./Annotshot
-   ```
-
-You should see: a window titled Annotshot — Untitled
-
-Linux note: tested on X11 desktops; on Wayland, screen capture is often
-restricted.
-
-### From the source code (any system with Python 3.12)
-
-1. Download this repository (**Code → Download ZIP**, then unzip it) or clone it.
-2. Open a terminal in the repository folder and make a virtual environment with
-   Qt for Python:
-
-   ```
-   python -m venv .venv
-   .venv/bin/pip install PySide6-Essentials==6.12.0
-   ```
-
-   On Windows: `.venv\Scripts\pip install PySide6-Essentials==6.12.0`
-3. Start the app:
-
-   ```
-   .venv/bin/python -m annotshot
-   ```
-
-   On Windows: `.venv\Scripts\python -m annotshot`, or double-click
-   `Annotshot.cmd` once the virtual environment exists.
-
-You should see: a window titled Annotshot — Untitled
-
-## First capture
-
-1. Click **Capture** (the blue button, top left), or press **Ctrl+N** (**⌘N** on
-   a Mac). The screen freezes and dims.
-2. **Drag** a box around the part you want, or **click** a window to take the
-   whole window (clicking a window works on Windows; on macOS and Linux, drag).
-   Press **Esc** to cancel.
-3. Your capture opens in the editor. Click **Text**, click on the picture and
-   type; then **Copy image** (Ctrl+C) to paste it anywhere, or **Save…** for a
-   PNG or an editable `.annotshot` file.
+The whole app, button by button: **[User manual](docs/USER-MANUAL.md)**.
 
 ## More
 
@@ -158,3 +84,26 @@ You should see: a window titled Annotshot — Untitled
 
 Annotshot is MIT-licensed: see [LICENSE](LICENSE). It uses Qt for Python and
 Qt 6 under the LGPL v3: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## For developers
+
+### From the source code (any system with Python 3.12)
+
+1. Download this repository (**Code → Download ZIP**, then unzip it) or clone it.
+2. Open a terminal in the repository folder and make a virtual environment with
+   Qt for Python:
+
+   ```
+   python -m venv .venv
+   .venv/bin/pip install PySide6-Essentials==6.12.0
+   ```
+
+   On Windows: `.venv\Scripts\pip install PySide6-Essentials==6.12.0`
+3. Start the app:
+
+   ```
+   .venv/bin/python -m annotshot
+   ```
+
+   On Windows: `.venv\Scripts\python -m annotshot`, or double-click
+   `Annotshot.cmd` once the virtual environment exists.
