@@ -14,6 +14,8 @@ Annotshot is a Windows screenshot app with PowerPoint-style editing. Capture a r
 
 Version 0.1.1. Each button downloads one zip file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
 
+![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
+
 ## Install
 
 ### Windows (10 and 11) — three steps
