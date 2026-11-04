@@ -4,6 +4,18 @@
 
 **New here? Read the user manual: [docs/USER-MANUAL.md](docs/USER-MANUAL.md)**
 
+## Download the app
+
+Get Annotshot from the **Releases page**, not from the green **Code** button — that button downloads the source code, not the app.
+
+Latest release **0.1.1** — click the one for your system; the zip lands in your **Downloads** folder:
+
+- **Windows:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-windows.zip
+- **macOS:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-macos.zip
+- **Linux:** https://github.com/Bill-Viking/annotshot/releases/download/v0.1.1/Annotshot-0.1.1-linux.zip
+
+Then follow the install walk for your system below.
+
 Annotshot is a Windows screenshot app with PowerPoint-style editing. Capture a region or a window, then edit it like a slide: text boxes with their own text color and background fill, arrows, shapes, highlights, crop and undo. Copy the image or save a PNG in one click, and save the project to keep editing later.
 
 ![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
@@ -19,7 +31,7 @@ for your system. `<version>` below is that release's number, for example
 
 ### Windows (10 and 11)
 
-1. On the [Releases page](../../releases), under **Assets**, click
+1. On the [Releases page](../../releases) (or the Download links above), under **Assets**, click
    `Annotshot-<version>-windows.zip`. It lands in your **Downloads** folder.
 2. Open **Downloads**, right-click `Annotshot-<version>-windows.zip` and choose
    **Extract All…**, then click **Extract**. A folder with the same name opens.
@@ -36,12 +48,23 @@ You should see: a window titled Annotshot — Untitled
 1. On the [Releases page](../../releases), under **Assets**, click
    `Annotshot-<version>-macos.zip`. It lands in your **Downloads** folder.
 2. Open **Downloads** and double-click `Annotshot-<version>-macos.zip`.
-   `Annotshot.app` appears beside it.
+   `Annotshot.app` appears beside it (a blue A icon). If you see a folder named
+   `annotshot-main` instead, you downloaded the source code from the green
+   **Code** button — go back to the Releases link above.
 3. Drag `Annotshot.app` into your **Applications** folder, then double-click it.
 4. Annotshot is not signed by Apple yet. If macOS says it cannot check the app,
    click **Done**, open **System Settings → Privacy & Security**, scroll down
    and click **Open Anyway** next to Annotshot, then **Open**.
-5. The first time you click **Capture**, macOS asks to let Annotshot record
+5. If macOS instead says **“Annotshot” is damaged and can’t be opened**, that is
+   the missing signature, not real damage. Open **Terminal** (press ⌘-Space,
+   type Terminal, press Return) and paste this one line, then press Return and
+   open the app again:
+
+   ```
+   xattr -cr /Applications/Annotshot.app
+   ```
+
+6. The first time you click **Capture**, macOS asks to let Annotshot record
    your screen: say yes. If the capture shows only your desktop background and
    no windows, open **System Settings → Privacy & Security → Screen & System
    Audio Recording**, switch Annotshot on, then quit Annotshot and open it again.
@@ -50,7 +73,7 @@ You should see: a window titled Annotshot — Untitled
 
 ### Linux
 
-1. On the [Releases page](../../releases), under **Assets**, click
+1. On the [Releases page](../../releases) (or the Download links above), under **Assets**, click
    `Annotshot-<version>-linux.zip`. It lands in your **Downloads** folder.
 2. Unzip it (right-click → **Extract Here**, or `unzip Annotshot-<version>-linux.zip`).
    A folder named `Annotshot` appears.

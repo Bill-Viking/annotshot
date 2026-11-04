@@ -10,6 +10,8 @@ This is a first version. It does one job: capture, mark up, copy or save. It has
 
 ## Install and start
 
+Always download from the repository's Releases page — the green Code button gives the source code, not the app.
+
 **Windows (10 and 11)**
 
 1. Download `Annotshot-<version>-windows.zip`.
@@ -20,10 +22,16 @@ Annotshot is not signed yet, so Windows may show "Windows protected your PC" the
 
 **macOS**
 
-1. Download `Annotshot-<version>-macos.zip` and double-click it. You get `Annotshot.app`.
+1. Download `Annotshot-<version>-macos.zip`, open **Downloads** and double-click it. `Annotshot.app` appears beside it (a blue A icon). If you see a folder named `annotshot-main` instead, you downloaded the source code from the green **Code** button — go back to the Releases page.
 2. Move `Annotshot.app` to your Applications folder and open it.
 3. Annotshot is not signed by Apple yet. If macOS says it cannot check the app, open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Annotshot.
-4. The first time you click **Capture**, macOS asks to let Annotshot record your screen. Say yes. If the capture shows only your desktop background and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, then quit Annotshot and open it again.
+4. If macOS instead says **“Annotshot” is damaged and can’t be opened**, that is the missing signature, not real damage. Open **Terminal** (press ⌘-Space, type Terminal, press Return) and paste this one line, then press Return and open the app again:
+
+   ```
+   xattr -cr /Applications/Annotshot.app
+   ```
+
+5. The first time you click **Capture**, macOS asks to let Annotshot record your screen. Say yes. If the capture shows only your desktop background and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, then quit Annotshot and open it again.
 
 **Linux**
 
