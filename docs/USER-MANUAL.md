@@ -20,19 +20,17 @@ Download the app from the repository's Releases page — the three download butt
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
-### macOS — three steps
+### macOS — four steps
 
 1. **Download:** click **Download for macOS** above. `Annotshot-0.1.1-macos.zip` appears in your Downloads folder.
 2. **Unzip and move:** open Downloads and double-click `Annotshot-0.1.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
-3. **Start it:** open **Applications** and double-click **Annotshot**. The first time, macOS shows one of two messages:
-   - **"Annotshot" cannot be opened because the developer cannot be verified** → click **Done**, open **System Settings → Privacy & Security**, scroll down to the line about Annotshot and click **Open Anyway**, then **Open**.
-   - **"Annotshot" is damaged and can't be opened** → it is not damaged; the app is not signed by Apple yet. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste the line below, press Return, then double-click Annotshot again:
+3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
-     ```
-     xattr -cr /Applications/Annotshot.app
-     ```
+   ```
+   xattr -cr /Applications/Annotshot.app
+   ```
 
-   The first time you click **Capture**, macOS asks to let Annotshot record your screen — click **Allow**. If a capture shows only your wallpaper and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, quit Annotshot and start it again.
+4. **Start it:** open **Applications** and double-click **Annotshot**. The first time you click **Capture**, macOS asks to let Annotshot record your screen — click **Allow**. If a capture shows only your wallpaper and no windows, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Annotshot on, quit Annotshot and start it again.
 
 ### Linux — three steps
 
