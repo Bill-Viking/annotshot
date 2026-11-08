@@ -36,7 +36,7 @@ def _add(path: Path) -> str | None:
 
 
 def load_bundled(folder: Path | None = None) -> list[str]:
-    """Add the carried fonts to Qt's font database (once per file); returns
+    """Add the bundled fonts to Qt's font database (once per file); returns
     the families that are in it. A missing or broken file is skipped: the
     Font box then simply has no bundled entry. Needs a QGuiApplication."""
     folder = folder or font_folder()
@@ -49,7 +49,7 @@ def load_bundled(folder: Path | None = None) -> list[str]:
 
 
 def bundled_families() -> list[str]:
-    """The carried families that are loaded now, in BUNDLED's order."""
+    """The bundled families that are loaded now, in BUNDLED's order."""
     return [_loaded[name] for name, _f, _t in BUNDLED if name in _loaded]
 
 
@@ -61,7 +61,7 @@ def tooltip(family: str) -> str | None:
 
 
 def check_fonts(folder: Path | None = None) -> list[str]:
-    """For --check: every carried font is in `folder` and loads under its
+    """For --check: every bundled font is in `folder` and loads under its
     own family name (read from the file itself, never from the cache);
     raises naming the first one that does not."""
     folder = folder or font_folder()

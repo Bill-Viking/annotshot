@@ -110,7 +110,7 @@ class Document(QGraphicsScene):
         self.path: str | None = None
         # The autosave's bookkeeping: every change to the stack (a push, an
         # undo, a redo, a merge) counts one; `written` is the count the
-        # last write carried (-1 after a failed one).
+        # last write done (-1 after a failed one).
         self.changes = 0
         self.written = 0
         self.base = QImage()
@@ -304,7 +304,7 @@ class Document(QGraphicsScene):
         return json.dumps(self.to_dict(), indent=1), QImage(self.base)
 
     def needs_write(self) -> bool:
-        """True when a change has not been carried by a write yet."""
+        """True when a change has not reached the disk by a write yet."""
         return self.changes != self.written
 
     def write(self, path) -> None:
