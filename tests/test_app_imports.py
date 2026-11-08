@@ -87,7 +87,7 @@ def test_properties_bar_follows_the_selection(window):
     t.set_geom((10, 10, 200, 50))
     r.set_geom((300, 10, 80, 80))
     doc.add_items([t, r])
-    assert window.sel_heading.text() == "Nothing selected"
+    assert window.sel_heading.text() == "Text defaults"
     doc.select_only([r])
     assert window.c_border.isEnabled() and not window.f_font.isEnabled()
     assert not window.c_text.isEnabled()
@@ -111,14 +111,15 @@ def test_properties_bar_follows_the_selection(window):
     assert t.props["opacity"] == 1.0 and doc.undo_stack.index() == count - 1
 
 
-def test_the_property_strip_is_two_labelled_rows(window):
+def test_the_property_strip_has_two_rows_and_a_hidden_line_row(window):
     """The strip under the tools: row 1 what is selected, Font, Size, Style,
     Align; row 2 Text (its color), Fill + No fill, Border + No border, Width,
     Opacity. Each label names the control beside it."""
     from PySide6.QtWidgets import QLabel, QVBoxLayout
     strip = window.prop_strip
     rows = strip.layout()
-    assert isinstance(rows, QVBoxLayout) and rows.count() == 2
+    assert isinstance(rows, QVBoxLayout) and rows.count() == 3
+    assert window.prop_row3.isHidden()
     labels = {lab.text(): lab.buddy() for lab in strip.findChildren(QLabel)
               if lab.objectName() == "fieldLabel"}
     assert labels == {
@@ -772,7 +773,7 @@ def test_the_font_box_shows_the_selection_or_the_default(window):
 
 def test_a_font_picked_with_nothing_selected_is_the_next_text_boxs(window):
     """Picking VT323 (and a size, bold) with nothing selected changes no item
-    and no undo step; the next text box starts in them, this session."""
+    and no undo step; the next text box starts in them, across launches."""
     from annotshot.items import TextBoxItem
     from annotshot.tools import Tool
     doc = window.doc

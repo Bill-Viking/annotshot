@@ -1,6 +1,6 @@
 # Annotshot user manual
 
-Wednesday 2026-11-04 · for Annotshot 0.3.0
+Sunday 2026-11-08 · for Annotshot 0.3.1
 
 ## What Annotshot is
 
@@ -20,8 +20,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.3.0-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.3.0-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
+1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.3.1-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -30,8 +30,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The zip — three steps
 
-1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.3.0-windows.zip`. It appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.3.0-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.3.0-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.3.1-windows.zip`. It appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.3.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.3.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
@@ -42,8 +42,8 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.3.0-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.3.0-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.3.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -54,8 +54,8 @@ The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.3.0-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.3.0-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.3.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -123,7 +123,9 @@ After you draw one object (or crop), Annotshot switches back to **Select** by it
 
 ### Row 3: the property strip
 
-The strip starts with what is selected: "Nothing selected", "Text box", "Callout", "Rectangle", "Ellipse", "Arrow", "Highlight", "Pen stroke", or "3 objects". Each control changes every selected object at once. A control is greyed out when the selection has no such property. **Line** shows only while an arrow, rectangle, ellipse or pen stroke is selected, and **Head**, **Head size** and **Both ends** only while an arrow is.
+The strip starts with what is selected, or the tool whose defaults you are changing. Each control changes every selected object at once. A control is greyed out when the selection or tool has no such property. Arrows and pens show their line controls on a third strip row; rectangles and ellipses keep Line style on the second row. **Head**, **Head size** and **Both ends** appear only for arrows.
+
+Every tool starts with the settings you used last, even after you close and reopen Annotshot. With nothing selected, the strip sets the active tool's starting values (Select and Crop show the text defaults). In Settings → Look, turn off **Start each tool with the settings I used last** to start from factory values, or click **Reset to factory settings** to clear the saved tool values.
 
 ## The tools
 
@@ -150,8 +152,8 @@ While you are drawing with any tool, a right-click cancels that drawing.
 | **Text** | The color of the letters only (it was called "Text color" before). | Text box, callout |
 | **Fill** | The background color inside the shape. Changing it never changes the text color. | Text box, callout, rectangle, ellipse, highlight (color only) |
 | **No fill** | Makes the inside see-through. | Text box, callout, rectangle, ellipse |
-| **Border** | The outline color. For an arrow or pen stroke, this is the line color. | Text box, callout, rectangle, ellipse, arrow, pen stroke |
-| **No border** | Removes the outline. For an arrow or pen stroke it makes the line invisible, so use it with care. | Same as Border |
+| **Border** ( **Line** for arrows and pens) | The outline or line color. | Text box, callout, rectangle, ellipse, arrow, pen stroke |
+| **No border** | Removes the outline; hidden for arrows and pens. | Text box, callout, rectangle, ellipse |
 | **Width** | How thick the outline or line is, in pixels (0 to 40). | Same as Border |
 | **Line** | Solid, Dashed or Dotted. | Rectangle, ellipse, arrow, pen stroke |
 | **Opacity** | How see-through the whole object is, from 0% (invisible) to 100% (solid). | Every object |

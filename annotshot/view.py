@@ -9,15 +9,17 @@ capture shows sharp and unscaled on a scaled display. Zoom is view-only.
 """
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QGuiApplication, QPainter,
                            QPainterPath, QPen, QTransform)
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView, QMenu
 
 from . import theme
-from .items import BaseItem
+from .items import BaseItem, ITEM_TYPES
 from .scene import CANVAS_COLOR, Document
-from .tools import (MIN_DRAG, TYPING_TOOLS, Tool, click_geom, drag_geom,
+from .tools import (ITEM_FOR_TOOL, MIN_DRAG, TYPING_TOOLS, Tool, click_geom, drag_geom,
                     make_item)
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.05, 16.0, 1.25
@@ -42,8 +44,9 @@ def fade_color() -> QColor:
 class EditorView(QGraphicsView):
     zoomChanged = Signal(float)
     toolDone = Signal()          # a create/crop tool finished: back to Select
+    toolChanged = Signal()
 
-    def __init__(self, doc: Document, parent=None):
+    def __init__(self, doc: Document, parent=None, settings=None):
         super().__init__(parent)
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -55,15 +58,101 @@ class EditorView(QGraphicsView):
         self._preview = None
         self._before: dict | None = None
         self._fit_pending = True
-        # The text style a new text box starts in, picked in the strip with
-        # nothing selected (this session only; empty = the item's defaults).
-        self.new_text_props: dict = {}
+        self.settings = settings
+        self.remember_props = self._remember_enabled()
+        self.tool_defaults: dict[str, dict] = {}
+        self.load_tool_defaults()
         # callable(on_item: bool) -> the menu's QActions, None = separator
         self.menu_actions = None
         self._menu_blocked = False       # a right-click that cancelled a drag
         self.doc = doc
         self.set_document(doc)
         self.set_tool(Tool.SELECT)
+
+    # -- starting styles --------------------------------------------------
+    @staticmethod
+    def factory_style(kind: str) -> dict:
+        """Only style: never the previous object's text or geometry."""
+        return {k: v for k, v in ITEM_TYPES[kind].DEFAULTS.items()
+                if k not in ("text", "padding")}
+
+    def _remember_enabled(self) -> bool:
+        value = self.settings.value("props/remember", True) \
+            if self.settings is not None else True
+        return str(value).lower() not in ("false", "0")
+
+    @staticmethod
+    def _style_value(item, key, value):
+        """ASSUMES: saved settings can be hand edited; reject bad values."""
+        if key in ("font_px", "border_width", "stroke_width", "opacity"):
+            number = float(value)
+            lo, hi = (6, 400) if key == "font_px" else \
+                (0, 1) if key == "opacity" else (0, 40)
+            if not math.isfinite(number) or not lo <= number <= hi:
+                raise ValueError("style value out of range")
+        if key in ("bold", "italic", "both_ends"):
+            if str(value).lower() not in ("true", "false", "1", "0"):
+                raise ValueError("not a boolean")
+            value = str(value).lower() in ("true", "1")
+        if key == "align" and value not in ("left", "center", "right"):
+            raise ValueError("not an alignment")
+        if key == "font_family" and (not isinstance(value, str) or not value.strip()):
+            raise ValueError("not a font family")
+        return item.normalize(key, value)
+
+    def load_tool_defaults(self) -> None:
+        """Read only when remembering is on; loading never writes settings."""
+        self.tool_defaults = {kind: self.factory_style(kind) for kind in ITEM_TYPES}
+        if not self.remember_props or self.settings is None:
+            return
+        for kind, style in self.tool_defaults.items():
+            item = ITEM_TYPES[kind]()
+            for key in style:
+                value = self.settings.value(f"props/{kind}/{key}", None)
+                if value is not None:
+                    try:
+                        style[key] = self._style_value(item, key, value)
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+
+    def starting_style(self, kind: str) -> dict:
+        return dict(self.tool_defaults[kind] if self.remember_props
+                    else self.factory_style(kind))
+
+    def defaults_item(self) -> BaseItem:
+        """The active tool's strip target; Select and Crop use text."""
+        cls = ITEM_FOR_TOOL.get(self.tool, ITEM_TYPES["text"])
+        item = cls()
+        item.apply_props(self.starting_style(item.KIND))
+        return item
+
+    def remember_style(self, item: BaseItem, keys) -> None:
+        if not self.remember_props:
+            return
+        style = self.tool_defaults[item.KIND]
+        for control_key in keys:
+            key = item.key_for(control_key)
+            if key in style:
+                value = self._style_value(item, key, item.props[key])
+                style[key] = value
+                if self.settings is not None:
+                    self.settings.setValue(f"props/{item.KIND}/{key}", value)
+        if self.settings is not None:
+            self.settings.sync()
+
+    def set_remember_props(self, on: bool) -> None:
+        self.remember_props = bool(on)
+        if self.settings is not None:
+            self.settings.setValue("props/remember", bool(on))
+            self.settings.sync()
+        self.load_tool_defaults()
+
+    def reset_tool_defaults(self) -> None:
+        if self.settings is not None:
+            for kind in ITEM_TYPES:
+                self.settings.remove(f"props/{kind}")
+            self.settings.sync()
+        self.tool_defaults = {kind: self.factory_style(kind) for kind in ITEM_TYPES}
 
     # -- document / zoom --------------------------------------------------
     def set_document(self, doc: Document) -> None:
@@ -186,6 +275,7 @@ class EditorView(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag if select
                          else QGraphicsView.NoDrag)
         self.viewport().setCursor(Qt.ArrowCursor if select else Qt.CrossCursor)
+        self.toolChanged.emit()
 
     def _scene_pos(self, event) -> QPointF:
         return self.mapToScene(event.position().toPoint())
@@ -204,8 +294,7 @@ class EditorView(QGraphicsView):
             item.setZValue(1e9)
         else:
             item = make_item(self.tool)
-            if self.new_text_props and "font_family" in item.DEFAULTS:
-                item.apply_props(self.new_text_props)
+            item.apply_props(self.starting_style(item.KIND))
             if self.tool is Tool.PEN:
                 item.set_points([p])
             else:

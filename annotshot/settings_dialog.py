@@ -223,7 +223,19 @@ class SettingsDialog(QDialog):
                                   "applied at once")
         self.theme_box.currentIndexChanged.connect(self._theme_picked)
         form.addRow("Theme", self.theme_box)
+        self.remember_props = QCheckBox(
+            "Start each tool with the settings I used last", page)
+        self.remember_props.setChecked(self.window_.view.remember_props)
+        self.remember_props.toggled.connect(self.window_.set_remember_props)
+        form.addRow(self.remember_props)
+        self.reset_props = QPushButton("Reset to factory settings", page)
+        self.reset_props.clicked.connect(self._reset_props)
+        form.addRow(self.reset_props)
         return page
+
+    def _reset_props(self) -> None:
+        self.window_.reset_tool_defaults()
+        self.say("Reset")
 
     def _theme_picked(self, index: int) -> None:
         self.window_.set_theme(self.theme_box.itemData(index))

@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
 
 from . import hotkey, macos
 from .capture import CaptureSession
-from .items import HighlightItem, TextBoxItem, without_alpha
+from .items import HighlightItem, without_alpha
 from .office import OFFICE_FORMATS, export
 from . import recent, theme, typefaces
 from .scene import Document
@@ -104,9 +104,6 @@ HOTKEY_NAME = "Capture from anywhere"
 # with the stroke ICON_INK; each state gets its own ink, rendered at several
 # scales so they stay sharp at 125 / 150 / 200 %.
 ICON_DIR = Path(__file__).resolve().parent / "icons"
-# The strip's text controls that, with nothing selected, show and set the
-# style the next text box starts in.
-NEW_TEXT_KEYS = ("font_family", "font_px", "bold", "italic")
 ICON_PX = 20                      # logical px
 ICON_INK = "#334454"              # the stroke the SVG files are drawn with
 INK_CHECKED = "#086DBE"
@@ -464,7 +461,7 @@ class MainWindow(QMainWindow):
         self._slider_session = 0
         self._refreshing = False
         self._marks: dict = {}          # the heading's kind marks
-        self.view = EditorView(self.doc, self)
+        self.view = EditorView(self.doc, self, settings=self.settings)
         self.setCentralWidget(self.view)
         self._build_actions()
         self._apply_saved_shortcuts()
@@ -472,6 +469,7 @@ class MainWindow(QMainWindow):
         self.hotkey.activated.connect(self.capture_from_anywhere)
         self._build_toolbar()
         self._build_props_bar()
+        self.view.toolChanged.connect(self.refresh_props)
         self.zoom_label, self.size_label = QLabel(), QLabel()
         bar = self.statusBar()
         bar.addPermanentWidget(self.size_label)
@@ -861,10 +859,7 @@ class MainWindow(QMainWindow):
         return s
 
     def _build_props_bar(self) -> None:
-        """Row 3, the property strip: two labelled rows under the tools --
-        what is selected, the text's font, size, style and alignment; then
-        text color, fill, border, width and opacity. A control is enabled
-        when the selection has its property (refresh_props)."""
+        """The property strip, with an extra row for arrow and pen lines."""
         self._key_widgets: dict[str, list] = {}
         bar = QToolBar("Properties", self)
         bar.setObjectName("properties")
@@ -971,7 +966,7 @@ class MainWindow(QMainWindow):
         rows.setContentsMargins(8, 2, 8, 2)
         rows.setSpacing(0)
 
-        def row(height: int, *parts) -> None:
+        def row(height: int, *parts) -> QWidget:
             w = QWidget(strip)
             w.setMinimumHeight(height)
             h = QHBoxLayout(w)
@@ -981,6 +976,7 @@ class MainWindow(QMainWindow):
                 h.addWidget(part)
             h.addStretch(1)
             rows.addWidget(w)
+            return w
 
         row(36,
             self._group(None, self.sel_mark, self.sel_heading, gap=6),
@@ -990,18 +986,26 @@ class MainWindow(QMainWindow):
             self._divider(),
             self._group("Style", self._segment(self.b_bold, self.b_italic)),
             self._group("Align", self._segment(*self.align_buttons.values())))
-        row(36,
+        self.border_group = self._group("Border", self.c_border, self.b_noborder)
+        self.border_label = self.border_group.findChild(QLabel, "fieldLabel")
+        self.line_group = self._group("Line", self.cb_line)
+        # Shapes keep Line style on row 2, so they still need only two rows.
+        self.shape_line_slot = QWidget(strip)
+        shape_line = QHBoxLayout(self.shape_line_slot)
+        shape_line.setContentsMargins(0, 0, 0, 0)
+        self.prop_row2 = row(36,
             self._group("Text", self.c_text),
             self._divider(),
             self._group("Fill", self.c_fill, self.b_nofill),
             self._divider(),
-            self._group("Border", self.c_border, self.b_noborder),
+            self.border_group,
             self._group("Width", self.s_width),
-            *self._shown_with("line_style",
-                              self._group("Line", self.cb_line)),
+            self.shape_line_slot,
             self._divider(),
             self._group("Opacity", self.sl_opacity, self.opacity_label,
-                        gap=6),
+                        gap=6))
+        self.prop_row3 = row(36,
+            *self._shown_with("line_style", self.line_group),
             *self._shown_with("head", self._divider(),
                               self._group("Head", self.cb_head),
                               self._group("Head size", self.cb_head_size),
@@ -1029,6 +1033,7 @@ class MainWindow(QMainWindow):
         sideways.rangeChanged.connect(fit_height)
         fit_height()
         self.prop_strip = strip
+        self._fit_props_height = fit_height
         bar.addWidget(scroll)
 
         self._controls = {
@@ -1172,14 +1177,13 @@ class MainWindow(QMainWindow):
                                and self.doc.undo_stack.needs_save())
 
     def refresh_props(self) -> None:
-        """Enable the controls the selection has; show the first item's values."""
+        """Show the selection's style, or the active tool's starting style."""
         items = self.doc.selected()
         self._show_selection(items)
+        targets = items or [self.view.defaults_item()]
 
         def first(key):
-            if not items and key in NEW_TEXT_KEYS:  # what the next text box gets
-                return self.new_text_style()[key]
-            for it in items:
+            for it in targets:
                 k = it.key_for(key)
                 if k is not None:
                     return it.props[k]
@@ -1192,7 +1196,14 @@ class MainWindow(QMainWindow):
             # A highlight's fill alpha is fixed: "No fill" does nothing to it.
             self.b_nofill.setEnabled(any(
                 it.key_for("fill_color") is not None
-                and not isinstance(it, HighlightItem) for it in items))
+                and not isinstance(it, HighlightItem) for it in targets))
+            line = any(it.KIND in ("arrow", "pen") for it in targets)
+            self.border_label.setText("Line" if line else "Border")
+            self.c_border.setAccessibleName("Line" if line else "Border")
+            self.c_border._title = "Line color" if line else "Border color"
+            self.c_border.setToolTip(self.c_border._title)
+            self.s_width.setToolTip("Line width" if line else "Border width")
+            self.b_noborder.setVisible(not line)
             for button, key in ((self.c_text, "text_color"),
                                 (self.c_fill, "fill_color"),
                                 (self.c_border, "border_color")):
@@ -1217,6 +1228,19 @@ class MainWindow(QMainWindow):
                     box.setCurrentIndex(max(0, box.findData(first(key))))
             self.ch_both.setChecked(bool(first("both_ends")))
             self._show_key_widgets(first)
+            destination = self.prop_row3 if line else self.shape_line_slot
+            if self.line_group.parentWidget() is not destination:
+                self.line_group.parentWidget().layout().removeWidget(self.line_group)
+                destination.layout().insertWidget(0, self.line_group)
+            self.line_group.setVisible(first("line_style") is not None)
+            self.shape_line_slot.setVisible(not line and first("line_style") is not None)
+            self.prop_row3.setVisible(
+                (line and first("line_style") is not None)
+                or first("head") is not None)
+            self.prop_row2.layout().invalidate()
+            self.prop_row3.layout().invalidate()
+            self.prop_strip.layout().activate()
+            self._fit_props_height()
         finally:
             self._refreshing = False
 
@@ -1242,10 +1266,14 @@ class MainWindow(QMainWindow):
             text = "Text box" if item.KIND == "text" else item.LABEL
             kind = KIND_ICONS.get(item.KIND, "select")
         else:
-            text = f"{len(items)} objects" if items else "Nothing selected"
-            kind = "select"
+            if items:
+                text, kind = f"{len(items)} objects", "select"
+            else:
+                target = self.view.defaults_item()
+                text = f"{target.LABEL} defaults"
+                kind = KIND_ICONS.get(target.KIND, "select")
         self.sel_heading.setText(text)
-        self.sel_heading.setEnabled(bool(items))
+        self.sel_heading.setEnabled(True)
         dpr = self.devicePixelRatioF()
         if (kind, dpr) not in self._marks:
             self._marks[kind, dpr] = themed_icon(kind, size=13,
@@ -1265,23 +1293,35 @@ class MainWindow(QMainWindow):
             self._new_slider_session()
 
     def new_text_style(self) -> dict:
-        """The font, size, bold and italic the next text box starts in."""
-        return {**{k: TextBoxItem.DEFAULTS[k] for k in NEW_TEXT_KEYS},
-                **self.view.new_text_props}
+        """The text kind's own starting style (kept separate from callouts)."""
+        return self.view.starting_style("text")
+
+    def set_remember_props(self, on: bool) -> None:
+        self.view.set_remember_props(on)
+        self.refresh_props()
+
+    def reset_tool_defaults(self) -> None:
+        self.view.reset_tool_defaults()
+        self.refresh_props()
 
     def _set(self, props: dict, text: str, merge_key=None) -> None:
-        if not self._refreshing and not self.doc.selected():
-            # Nothing selected: a font, size or style picked in the strip is
-            # what the next text box starts in, this session.
-            picked = {k: v for k, v in props.items() if k in NEW_TEXT_KEYS}
-            if picked:
-                self.view.new_text_props.update(picked)
-                self.refresh_props()
+        if self._refreshing:
             return
-        if not self._refreshing:
-            if not self.doc.set_props(self.doc.selected(), props, text,
-                                      merge_key):
-                self.refresh_props()     # e.g. a highlight's forced alpha
+        items = self.doc.selected()
+        if items:
+            self.doc.set_props(items, props, text, merge_key)
+        else:
+            items = [self.view.defaults_item()]
+            item = items[0]
+            picked = {}
+            for control_key, value in props.items():
+                key = item.key_for(control_key)
+                if key is not None:
+                    picked[key] = value(item, key) if callable(value) else value
+            item.apply_props(picked)
+        for item in items:
+            self.view.remember_style(item, props)
+        self.refresh_props()
 
     def menu_actions(self, on_item: bool) -> list:
         """The right-click menu, top to bottom (None = a separator): the
