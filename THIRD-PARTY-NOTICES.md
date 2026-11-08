@@ -36,6 +36,14 @@ same Qt and PySide6 version, compatible with the interface, and Annotshot will
 use them. To rebuild Annotshot against another Qt, see "How to build" in
 `README.md`; all of Annotshot's source is in this repository.
 
+## The pixel font
+
+Annotshot carries one font, **VT323** (`annotshot/fonts/VT323-Regular.ttf`),
+unmodified: Copyright 2011, The VT323 Project Authors (Peter Hull). It is
+licensed under the **SIL Open Font License, Version 1.1**; the licence text
+travels with it in `packaging/licenses/OFL-VT323.txt` (`licenses/OFL-VT323.txt`
+inside the app). Source: <https://github.com/google/fonts/tree/main/ofl/vt323>
+
 ## The Word and PowerPoint libraries
 
 Saving to Word and PowerPoint uses these Python packages, unmodified. The

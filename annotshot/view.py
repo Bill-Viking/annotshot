@@ -1,20 +1,42 @@
 """EditorView: shows a Document, runs the tools (drag to create, a freehand
 pen stroke, crop), turns
-each select-tool drag into ONE undo step, and zooms with Ctrl+wheel.
+each select-tool drag into ONE undo step, zooms with Ctrl+wheel, and shows
+the right-click menu (its actions come from the window, through
+`menu_actions`, so the view never imports the window).
 
 Zoom 1.0 ("100 %") means one image pixel per physical screen pixel, so a
 capture shows sharp and unscaled on a scaled display. Zoom is view-only.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QTransform
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFont, QGuiApplication, QPainter,
+                           QPainterPath, QPen, QTransform)
+from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView, QMenu
 
-from .scene import Document
-from .tools import MIN_DRAG, Tool, click_geom, drag_geom, make_item
+from . import theme
+from .items import BaseItem
+from .scene import CANVAS_COLOR, Document
+from .tools import (MIN_DRAG, TYPING_TOOLS, Tool, click_geom, drag_geom,
+                    make_item)
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.05, 16.0, 1.25
+EMPTY_HINT = ("No picture yet",
+              "Click Capture (Ctrl+N) to take a screenshot, or Open… a saved file")
+HINT_INK = QColor("#7D8994")         # Light's; the theme's "hint" token
+# Beyond the picture (after a crop) shapes are kept and still editable, but
+# drawn faded: the canvas surround laid over them at about 65 %, so they show
+# at about 35 %. The saved picture never has them (it is the picture rect).
+FADE_ALPHA = 166
+FADE = QColor(CANVAS_COLOR)
+FADE.setAlpha(FADE_ALPHA)
+
+
+def fade_color() -> QColor:
+    """The fade in the current theme: its canvas colour at FADE_ALPHA."""
+    c = theme.color("canvas")
+    c.setAlpha(FADE_ALPHA)
+    return c
 
 
 class EditorView(QGraphicsView):
@@ -33,6 +55,12 @@ class EditorView(QGraphicsView):
         self._preview = None
         self._before: dict | None = None
         self._fit_pending = True
+        # The text style a new text box starts in, picked in the strip with
+        # nothing selected (this session only; empty = the item's defaults).
+        self.new_text_props: dict = {}
+        # callable(on_item: bool) -> the menu's QActions, None = separator
+        self.menu_actions = None
+        self._menu_blocked = False       # a right-click that cancelled a drag
         self.doc = doc
         self.set_document(doc)
         self.set_tool(Tool.SELECT)
@@ -88,6 +116,57 @@ class EditorView(QGraphicsView):
         if self._fit_pending:
             self.zoom_to_fit_or_100()
 
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+        super().drawForeground(painter, rect)
+        self._fade_beyond_picture(painter, rect)
+        if self.doc.is_placeholder:
+            self._draw_empty_hint(painter)
+
+    def _fade_beyond_picture(self, painter: QPainter, rect: QRectF) -> None:
+        """Lay the fade over everything outside the picture, then draw the
+        selection frames and handles again above it, so a shape half out
+        of the picture is faded there but its handles are not."""
+        picture = self.doc.sceneRect()
+        if picture.contains(rect):
+            return
+        outside = QPainterPath()
+        outside.addRect(rect)
+        inside = QPainterPath()
+        inside.addRect(picture)
+        painter.save()
+        painter.fillPath(outside.subtracted(inside), fade_color())
+        for item in self.doc.selected():
+            if picture.contains(item.sceneBoundingRect()):
+                continue
+            painter.save()
+            painter.setTransform(item.sceneTransform(), True)
+            item.paint_selection(painter)
+            painter.restore()
+        painter.restore()
+
+    def _draw_empty_hint(self, painter: QPainter) -> None:
+        """The start-up blank: two centred lines in the viewport, at the same
+        size whatever the zoom."""
+        painter.save()
+        painter.resetTransform()
+        box = QRectF(self.viewport().rect())
+        title, line = EMPTY_HINT
+        big = QFont(self.font())
+        scale = theme.ui_scale()        # Retro's pixel font needs the size
+        big.setPixelSize(round(20 * scale))
+        big.setBold(True)
+        small = QFont(self.font())
+        small.setPixelSize(round(14 * scale))
+        painter.setPen(theme.color("hint"))
+        mid = box.center().y()
+        painter.setFont(big)
+        painter.drawText(QRectF(box.left(), mid - 34, box.width(), 30),
+                         Qt.AlignHCenter | Qt.AlignBottom, title)
+        painter.setFont(small)
+        painter.drawText(QRectF(box.left(), mid + 2, box.width(), 24),
+                         Qt.AlignHCenter | Qt.AlignTop, line)
+        painter.restore()
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             steps = event.angleDelta().y() / 120.0
@@ -125,6 +204,8 @@ class EditorView(QGraphicsView):
             item.setZValue(1e9)
         else:
             item = make_item(self.tool)
+            if self.new_text_props and "font_family" in item.DEFAULTS:
+                item.apply_props(self.new_text_props)
             if self.tool is Tool.PEN:
                 item.set_points([p])
             else:
@@ -169,7 +250,7 @@ class EditorView(QGraphicsView):
         self.toolDone.emit()
         if item is not None:
             self.doc.select_only([item])
-            if tool is Tool.TEXT:
+            if tool in TYPING_TOOLS:
                 item.start_edit()
 
     # -- mouse ------------------------------------------------------------
@@ -180,10 +261,13 @@ class EditorView(QGraphicsView):
                 self._before = {i: i.geom() for i in self.doc.selected()}
             return
         if event.button() == Qt.LeftButton:
+            self._menu_blocked = False
             p = self._scene_pos(event)
             self._press = (event.position(), p)
             self._start_preview(p)
         elif event.button() == Qt.RightButton:
+            if self._press is not None:  # cancels the drag, shows no menu
+                self._menu_blocked = True
             self._cancel_preview()
         event.accept()
 
@@ -205,6 +289,48 @@ class EditorView(QGraphicsView):
             v0, p0 = self._press
             dragged = (event.position() - v0).manhattanLength() >= MIN_DRAG
             self._finish_tool(dragged, p0, self._scene_pos(event))
+        event.accept()
+
+    # -- right-click menu ---------------------------------------------------
+    def item_at(self, pos: QPoint):
+        """The annotation item under the viewport point, or None."""
+        for it in self.items(pos):
+            while it is not None and not isinstance(it, BaseItem):
+                it = it.parentItem()
+            if it is not None:
+                return it
+        return None
+
+    def context_menu_at(self, pos: QPoint) -> QMenu | None:
+        """The menu for a right-click at the viewport point; None while a
+        drag is under way (a right-click then only cancels it). An item
+        under the point is selected first and adds the item actions."""
+        if self._menu_blocked:
+            self._menu_blocked = False
+            return None
+        if (self._press is not None or self.menu_actions is None
+                or QGuiApplication.mouseButtons() & Qt.LeftButton):
+            return None
+        item = self.item_at(pos)
+        if item is not None and not item.isSelected():
+            self.doc.select_only([item])
+        menu = QMenu(self)
+        for action in self.menu_actions(item is not None):
+            if action is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(action)
+        return menu
+
+    def contextMenuEvent(self, event):
+        item = self.item_at(event.pos())
+        if item is not None and item is self.doc.editing_item:
+            super().contextMenuEvent(event)   # the text box's own menu
+            return
+        menu = self.context_menu_at(event.pos())
+        if menu is not None:
+            menu.exec(event.globalPos())
+            menu.deleteLater()
         event.accept()
 
     def mouseDoubleClickEvent(self, event):

@@ -3,8 +3,14 @@ dimmed copy of each screen where the user drags a region or clicks a
 window. Esc or a right-click cancels.
 
 Mapping on a screen with scale s (image px per logical px, = its dpr):
-overlay-local logical (x, y) -> image pixel (x*s, y*s) -> physical screen
-point monitor.topLeft + (x*s, y*s).
+overlay-local logical (x, y) -> image pixel ((x, y) + offset) * s ->
+physical screen point monitor.topLeft + that pixel. The offset is where the
+overlay really sits on its screen (overlay top-left - screen top-left): a
+window the OS places below the menu bar still picks the right pixels.
+
+The overlay is an ordinary top-most window the size of the screen, never
+native full screen (on macOS that slides a new Space in). On macOS,
+annotshot.macos lifts it above the menu bar on every Space.
 
 On Windows a click picks the window under the mouse (annotshot.win32). On
 macOS and Linux there is no window list: a drag captures a region and a
@@ -25,6 +31,10 @@ if IS_WINDOWS:
     from . import win32
 else:                                    # region capture only
     win32 = None
+from . import macos
+
+HINT_WINDOWS = "Drag to capture an area · click a window · Esc to cancel"
+HINT_OTHER = "Drag to capture an area · click for the whole screen · Esc to cancel"
 
 DIM = QColor(0, 0, 0, 102)          # 40 % dim over the frozen screen
 FRAME = QColor("#E53935")
@@ -115,8 +125,15 @@ class CaptureOverlay(QWidget):
         self.setGeometry(grab.geometry)
 
     def show_on_screen(self) -> None:
+        # Never showFullScreen(): on macOS that is native full screen (a
+        # Space slides in and the window lands below the menu bar).
         self.setGeometry(self.grab.geometry)
-        self.showFullScreen()
+        self.show()
+        if macos.float_above_menu_bar(self):  # macOS only; False elsewhere
+            # macOS first shows the window 20 px short of the screen on each
+            # side (measured 2540×1420 on a 2560×1440 display); once the
+            # window floats above the menu bar the full geometry sticks.
+            self.setGeometry(self.grab.geometry)
         self.raise_()
         self.activateWindow()
         self.setFocus()
@@ -125,16 +142,22 @@ class CaptureOverlay(QWidget):
             self._set_hover(local)
 
     # -- mapping ----------------------------------------------------------
+    def offset(self) -> QPoint:
+        """Where the overlay sits on its screen, in logical px (0, 0 when
+        the OS put it exactly on the screen)."""
+        return self.geometry().topLeft() - self.grab.geometry.topLeft()
+
     def to_device(self, p: QPointF) -> QPoint:
-        s = self.grab.scale
-        return QPoint(round(p.x() * s), round(p.y() * s))
+        s, o = self.grab.scale, self.offset()
+        return QPoint(round((p.x() + o.x()) * s), round((p.y() + o.y()) * s))
 
     def to_physical(self, p: QPointF) -> QPoint:
         return self.grab.phys.topLeft() + self.to_device(p)
 
     def to_local(self, r: QRect) -> QRectF:
-        s = self.grab.scale
-        return QRectF(r.x() / s, r.y() / s, r.width() / s, r.height() / s)
+        s, o = self.grab.scale, self.offset()
+        return QRectF(r.x() / s - o.x(), r.y() / s - o.y(),
+                      r.width() / s, r.height() / s)
 
     def window_rect(self, w) -> QRect:
         """A window's bounds in this screen's image pixels, clipped."""
@@ -167,7 +190,8 @@ class CaptureOverlay(QWidget):
     # -- painting ---------------------------------------------------------
     def paintEvent(self, event):
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._pix)
+        o = self.offset()
+        p.drawPixmap(-o.x(), -o.y(), self._pix)
         p.fillRect(self.rect(), DIM)
         lit, label = None, ""
         if self._dragging():
@@ -183,6 +207,23 @@ class CaptureOverlay(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRect(target.adjusted(1, 1, -1, -1))
             self._draw_label(p, target, label)
+        self._draw_hint(p)
+
+    def hint(self) -> str:
+        return HINT_WINDOWS if IS_WINDOWS else HINT_OTHER
+
+    def _draw_hint(self, p: QPainter) -> None:
+        """The one line of help at the top centre, in the label's box."""
+        font = p.font()
+        font.setPixelSize(13)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+        text = self.hint()
+        w, h = fm.horizontalAdvance(text) + 20, fm.height() + 10
+        box = QRectF((self.width() - w) / 2, 12, w, h)
+        p.fillRect(box, QColor(20, 20, 20, 225))
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(box, Qt.AlignCenter, text)
 
     def _draw_label(self, p: QPainter, target: QRectF, text: str) -> None:
         font = p.font()

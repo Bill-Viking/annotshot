@@ -5,16 +5,18 @@ from enum import Enum
 
 from PySide6.QtCore import QPointF, QRectF
 
-from .items import (MIN_SIZE, ArrowItem, BaseItem, EllipseItem,
+from .items import (MIN_SIZE, ArrowItem, BaseItem, CalloutItem, EllipseItem,
                     HighlightItem, PenItem, RectItem, TextBoxItem)
 
 MIN_DRAG = 4                 # view px a press must travel to count as a drag
 TEXT_CLICK_SIZE = (300, 44)  # a text box made by a plain click
+CALLOUT_CLICK_SIZE = (220, 60)  # a callout made by a plain click
 
 
 class Tool(Enum):
     SELECT = "Select"
     TEXT = "Text"
+    CALLOUT = "Callout"
     RECT = "Rect"
     ELLIPSE = "Ellipse"
     ARROW = "Arrow"
@@ -24,7 +26,7 @@ class Tool(Enum):
 
 
 ITEM_FOR_TOOL: dict[Tool, type[BaseItem]] = {
-    Tool.TEXT: TextBoxItem, Tool.RECT: RectItem, Tool.ELLIPSE: EllipseItem,
+    Tool.TEXT: TextBoxItem, Tool.CALLOUT: CalloutItem, Tool.RECT: RectItem, Tool.ELLIPSE: EllipseItem,
     Tool.ARROW: ArrowItem, Tool.HIGHLIGHT: HighlightItem, Tool.PEN: PenItem}
 
 
@@ -49,7 +51,11 @@ def drag_geom(tool: Tool, p0: QPointF, p1: QPointF, final: bool = False):
 
 def click_geom(tool: Tool, p: QPointF):
     """Geometry for a plain click, or None when a click makes nothing."""
-    if tool is Tool.TEXT:
+    if tool in (Tool.TEXT, Tool.CALLOUT):
         p = snap(p)
-        return (p.x(), p.y(), *TEXT_CLICK_SIZE)
+        size = TEXT_CLICK_SIZE if tool is Tool.TEXT else CALLOUT_CLICK_SIZE
+        return (p.x(), p.y(), *size)
     return None
+
+# Tools whose new item starts in typing mode.
+TYPING_TOOLS = (Tool.TEXT, Tool.CALLOUT)

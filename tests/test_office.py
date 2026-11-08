@@ -290,23 +290,23 @@ def test_the_licence_check_counts_the_texts(tmp_path):
     from annotshot.__main__ import _check_licences
     lic = tmp_path / "licenses"
     lic.mkdir()
-    for n in ("LGPL-3.0.txt", "GPL-3.0.txt"):
+    for n in ("LGPL-3.0.txt", "GPL-3.0.txt", "OFL-VT323.txt"):
         (lic / n).write_text("text", encoding="utf-8")
-    assert _check_licences(tmp_path) == 2
+    assert _check_licences(tmp_path) == 3
     (tmp_path / "LICENSE").write_text("mit", encoding="utf-8")
     meta = tmp_path / "lxml-6.1.3.dist-info" / "licenses"
     meta.mkdir(parents=True)
     (meta / "LICENSE.txt").write_text("bsd", encoding="utf-8")
     (meta.parent / "METADATA").write_text("m", encoding="utf-8")
-    assert _check_licences(tmp_path) == 4
+    assert _check_licences(tmp_path) == 5
 
 
-@pytest.mark.parametrize("missing", ["LGPL-3.0.txt", "GPL-3.0.txt"])
+@pytest.mark.parametrize("missing", ["LGPL-3.0.txt", "GPL-3.0.txt", "OFL-VT323.txt"])
 def test_the_licence_check_fails_naming_the_missing_text(tmp_path, missing):
     from annotshot.__main__ import _check_licences
     lic = tmp_path / "licenses"
     lic.mkdir()
-    for n in ("LGPL-3.0.txt", "GPL-3.0.txt"):
+    for n in ("LGPL-3.0.txt", "GPL-3.0.txt", "OFL-VT323.txt"):
         if n != missing:
             (lic / n).write_text("text", encoding="utf-8")
     with pytest.raises(RuntimeError, match=f"licenses/{missing}"):

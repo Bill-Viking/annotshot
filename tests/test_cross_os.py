@@ -89,11 +89,14 @@ def _run(*args):
 def test_check_entry_prints_ok():
     done = _run("--check")
     assert done.returncode == 0, done.stdout + done.stderr
-    assert done.stdout.strip().splitlines() == [
-        "office export OK", f"Annotshot {annotshot.__version__} OK"]
-    assert annotshot.__version__ == "0.2.0"
+    lines = done.stdout.strip().splitlines()
+    assert lines[0] == "office export OK"
+    assert lines[1].startswith("manual OK (") and lines[1].endswith(" lines)")
+    assert lines[2] == "font OK (VT323)"
+    assert lines[3:] == [f"Annotshot {annotshot.__version__} OK"]
+    assert annotshot.__version__ == "0.3.0"
 
 
 def test_version_entry_prints_the_version():
     done = _run("--version")
-    assert done.returncode == 0 and done.stdout.strip() == "0.2.0"
+    assert done.returncode == 0 and done.stdout.strip() == "0.3.0"

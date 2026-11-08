@@ -186,10 +186,13 @@ def test_front_and_back_reorder_z(qapp, white):
 # -- check 5 ---------------------------------------------------------------
 def test_defaults(qapp):
     assert RectItem().props == {"stroke_color": "#E53935", "stroke_width": 3,
-                                "fill_color": "#00FFFFFF", "opacity": 1.0}
+                                "fill_color": "#00FFFFFF", "opacity": 1.0,
+                                "line_style": "solid"}
     assert EllipseItem().props == RectItem().props
     assert ArrowItem().props == {"stroke_color": "#E53935", "stroke_width": 4,
-                                 "opacity": 1.0}
+                                 "opacity": 1.0, "head": "filled",
+                                 "head_size": "medium", "both_ends": False,
+                                 "line_style": "solid"}
     hl = QColor(HighlightItem().props["fill_color"])
     assert (hl.red(), hl.green(), hl.blue()) == (255, 255, 0)
     assert abs(hl.alphaF() - 0.45) < 0.01
@@ -297,7 +300,7 @@ def test_pen_from_points_has_a_box_and_defaults(qapp, white):
     assert pts(pen) == [(float(x), float(y)) for x, y in PEN_POINTS]
     assert pen.geom() == (100, 100, 100, 80)          # the points' box
     assert pen.props == {"stroke_color": "#E53935", "stroke_width": 4,
-                         "opacity": 1.0}
+                         "opacity": 1.0, "line_style": "solid"}
     assert pen.key_for("border_color") == "stroke_color"
     assert pen.key_for("border_width") == "stroke_width"
     assert pen.key_for("fill_color") is None and pen.LABEL == "Pen stroke"
@@ -376,3 +379,146 @@ def test_pen_stroke_renders_round_and_smooth(qapp, white):
     assert px(img, 46, 200) == (0, 0, 255)            # the round cap
     assert px(img, 150, 210) == (255, 255, 255)
     assert px(img, 40, 200) == (255, 255, 255)
+
+
+# -- arrows: head, head size, both ends (0.3.0 round 2) ---------------------
+def test_an_arrows_head_kinds_sizes_and_both_ends(qapp, white):
+    doc = Document(white)
+    a = add(doc, ArrowItem, (100, 180, 500, 180), stroke_width=4)
+    small = ArrowItem()
+    small.apply_props({"head_size": "small", "stroke_width": 4})
+    big = ArrowItem()
+    big.apply_props({"head_size": "large", "stroke_width": 4})
+    assert small._head_len() == 16                  # today's head
+    assert a._head_len() == pytest.approx(16 * 1.6)
+    assert big._head_len() == pytest.approx(16 * 2.4)
+    one = ArrowItem()
+    one.apply_props({"stroke_width": 1, "head_size": "small"})
+    assert one._head_len() >= 8                     # a 1 px arrow keeps a head
+    img = doc.render_image()
+    assert px(img, 495, 180)[0] > 150               # filled head at p2
+    assert px(img, 103, 180)[0] > 150               # the line reaches p1
+    assert px(img, 100 + 5, 180 + 10) == (255, 255, 255)
+    doc.set_props([a], {"both_ends": True})
+    img = doc.render_image()
+    assert near(px(img, 118, 186), (229, 57, 53), 60)   # a head at p1 too
+    assert a.boundingRect().contains(a.p1 - QPointF(4, 12))
+    assert a.body_shape().contains(QPointF(18, 6))
+    doc.set_props([a], {"head": "open"})
+    img = doc.render_image()
+    # open: the head's two strokes, not a filled triangle
+    assert px(img, 480, 186) == (255, 255, 255)     # hollow inside
+    assert px(img, 480, 190)[0] > 150 and px(img, 498, 180)[0] > 150
+    doc.set_props([a], {"head": "none"})
+    assert a._heads()[2] == []
+    img = doc.render_image()
+    assert px(img, 499, 180)[0] > 150 and px(img, 490, 186) == (255, 255, 255)
+
+
+def test_an_arrows_head_is_undone_and_saved(qapp, white, tmp_path):
+    doc = Document(white)
+    a = add(doc, ArrowItem, (10, 10, 200, 10))
+    doc.set_props([a], {"head": "open", "head_size": "large",
+                        "both_ends": True})
+    path = tmp_path / "a.annotshot"
+    doc.save(path)
+    back = Document.load(path).annotation_items()[0]
+    assert (back.props["head"], back.props["head_size"],
+            back.props["both_ends"]) == ("open", "large", True)
+    doc.undo_stack.undo()
+    assert (a.props["head"], a.props["head_size"], a.props["both_ends"]) == \
+        ("filled", "medium", False)
+
+
+def test_an_old_arrow_without_the_keys_loads_with_the_defaults(qapp):
+    old = {"type": "arrow", "z": 1, "p1": [0, 0], "p2": [50, 0],
+           "stroke_color": "#E53935", "stroke_width": 4, "opacity": 1.0}
+    a = ArrowItem.from_dict(old)
+    assert (a.props["head"], a.props["head_size"], a.props["both_ends"]) == \
+        ("filled", "medium", False)
+    bad = dict(old, head="spiky", head_size=7)     # a hand-edited file
+    a = ArrowItem.from_dict(bad)
+    assert (a.props["head"], a.props["head_size"]) == ("filled", "medium")
+
+
+def test_the_strip_shows_the_head_controls_only_for_an_arrow(qapp, white):
+    from annotshot.app import make_app
+    from annotshot.mainwindow import MainWindow
+    make_app()
+    w = MainWindow()
+    doc = Document(white)
+    w._bind(doc)
+    a = add(doc, ArrowItem, (10, 10, 200, 10))
+    r = add(doc, RectItem, (20, 40, 50, 50))
+    controls = w._key_widgets["head"]   # the divider, the two groups, the box
+    doc.select_only([r])
+    assert all(c.isHidden() for c in controls)
+    doc.select_only([a])
+    assert not any(c.isHidden() for c in controls)
+    assert w.cb_head.currentData() == "filled"
+    assert w.cb_head_size.currentData() == "medium"
+    w.cb_head.setCurrentIndex(w.cb_head.findData("open"))
+    w.cb_head_size.setCurrentIndex(w.cb_head_size.findData("large"))
+    w.ch_both.setChecked(True)
+    assert (a.props["head"], a.props["head_size"], a.props["both_ends"]) == \
+        ("open", "large", True)
+    w.undo()
+    assert a.props["both_ends"] is False and a.props["head_size"] == "large"
+    assert not w.ch_both.isChecked()
+    doc.clearSelection()
+    assert all(c.isHidden() for c in controls)
+    w.deleteLater()
+
+
+# -- line style on every stroked shape ---------------------------------------
+def runs(values) -> int:
+    """How many separate stretches of True a row of booleans has."""
+    return sum(1 for i, v in enumerate(values) if v and (i == 0 or not values[i - 1]))
+
+
+@pytest.mark.parametrize("width", [1, 3, 8])
+def test_dashed_and_dotted_borders_have_gaps(qapp, white, width):
+    doc = Document(white)
+    r = add(doc, RectItem, (40, 40, 400, 200), stroke_width=width,
+            stroke_color="#FF0000")
+    y = 40 + max(1, width) // 2            # the middle of the top edge
+    img = doc.render_image()
+    solid = [px(img, x, y)[1] < 150 for x in range(80, 380)]
+    assert runs(solid) == 1
+    doc.set_props([r], {"line_style": "dashed"})
+    img = doc.render_image()
+    dashed = [px(img, x, y)[1] < 150 for x in range(80, 380)]
+    doc.set_props([r], {"line_style": "dotted"})
+    img = doc.render_image()
+    dotted = [px(img, x, y)[1] < 150 for x in range(80, 380)]
+    assert runs(dashed) >= 300 // (max(4 * width, 6) + max(2.5 * width, 4)) - 1
+    assert runs(dotted) > runs(dashed) >= 4
+    assert not all(dotted) and any(dotted)
+
+
+def test_line_style_on_arrows_ellipses_and_pen_strokes(qapp, white, tmp_path):
+    doc = Document(white)
+    a = add(doc, ArrowItem, (40, 300, 600, 300), stroke_width=3)
+    e = add(doc, EllipseItem, (40, 40, 200, 100))
+    p = PenItem()
+    p.set_points([(300, 60), (400, 60), (500, 60)])
+    doc.add_items([p])
+    t = add(doc, TextBoxItem, (300, 150, 100, 40))
+    h = add(doc, HighlightItem, (300, 220, 100, 20))
+    assert t.key_for("line_style") is None and h.key_for("line_style") is None
+    doc.set_props([a, e, p, t, h], {"line_style": "dotted"})
+    assert all(i.props["line_style"] == "dotted" for i in (a, e, p))
+    img = doc.render_image()
+    line = [px(img, x, 300)[1] < 150 for x in range(60, 500)]
+    assert runs(line) >= 20
+    stroke = [px(img, x, 60)[1] < 150 for x in range(310, 490)]
+    assert runs(stroke) >= 10
+    path = tmp_path / "s.annotshot"
+    doc.save(path)
+    back = {i.KIND: i for i in Document.load(path).annotation_items()}
+    assert back["arrow"].props["line_style"] == "dotted"
+    assert back["pen"].props["line_style"] == "dotted"
+    doc.undo_stack.undo()
+    assert all(i.props["line_style"] == "solid" for i in (a, e, p))
+    old = {"type": "rect", "rect": [0, 0, 10, 10], "stroke_color": "#E53935"}
+    assert RectItem.from_dict(old).props["line_style"] == "solid"

@@ -40,6 +40,14 @@ datas += [
     (at("packaging", "licenses", "LGPL-3.0.txt"), "licenses"),
     (at("packaging", "licenses", "GPL-3.0.txt"), "licenses"),
 ]
+# The bundled pixel font (VT323, SIL Open Font License 1.1) and its licence,
+# which travels with it (the frozen --check looks for both).
+datas += [
+    (at("annotshot", "fonts", "VT323-Regular.ttf"), os.path.join("annotshot", "fonts")),
+    (at("packaging", "licenses", "OFL-VT323.txt"), "licenses"),
+]
+# The user manual Help shows (the frozen --check looks for it).
+datas += [(at("docs", "USER-MANUAL.md"), "docs")]
 # The project's own licence and the third-party notices sit at the bundle's
 # root when the repository has them (the public repository does; a copy
 # without them builds without them).

@@ -1,12 +1,13 @@
 """Annotation items: a shared base (selection frame, resize handles, to/from
-dict, clone) and the six kinds -- text box, rectangle, ellipse, arrow,
-highlight and pen stroke.
+dict, clone) and the seven kinds -- text box, callout, rectangle, ellipse,
+arrow, highlight and pen stroke.
 
 Geometry convention: one scene unit is one pixel of the captured image. A
 box item's scene top-left is its pos() and its local rect is always
 (0, 0, w, h); geom() returns (x, y, w, h) in scene units. An arrow's geom()
 is (x1, y1, x2, y2), its two endpoints in scene units. A pen stroke's geom()
 is its points' bounding box (x, y, w, h); its points are kept local to pos().
+A callout's geom() is its box then its pointer's tip: (x, y, w, h, tx, ty).
 """
 from __future__ import annotations
 
@@ -18,7 +19,9 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath,
                            QTextBlockFormat, QTextCursor, QTextOption)
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsTextItem
 
-SELECT_COLOR = QColor("#1E88E5")
+from . import theme
+
+SELECT_COLOR = QColor("#1E88E5")      # Light's; the theme's "select" token
 MIN_SIZE = 8.0            # smallest box a handle drag can make (scene px)
 DUPLICATE_OFFSET = 12.0
 HANDLE_VIEW_PX = 8.0      # handle size on screen, in logical view pixels
@@ -79,9 +82,28 @@ def resized_rect(r: QRectF, handle: int, p: QPointF,
     return QRectF(l, t, rt - l, b - t)
 
 
-def _pen(color: QColor, width: float) -> QPen:
-    pen = QPen(color, width)
+def _pen(color: QColor, width: float, style: str = "solid") -> QPen:
+    pen = styled_pen(color, width, style)
     pen.setJoinStyle(Qt.MiterJoin)
+    return pen
+
+
+LINE_STYLES = ("solid", "dashed", "dotted")
+
+
+def styled_pen(color: QColor, width: float, style: str = "solid") -> QPen:
+    """A pen of `width` drawn solid, dashed or dotted. The dashes are sized
+    in pixels and floored, so a 1 px dotted line stays dotted and a thick
+    one keeps clear gaps (Qt reads a dash pattern in pen widths). Dashed
+    and dotted pens end flat: a square or round cap would fill the gaps."""
+    pen = QPen(color, width)
+    if style in ("dashed", "dotted") and width > 0:
+        if style == "dashed":
+            dash, gap = max(4.0 * width, 6.0), max(2.5 * width, 4.0)
+        else:
+            dash, gap = max(width, 2.0), max(1.5 * width, 3.0)
+        pen.setDashPattern([dash / width, gap / width])
+        pen.setCapStyle(Qt.FlatCap)
     return pen
 
 
@@ -93,6 +115,7 @@ class BaseItem(QGraphicsItem):
     DEFAULTS: dict = {}
     COLOR_KEYS: tuple = ()
     ALIASES: dict = {}        # control key -> this kind's prop key
+    CHOICES: dict = {}        # prop key -> the values it may take
     SHOW_FRAME = True
 
     def __init__(self):
@@ -116,6 +139,10 @@ class BaseItem(QGraphicsItem):
         if key in self.COLOR_KEYS:
             return color_hex(value)
         default = self.DEFAULTS[key]
+        if key in self.CHOICES:
+            if value not in self.CHOICES[key]:
+                raise ValueError(f"{key} may not be {value!r}")
+            return value
         if key == "align":
             return value if value in ALIGNMENTS else "left"
         if isinstance(default, bool):
@@ -161,8 +188,12 @@ class BaseItem(QGraphicsItem):
         pass
 
     def scene_rect(self) -> QRectF:
-        x, y, w, h = self.geom()
+        x, y, w, h = self.geom()[:4]
         return QRectF(x, y, w, h)
+
+    def geom_moved(self, g, dx: float, dy: float) -> tuple:
+        """Geometry g translated by (dx, dy) -- what a plain move gives."""
+        return (g[0] + dx, g[1] + dy, *g[2:])
 
     def refresh_geometry(self) -> None:
         """Called when the view zoom changes the handle size."""
@@ -260,10 +291,10 @@ class BaseItem(QGraphicsItem):
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setBrush(Qt.NoBrush)
         if self.SHOW_FRAME:
-            p.setPen(QPen(SELECT_COLOR, 0, Qt.DashLine))
+            p.setPen(QPen(theme.color("select"), 0, Qt.DashLine))
             p.drawRect(self.rect)
-        p.setPen(QPen(SELECT_COLOR, 0))
-        p.setBrush(QColor("#FFFFFF"))
+        p.setPen(QPen(theme.color("select"), 0))
+        p.setBrush(theme.color("handle-fill"))
         for r in self.handle_rects():
             p.drawRect(r)
         p.restore()
@@ -383,7 +414,7 @@ class TextBoxItem(BaseItem):
     def drag_handle(self, handle: int, scene_pos: QPointF) -> None:
         r = resized_rect(self.scene_rect(), handle, scene_pos)
         self.set_geom(r.getRect())
-        x, y, w, h = self.geom()
+        x, y, w, h = self.geom()[:4]
         if handle in (0, 1, 2) and h > r.height():   # grew to fit: keep the bottom
             self.set_geom((x, r.bottom() - h, w, h))
 
@@ -486,11 +517,123 @@ class TextBoxItem(BaseItem):
             sc.commit_geometry({self: self._edit_geom})
 
 
+class CalloutItem(TextBoxItem):
+    """A speech bubble: a text box (the same text, font, colors and editing)
+    drawn as a rounded box joined to a pointer whose tip is a ninth handle.
+    The box and the pointer are one outline, filled and stroked once."""
+
+    KIND = "callout"
+    LABEL = "Callout"
+    _tip: QPointF | None = None    # local to pos(); None = the default spot
+
+    def tip_local(self) -> QPointF:
+        """The pointer's tip in local coordinates: where it was put, else
+        below and to the left of the box."""
+        if self._tip is not None:
+            return QPointF(self._tip)
+        r = self.rect
+        return QPointF(round(r.width() * 0.15) - 16, r.height() + 40)
+
+    # -- geometry ---------------------------------------------------------
+    def geom(self) -> tuple:
+        p = self.pos()
+        t = self.mapToScene(self.tip_local())
+        return (p.x() + self.rect.x(), p.y() + self.rect.y(),
+                self.rect.width(), self.rect.height(), t.x(), t.y())
+
+    def geom_moved(self, g, dx: float, dy: float) -> tuple:
+        return (g[0] + dx, g[1] + dy, g[2], g[3], g[4] + dx, g[5] + dy)
+
+    def set_geom(self, g) -> None:
+        """(x, y, w, h) sets the box and keeps a placed tip where it is on
+        the picture; (x, y, w, h, tx, ty) sets the tip too."""
+        g = [float(v) for v in g]
+        keep = QPointF(g[4], g[5]) if len(g) >= 6 else (
+            self.mapToScene(self._tip) if self._tip is not None else None)
+        super().set_geom(g[:4])
+        if keep is not None:
+            self.prepareGeometryChange()
+            self._tip = self.mapFromScene(QPointF(round(keep.x()),
+                                                  round(keep.y())))
+            self.update()
+
+    def geom_dict(self) -> dict:
+        g = self.geom()
+        return {"rect": [_num(v) for v in g[:4]],
+                "tip": [_num(g[4]), _num(g[5])]}
+
+    def geom_from_dict(self, d: dict) -> tuple:
+        if "tip" in d:
+            return (*d["rect"], *d["tip"])
+        return tuple(d["rect"])
+
+    # -- the tip handle ---------------------------------------------------
+    def handle_points(self) -> list[QPointF]:
+        return handle_points(self.rect) + [self.tip_local()]
+
+    def handle_cursor(self, handle: int):
+        return Qt.CrossCursor if handle == 8 else HANDLE_CURSORS[handle]
+
+    def drag_handle(self, handle: int, scene_pos: QPointF) -> None:
+        if handle != 8:
+            super().drag_handle(handle, scene_pos)
+            return
+        self.prepareGeometryChange()
+        self._tip = self.mapFromScene(QPointF(round(scene_pos.x()),
+                                              round(scene_pos.y())))
+        self.update()
+
+    # -- the outline ------------------------------------------------------
+    def bubble_path(self) -> QPainterPath:
+        """The rounded box united with the pointer (one path, no seam). The
+        pointer runs from the box's middle to the tip, so it leaves the box
+        on whichever side the tip is."""
+        r = self.rect
+        radius = max(0.0, min(10.0, r.width() / 4, r.height() / 4))
+        path = QPainterPath()
+        path.addRoundedRect(r, radius, radius)
+        tip = self.tip_local()
+        if r.contains(tip):
+            return path
+        c = r.center()
+        line = QLineF(c, tip)
+        length = line.length()
+        half = max(6.0, min(18.0, min(r.width(), r.height()) * 0.25))
+        ux, uy = line.dx() / length, line.dy() / length
+        pointer = QPainterPath()
+        pointer.addPolygon(QPolygonF([
+            QPointF(c.x() - uy * half, c.y() + ux * half), QPointF(tip),
+            QPointF(c.x() + uy * half, c.y() - ux * half)]))
+        pointer.closeSubpath()
+        return path.united(pointer).simplified()
+
+    def boundingRect(self) -> QRectF:
+        m = self._handle_size() + self._stroke_margin() + 2
+        r, t = self.rect, self.tip_local()       # (a point rect would not unite)
+        box = QRectF(QPointF(min(r.left(), t.x()), min(r.top(), t.y())),
+                     QPointF(max(r.right(), t.x()), max(r.bottom(), t.y())))
+        return box.adjusted(-m, -m, m, m)
+
+    def body_shape(self) -> QPainterPath:
+        return self.bubble_path()
+
+    def paint(self, p: QPainter, option, widget=None):
+        pr = self.props
+        fill = QColor(pr["fill_color"])
+        bw, bc = float(pr["border_width"]), QColor(pr["border_color"])
+        p.setPen(_pen(bc, bw) if bw > 0 and bc.alpha() else Qt.NoPen)
+        p.setBrush(fill if fill.alpha() else Qt.NoBrush)
+        p.drawPath(self.bubble_path())
+        self.paint_selection(p)
+
+
 class _ShapeItem(BaseItem):
     DEFAULTS = {"stroke_color": "#E53935", "stroke_width": 3,
-                "fill_color": "#00FFFFFF", "opacity": 1.0}
+                "fill_color": "#00FFFFFF", "opacity": 1.0,
+                "line_style": "solid"}
     COLOR_KEYS = ("stroke_color", "fill_color")
     ALIASES = {"border_color": "stroke_color", "border_width": "stroke_width"}
+    CHOICES = {"line_style": LINE_STYLES}
 
     def _stroke_margin(self) -> float:
         return float(self.props["stroke_width"])
@@ -502,7 +645,8 @@ class _ShapeItem(BaseItem):
         sw, sc = float(self.props["stroke_width"]), \
             QColor(self.props["stroke_color"])
         fill = QColor(self.props["fill_color"])
-        p.setPen(_pen(sc, sw) if sw > 0 and sc.alpha() else Qt.NoPen)
+        p.setPen(_pen(sc, sw, self.props["line_style"])
+                 if sw > 0 and sc.alpha() else Qt.NoPen)
         p.setBrush(fill if fill.alpha() else Qt.NoBrush)
         inset = sw / 2 if sw > 0 else 0
         self._draw(p, self.rect.adjusted(inset, inset, -inset, -inset))
@@ -555,14 +699,25 @@ class HighlightItem(BaseItem):
         self.paint_selection(p)
 
 
+HEAD_KINDS = ("filled", "open", "none")
+HEAD_SIZES = {"small": 1.0, "medium": 1.6, "large": 2.4}
+HEAD_FLOOR = 8.0          # a small head is never shorter than this (scene px)
+
+
 class ArrowItem(BaseItem):
-    """A line with a filled triangular head at p2; two endpoint handles."""
+    """A line with a head at p2 (and at p1 too with both_ends); two endpoint
+    handles. The head is filled, open (two strokes) or none, in three sizes
+    scaled from the line width."""
 
     KIND = "arrow"
     LABEL = "Arrow"
-    DEFAULTS = {"stroke_color": "#E53935", "stroke_width": 4, "opacity": 1.0}
+    DEFAULTS = {"stroke_color": "#E53935", "stroke_width": 4, "opacity": 1.0,
+                "head": "filled", "head_size": "medium", "both_ends": False,
+                "line_style": "solid"}
     COLOR_KEYS = ("stroke_color",)
     ALIASES = {"border_color": "stroke_color", "border_width": "stroke_width"}
+    CHOICES = {"head": HEAD_KINDS, "head_size": tuple(HEAD_SIZES),
+               "line_style": LINE_STYLES}
     SHOW_FRAME = False
 
     def __init__(self):
@@ -573,6 +728,9 @@ class ArrowItem(BaseItem):
     def geom(self) -> tuple:
         a, b = self.mapToScene(self.p1), self.mapToScene(self.p2)
         return (a.x(), a.y(), b.x(), b.y())
+
+    def geom_moved(self, g, dx: float, dy: float) -> tuple:
+        return (g[0] + dx, g[1] + dy, g[2] + dx, g[3] + dy)
 
     def set_geom(self, g) -> None:
         x1, y1, x2, y2 = (float(v) for v in g)
@@ -607,28 +765,46 @@ class ArrowItem(BaseItem):
             self.set_geom(g)
 
     def _head_len(self) -> float:
-        return 4.0 * float(self.props["stroke_width"])
+        """The head's length (and width): four line widths, never under
+        HEAD_FLOOR, times the size's factor; 0 with no head."""
+        if self.props["head"] == "none":
+            return 0.0
+        base = max(4.0 * float(self.props["stroke_width"]), HEAD_FLOOR)
+        return base * HEAD_SIZES.get(self.props["head_size"], 1.6)
 
     def _stroke_margin(self) -> float:
-        return self._head_len()
+        return max(self._head_len(), float(self.props["stroke_width"]))
 
     def boundingRect(self) -> QRectF:
         m = self._handle_size() + self._stroke_margin() + 2
         return QRectF(self.p1, self.p2).normalized().adjusted(-m, -m, m, m)
 
-    def _head(self) -> tuple[QPointF, QPolygonF]:
-        """The line's end (base of the head) and the head triangle."""
+    def _heads(self) -> tuple[QPointF, QPointF, list[QPolygonF]]:
+        """The line's two ends (where a filled head's base sits) and each
+        head as (side, tip, side) -- empty with no head."""
         line = QLineF(self.p1, self.p2)
         length = line.length()
-        if length < 1e-6:
-            return QPointF(self.p2), QPolygonF()
-        head = min(self._head_len(), length)
+        if length < 1e-6 or self._head_len() <= 0:
+            return QPointF(self.p1), QPointF(self.p2), []
+        both = bool(self.props["both_ends"])
+        head = min(self._head_len(), length / 2 if both else length)
         ux, uy = line.dx() / length, line.dy() / length
-        base = QPointF(self.p2.x() - ux * head, self.p2.y() - uy * head)
-        px, py = -uy * head / 2, ux * head / 2
-        tri = QPolygonF([QPointF(self.p2), QPointF(base.x() + px, base.y() + py),
-                         QPointF(base.x() - px, base.y() - py)])
-        return base, tri
+
+        def at(tip: QPointF, sx: float, sy: float):
+            base = QPointF(tip.x() - sx * head, tip.y() - sy * head)
+            px, py = -sy * head / 2, sx * head / 2
+            return base, QPolygonF([QPointF(base.x() + px, base.y() + py),
+                                    QPointF(tip),
+                                    QPointF(base.x() - px, base.y() - py)])
+
+        end2, tri2 = at(self.p2, ux, uy)
+        heads, end1 = [tri2], QPointF(self.p1)
+        if both:
+            end1, tri1 = at(self.p1, -ux, -uy)
+            heads.append(tri1)
+        if self.props["head"] == "open":          # the line runs to the tips
+            return QPointF(self.p1), QPointF(self.p2), heads
+        return end1, end2, heads
 
     def body_shape(self) -> QPainterPath:
         path = QPainterPath(self.p1)
@@ -636,21 +812,32 @@ class ArrowItem(BaseItem):
         stroker = QPainterPathStroker()
         stroker.setWidth(max(10.0, float(self.props["stroke_width"]) + 6))
         out = stroker.createStroke(path)
-        out.addPolygon(self._head()[1])
-        return out
+        for tri in self._heads()[2]:
+            out.addPolygon(tri)
+        return out.simplified()
 
     def paint(self, p: QPainter, option, widget=None):
         color = QColor(self.props["stroke_color"])
         width = float(self.props["stroke_width"])
-        base, tri = self._head()
+        a, b, heads = self._heads()
         if width > 0:
-            pen = QPen(color, width)
+            pen = styled_pen(color, width, self.props["line_style"])
             pen.setCapStyle(Qt.FlatCap)
             p.setPen(pen)
-            p.drawLine(QLineF(self.p1, base))
-            p.setPen(Qt.NoPen)
-            p.setBrush(color)
-            p.drawPolygon(tri)
+            p.drawLine(QLineF(a, b))
+            if self.props["head"] == "open":
+                head_pen = QPen(color, width)
+                head_pen.setCapStyle(Qt.RoundCap)
+                head_pen.setJoinStyle(Qt.MiterJoin)
+                p.setPen(head_pen)
+                p.setBrush(Qt.NoBrush)
+                for tri in heads:
+                    p.drawPolyline(tri)
+            else:
+                p.setPen(Qt.NoPen)
+                p.setBrush(color)
+                for tri in heads:
+                    p.drawPolygon(tri)
         self.paint_selection(p)
 
 
@@ -662,9 +849,11 @@ class PenItem(BaseItem):
 
     KIND = "pen"
     LABEL = "Pen stroke"
-    DEFAULTS = {"stroke_color": "#E53935", "stroke_width": 4, "opacity": 1.0}
+    DEFAULTS = {"stroke_color": "#E53935", "stroke_width": 4, "opacity": 1.0,
+                "line_style": "solid"}
     COLOR_KEYS = ("stroke_color",)
     ALIASES = {"border_color": "stroke_color", "border_width": "stroke_width"}
+    CHOICES = {"line_style": LINE_STYLES}
 
     def __init__(self):
         super().__init__()
@@ -768,8 +957,9 @@ class PenItem(BaseItem):
         color = QColor(self.props["stroke_color"])
         width = float(self.props["stroke_width"])
         if width > 0 and color.alpha() and self.points:
-            pen = QPen(color, width)
-            pen.setCapStyle(Qt.RoundCap)
+            pen = styled_pen(color, width, self.props["line_style"])
+            if self.props["line_style"] == "solid":
+                pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
@@ -778,8 +968,8 @@ class PenItem(BaseItem):
 
 
 ITEM_TYPES: dict[str, type[BaseItem]] = {
-    cls.KIND: cls for cls in (TextBoxItem, RectItem, EllipseItem,
-                              ArrowItem, HighlightItem, PenItem)}
+    cls.KIND: cls for cls in (TextBoxItem, CalloutItem, RectItem,
+                              EllipseItem, ArrowItem, HighlightItem, PenItem)}
 
 
 def item_from_dict(d: dict) -> BaseItem:

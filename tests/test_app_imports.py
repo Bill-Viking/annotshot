@@ -11,7 +11,9 @@ from PySide6.QtWidgets import QApplication
 
 # annotshot.__main__ is left out on purpose: importing it starts the app.
 MODULES = ["annotshot", "annotshot.app", "annotshot.items", "annotshot.commands", "annotshot.scene", "annotshot.view",
-           "annotshot.tools", "annotshot.capture", "annotshot.mainwindow"]
+           "annotshot.tools", "annotshot.capture", "annotshot.mainwindow",
+           "annotshot.macos", "annotshot.hotkey",
+           "annotshot.settings_dialog", "annotshot.help"]
 if sys.platform == "win32":                 # the Win32 helpers: Windows only
     MODULES.append("annotshot.win32")
 
@@ -35,9 +37,10 @@ def window(qapp):
 def test_main_window_builds_without_showing(window):
     assert not window.isVisible()
     texts = [a.text() for a in window.findChildren(type(window.a_copy))]
-    for t in ("Capture", "Open…", "Save…", "Copy image", "Undo", "Redo",
-              "Select", "Text", "Rect", "Ellipse", "Arrow", "Highlight",
-              "Pen", "Crop", "Duplicate", "Front", "Back", "Delete"):
+    for t in ("Capture", "Open…", "Save…", "Copy image", "Clear", "Undo",
+              "Redo",
+              "Select", "Text", "Callout", "Rect", "Ellipse", "Arrow",
+              "Highlight", "Pen", "Crop", "Duplicate", "Front", "Back", "Delete"):
         assert t in texts
     assert window.a_copy.shortcut().toString() == "Ctrl+C"
     assert window.windowTitle() == "Annotshot — Untitled[*]"
@@ -124,7 +127,9 @@ def test_the_property_strip_is_two_labelled_rows(window):
         "Align": window.align_buttons["left"].parentWidget(),
         "Text": window.c_text, "Fill": window.c_fill,
         "Border": window.c_border, "Width": window.s_width,
-        "Opacity": window.sl_opacity}
+        "Opacity": window.sl_opacity, "Line": window.cb_line,
+        "Head": window.cb_head,
+        "Head size": window.cb_head_size}
     assert window.b_nofill.toolTip() == "No fill"
     assert window.b_noborder.toolTip() == "No border"
     assert window.b_nofill.text() == "" and not window.b_nofill.icon().isNull()
@@ -334,11 +339,11 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     bars = {b.objectName(): b for b in window.findChildren(QToolBar)}
     assert set(bars) == {"main", "tools", "properties"}
     assert toolbar_texts(bars["main"]) == [
-        "Capture", "Open…", "Save…", "Copy image", "<>", "|", "Undo",
-        "Redo"]
+        "Capture", "Open…", "Save…", "Copy image", "Clear", "<>", "|",
+        "Undo", "Redo", "Settings…"]
     assert toolbar_texts(bars["tools"]) == [
-        "Select", "Text", "Rect", "Ellipse", "Arrow", "Highlight", "Pen",
-        "Crop", "<>", "Duplicate", "Front", "Back", "Delete"]
+        "Select", "Text", "Callout", "Rect", "Ellipse", "Arrow", "Highlight",
+        "Pen", "Crop", "<>", "Duplicate", "Front", "Back", "Delete"]
     (strip_action,) = bars["properties"].actions()  # the strip, one widget
     assert isinstance(bars["properties"].widgetForAction(strip_action),
                       QScrollArea)
@@ -357,7 +362,8 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     # tooltip, and keep their shortcuts.
     assert main.toolButtonStyle() == Qt.ToolButtonTextBesideIcon
     assert window.a_open.iconText() == "Open…"
-    icon_only = {"Undo", "Redo", "Duplicate", "Front", "Back", "Delete"}
+    icon_only = {"Undo", "Redo", "Settings…", "Duplicate", "Front", "Back",
+                 "Delete"}
     for name in ("main", "tools"):
         bar = bars[name]
         for a in bar.actions():
@@ -391,24 +397,75 @@ def laid_out(window, width, height):
     QApplication.processEvents()
 
 
-def test_nothing_hides_behind_the_overflow_at_900_px(window):
-    """At 900 x 600 logical, rows 1 and 2 show every button: no » button,
-    and the buttons' widths add up to less than the row. The strip's rows
-    fit too, so it needs no sideways scroll bar."""
+def assert_rows_fit(window, width=900):
+    """Rows 1 and 2 show every button at `width` logical px: no » button,
+    every action's widget visible, each row's size hint within the row."""
     from PySide6.QtWidgets import QToolBar, QToolButton
-    laid_out(window, 900, 600)
+    laid_out(window, width, 600)
     for name in ("main", "tools"):
         bar = window.findChild(QToolBar, name)
-        assert bar.width() == 900
+        assert bar.width() == width
         ext = bar.findChild(QToolButton, "qt_toolbar_ext_button")
         assert ext is not None and not ext.isVisibleTo(window), name
         for a in bar.actions():
             w = bar.widgetForAction(a)
             if w is not None and not a.isSeparator():
                 assert w.isVisibleTo(window), (name, a.text())
-        assert bar.sizeHint().width() <= 900, (name, bar.sizeHint())
+        assert bar.sizeHint().width() <= width, (name, bar.sizeHint())
+
+
+# The CI's widest font is Linux's DejaVu Sans. Measured on the Mac (DejaVu
+# loaded from a file, 12 px): the tool labels draw 1.014 x the Mac face's
+# width and the tools row grew 888 -> 907 px. A machine without DejaVu
+# stands in for it with the app's own face 1.18 x bigger (12 -> 14 px,
+# 13 -> 15 px), about three times DejaVu's extra width: a 1.014 scale
+# rounds back to the same whole pixel size and would test nothing.
+WIDE_FONT_RATIO = 1.18
+
+
+def test_nothing_hides_behind_the_overflow_at_900_px(window):
+    """At 900 x 600 logical, rows 1 and 2 show every button: no » button,
+    and the buttons' widths add up to less than the row. The strip's rows
+    fit too, so it needs no sideways scroll bar. On the Mac the tools row
+    leaves 60 px spare, so a Mac-green run means a Linux-green run."""
+    from PySide6.QtWidgets import QToolBar
+    assert_rows_fit(window, 900)
+    if sys.platform == "darwin":
+        tools = window.findChild(QToolBar, "tools")
+        assert tools.sizeHint().width() <= 900 - 60, tools.sizeHint()
     strip = window.prop_strip
     assert strip.sizeHint().width() <= 900
+
+
+def test_nothing_hides_behind_the_overflow_on_a_wide_font(qapp, monkeypatch):
+    """The opposite case: the rows are sized for the widest CI font. With
+    DejaVu Sans (Linux's face) when the machine has it, else the app's face
+    scaled by WIDE_FONT_RATIO, rows 1 and 2 still fit 900 px."""
+    from PySide6.QtGui import QFontDatabase
+    from annotshot import theme
+    from annotshot.app import make_app
+    from annotshot.mainwindow import MainWindow
+    app = make_app()
+    family, ui_px, small_px = theme.FONTS[theme.DEFAULT]
+    if "DejaVu Sans" in QFontDatabase.families():
+        wide = ("DejaVu Sans", ui_px, small_px)
+    else:
+        wide = (family, round(ui_px * WIDE_FONT_RATIO),
+                round(small_px * WIDE_FONT_RATIO))
+    monkeypatch.setitem(theme.FONTS, theme.DEFAULT, wide)
+    theme._filled.clear()
+    theme.apply(app, theme.DEFAULT)
+    w = None
+    try:
+        w = MainWindow()
+        w.view.resize(900, 600)
+        assert_rows_fit(w, 900)
+    finally:
+        if w is not None:
+            w.deleteLater()
+        monkeypatch.undo()
+        theme._filled.clear()
+        theme.apply(app, theme.DEFAULT)
 
 
 def test_the_window_is_moderate_not_maximized(window):
@@ -482,7 +539,7 @@ def test_toolbar_actions_have_icons_and_labels(window):
             assert any(img.pixelColor(x, y).alpha() > 0
                        for x in range(img.width())
                        for y in range(img.height())), a.text()
-    assert len(seen) == 18 and set(seen) == set(TOOLBAR_ICONS)
+    assert len(seen) == 21 and set(seen) == set(TOOLBAR_ICONS)
     for key, b in window.align_buttons.items():
         assert (ICON_DIR / f"{ALIGN_ICONS[key]}.svg").is_file()
         assert not b.icon().isNull()
@@ -596,7 +653,8 @@ def test_the_save_actions_say_what_they_keep(window):
     assert window.a_save.text() == "Save…"
     assert [k.toString() for k in window.a_save.shortcuts()] == \
         ["Ctrl+S", "Ctrl+Shift+S"]
-    assert window.a_save.toolTip().startswith("Save the picture")
+    assert window.a_save.toolTip().startswith(
+        "Save a copy of this capture as a picture or an editable file")
     assert not hasattr(window, "a_png")
     assert not hasattr(window, "save_screenshot")
     assert not hasattr(window, "save_project")
@@ -668,3 +726,68 @@ def test_the_fill_picker_starts_opaque_after_no_fill(window, monkeypatch):
     assert QColor(t.props["fill_color"]).alpha() == 255
     assert QColor(t.props["fill_color"]).name() == "#0080ff"
     assert window.c_fill.text() != "None"
+
+
+def _default_family_shown(window):
+    """The name the Font box gives the default family: Qt's resolution of
+    it on this machine when that family is in the list, else its own name."""
+    from PySide6.QtGui import QFont, QFontInfo
+    from annotshot.items import TextBoxItem
+    family = TextBoxItem.DEFAULTS["font_family"]
+    resolved = QFontInfo(QFont(family)).family()
+    box = window.f_font
+    if box.findText(family, Qt.MatchFixedString) >= 0:
+        return family
+    if box.findText(resolved, Qt.MatchFixedString) >= 0:
+        return resolved
+    return family
+
+
+def test_the_font_box_shows_the_selection_or_the_default(window):
+    """Nothing selected: the box names the family the next text box gets,
+    never VT323 unless picked. A selection: its own family. Size, bold and
+    italic follow the same rule."""
+    from annotshot.items import TextBoxItem
+    doc = window.doc
+    default = _default_family_shown(window)
+    window.refresh_props()
+    assert window.f_font.currentText() == default != "VT323"
+    assert window.f_font.isEnabled() and window.s_size.isEnabled()
+    assert window.s_size.value() == TextBoxItem.DEFAULTS["font_px"]
+    assert not window.b_bold.isChecked() and not window.b_italic.isChecked()
+    pixel, plain = TextBoxItem(), TextBoxItem()
+    pixel.set_geom((10, 10, 200, 50))
+    plain.set_geom((10, 100, 200, 50))
+    pixel.apply_props({"font_family": "VT323", "font_px": 40, "bold": True})
+    doc.add_items([pixel, plain])
+    doc.select_only([pixel])
+    assert window.f_font.currentText() == "VT323"
+    assert window.s_size.value() == 40 and window.b_bold.isChecked()
+    doc.select_only([plain])
+    assert window.f_font.currentText() == default
+    assert window.s_size.value() == 24 and not window.b_bold.isChecked()
+    doc.select_only([])
+    assert window.f_font.currentText() == default
+
+
+def test_a_font_picked_with_nothing_selected_is_the_next_text_boxs(window):
+    """Picking VT323 (and a size, bold) with nothing selected changes no item
+    and no undo step; the next text box starts in them, this session."""
+    from annotshot.items import TextBoxItem
+    from annotshot.tools import Tool
+    doc = window.doc
+    doc.select_only([])
+    window.f_font.setCurrentIndex(0)                # VT323, nothing selected
+    window.s_size.setValue(36)
+    window.b_bold.setChecked(True)
+    assert doc.undo_stack.count() == 0
+    assert window.f_font.currentText() == "VT323"
+    view = window.view
+    window.tool_actions[Tool.TEXT].trigger()
+    QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier,
+                     QPoint(100, 100))
+    new = doc.annotation_items()
+    assert len(new) == 1 and isinstance(new[0], TextBoxItem)
+    assert new[0].props["font_family"] == "VT323"
+    assert new[0].props["font_px"] == 36 and new[0].props["bold"] is True
+    assert window.f_font.currentText() == "VT323"   # it is selected now

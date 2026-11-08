@@ -18,13 +18,14 @@ from PySide6.QtWidgets import QGraphicsScene
 
 from .commands import (AddItems, ChangeProps, Crop, MoveResize, RemoveItems,
                        ZOrder)
-from .items import (DUPLICATE_OFFSET, HANDLE_VIEW_PX, ArrowItem, BaseItem,
-                    item_from_dict)
+from . import theme
+from .items import DUPLICATE_OFFSET, HANDLE_VIEW_PX, BaseItem, item_from_dict
 
 FORMAT = "annotshot"
 LEGACY_FORMATS = ("snagup",)       # files saved before the rename (same zip)
 FORMAT_VERSION = 1
-CANVAS_COLOR = QColor("#E9EDF2")    # the quiet grey around the picture
+CANVAS_COLOR = QColor("#E9EDF2")    # Light's quiet grey around the picture
+# (the surround follows the theme: theme.color("canvas"))
 
 
 def blank_image(w: int = 1280, h: int = 720) -> QImage:
@@ -36,8 +37,29 @@ def blank_image(w: int = 1280, h: int = 720) -> QImage:
 def _is_move(item, a: tuple, b: tuple) -> bool:
     """True when geometry b is geometry a translated (no resize)."""
     dx, dy = b[0] - a[0], b[1] - a[1]
-    expect = (dx, dy, dx, dy) if isinstance(item, ArrowItem) else (dx, dy, 0, 0)
-    return all(abs((b[i] - a[i]) - expect[i]) < 1e-9 for i in range(4))
+    moved = item.geom_moved(a, dx, dy)
+    return len(moved) == len(b) and all(abs(m - v) < 1e-9
+                                        for m, v in zip(moved, b))
+
+
+def write_project(path, meta_json: str, base: QImage) -> None:
+    """Write an editable file: project.json + base.png in a zip, through a
+    temporary file replaced at once, so a file is never half-written. Safe
+    on a worker thread (no scene object is touched)."""
+    path = str(path)
+    tmp = path + ".tmp"
+    try:
+        with zipfile.ZipFile(tmp, "w") as z:
+            z.writestr("project.json", meta_json,
+                       compress_type=zipfile.ZIP_DEFLATED)
+            z.writestr("base.png", png_bytes(base))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def png_bytes(img: QImage) -> bytes:
@@ -86,9 +108,24 @@ class Document(QGraphicsScene):
         self.handle_size = HANDLE_VIEW_PX
         self._editing_item = None
         self.path: str | None = None
+        # The autosave's bookkeeping: every change to the stack (a push, an
+        # undo, a redo, a merge) counts one; `written` is the count the
+        # last write carried (-1 after a failed one).
+        self.changes = 0
+        self.written = 0
         self.base = QImage()
-        self.set_base(base if base is not None and not base.isNull()
-                      else blank_image())
+        # The start-up blank (no capture, no file): the view shows a hint
+        # instead of a white page. Any capture or open makes a new Document
+        # from a real picture; the first edit clears it.
+        self.is_placeholder = base is None or base.isNull()
+        self.set_base(blank_image() if self.is_placeholder else base)
+        self.undo_stack.indexChanged.connect(self._edited)
+
+    def _edited(self, *_) -> None:
+        self.changes += 1
+        if self.is_placeholder:
+            self.is_placeholder = False
+            self.update()
 
     # -- base image -------------------------------------------------------
     def set_base(self, img: QImage) -> None:
@@ -99,8 +136,9 @@ class Document(QGraphicsScene):
         self.update()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        painter.fillRect(rect, CANVAS_COLOR)
-        painter.drawImage(QPointF(0, 0), self.base)
+        painter.fillRect(rect, theme.color("canvas"))   # the chrome, not the picture
+        if self.rendering or not self.is_placeholder:  # the export: white
+            painter.drawImage(QPointF(0, 0), self.base)
 
     # -- item queries -----------------------------------------------------
     def annotation_items(self) -> list[BaseItem]:
@@ -260,16 +298,25 @@ class Document(QGraphicsScene):
                 "size": [self.base.width(), self.base.height()],
                 "items": [i.to_dict() for i in self.annotation_items()]}
 
-    def save(self, path) -> None:
+    def snapshot(self) -> tuple[str, QImage]:
+        """What a write needs, taken on the UI thread: the project text and
+        the base (a shared copy; Qt copies it only if it changes)."""
+        return json.dumps(self.to_dict(), indent=1), QImage(self.base)
+
+    def needs_write(self) -> bool:
+        """True when a change has not been carried by a write yet."""
+        return self.changes != self.written
+
+    def write(self, path) -> None:
+        """Write the editable file at `path`; the document keeps its own
+        path (a copy, as Save… makes one)."""
         self.end_text_edit()
-        path = str(path)
-        tmp = path + ".tmp"
-        with zipfile.ZipFile(tmp, "w") as z:
-            z.writestr("project.json", json.dumps(self.to_dict(), indent=1),
-                       compress_type=zipfile.ZIP_DEFLATED)
-            z.writestr("base.png", png_bytes(self.base))
-        os.replace(tmp, path)
-        self.path = path
+        write_project(path, *self.snapshot())
+
+    def save(self, path) -> None:
+        self.write(path)
+        self.path = str(path)
+        self.written = self.changes
         self.undo_stack.setClean()
 
     @classmethod

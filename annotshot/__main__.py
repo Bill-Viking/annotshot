@@ -3,8 +3,10 @@
     --version   print the version and exit 0
     --check     headless self-check: build the QApplication and the main
                 window offscreen (never shown), save a small picture as Word
-                and PowerPoint and re-open both; a frozen app also finds its
-                licence texts; print "Annotshot <version> OK"
+                and PowerPoint and re-open both; find the user manual that
+                Help shows and the pixel font it carries; a frozen app
+                also finds its licence texts (the GNU texts and the OFL);
+                print "Annotshot <version> OK"
                 and exit 0; any exception is printed and exits 1
     <file>      an editable file (.annotshot) opens in the window
 """
@@ -59,12 +61,44 @@ def _check_office() -> None:
             raise RuntimeError("the PowerPoint export holds no picture")
 
 
-LICENCE_TEXTS = ("LGPL-3.0.txt", "GPL-3.0.txt")
+LICENCE_TEXTS = ("LGPL-3.0.txt", "GPL-3.0.txt", "OFL-VT323.txt")
+MANUAL = Path("docs") / "USER-MANUAL.md"
+
+
+def app_root() -> Path:
+    """Where the files the app carries sit: a frozen app's bundle folder
+    (PyInstaller's _MEIPASS, else the exe's folder), else the source tree.
+    ASSUMES: a frozen build lays its data files out from that root as
+    packaging/annotshot.spec says (licenses/, docs/, the notices)."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent.parent
+
+
+def licence_folder(root: Path) -> Path:
+    """The GNU texts: <root>/licenses in a build, packaging/licenses in the
+    source tree."""
+    built = root / "licenses"
+    return built if built.is_dir() else root / "packaging" / "licenses"
+
+
+def _check_manual(root: Path) -> int:
+    """The user manual Help shows must ride with the app. Returns its line
+    count; raises when it is missing or empty."""
+    path = root / MANUAL
+    if not path.is_file():
+        raise RuntimeError(f"the user manual {MANUAL.as_posix()} is missing "
+                           "from the app")
+    lines = len(path.read_text(encoding="utf-8").splitlines())
+    if not lines:
+        raise RuntimeError(f"the user manual {MANUAL.as_posix()} is empty")
+    return lines
 
 
 def _check_licences(root: Path) -> int:
-    """In a frozen app, the two GNU licence texts must sit in <root>/licenses
-    (the LGPL asks that Qt's licence text travel with it). Returns how many
+    """In a frozen app, the two GNU licence texts and the pixel font's SIL
+    Open Font License must sit in <root>/licenses (the LGPL asks that Qt's
+    licence text travel with it; the OFL that the font's does). Returns how many
     licence files the app carries; raises naming the first missing text."""
     folder = root / "licenses"
     for name in LICENCE_TEXTS:
@@ -98,9 +132,11 @@ def check() -> int:
         app.processEvents()
         _check_office()
         _say("office export OK")
+        _say(f"manual OK ({_check_manual(app_root())} lines)")
+        from annotshot.typefaces import check_fonts
+        _say(f"font OK ({', '.join(check_fonts())})")
         if getattr(sys, "frozen", False):
-            n = _check_licences(Path(getattr(sys, "_MEIPASS",
-                                             Path(sys.executable).parent)))
+            n = _check_licences(app_root())
             _say(f"licences OK ({n} files)")
     except BaseException as exc:            # noqa: BLE001 - report anything
         import traceback

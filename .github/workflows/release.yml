@@ -1,5 +1,6 @@
 # Build Annotshot for Windows, macOS and Linux with PyInstaller and attach the
-# three zips to the GitHub Release of a pushed v* tag.
+# three zips and the Windows installer (Annotshot-<version>-setup.exe) to the
+# GitHub Release of a pushed v* tag.
 # Run it by hand (Actions -> release -> Run workflow) for a dry run: the
 # builds, tests and frozen self-checks run and the zips are kept as workflow
 # artifacts, but no release is made.
@@ -87,15 +88,16 @@ jobs:
       # The LGPL lets the zips carry Qt as separate libraries only when its
       # notice and licence text ride along: the bundle must hold both GNU
       # texts, and the public repository's builds also its LICENSE and
-      # notices. Found by search inside the folder the zip step packs
+      # notices. The user manual Help shows rides beside them, and the pixel
+      # font with its SIL Open Font License. Found by search inside the folder the zip step packs
       # (dist/Annotshot.app on macOS, dist/Annotshot elsewhere), so an
       # incomplete bundle never passes on the strength of another build
       # beside it.
-      - name: Licence texts in the bundle
+      - name: Licence texts and the manual in the bundle
         env:
           PUBLIC: ${{ github.repository == 'Bill-Viking/annotshot' }}
         run: |
-          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt"
+          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt licenses/OFL-VT323.txt annotshot/fonts/VT323-Regular.ttf docs/USER-MANUAL.md"
           if [[ "$PUBLIC" == "true" ]]; then
             need="$need LICENSE THIRD-PARTY-NOTICES.md"
           fi
@@ -115,6 +117,51 @@ jobs:
           fi
           echo "licence texts OK in $ok: $need"
 
+      # The Windows installer, from the same proven folder: built with Inno
+      # Setup (on the windows-latest image), then proven the way the zip is.
+      # It installs silently for this user into a scratch folder, the
+      # installed Annotshot.exe --check must end with the same verdict line,
+      # and the uninstaller must take the folder and the file type away again.
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { Write-Host "STOP Inno Setup 6 is not on this runner: no $iscc"; exit 1 }
+          & $iscc /Qp "/DAppVersion=$v" packaging/annotshot.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP iscc exit $LASTEXITCODE"; exit 1 }
+          $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
+          if (-not (Test-Path -LiteralPath $setup)) { Write-Host "STOP no $setup"; exit 1 }
+          Write-Host ("installer built: {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
+          $dir = Join-Path $env:RUNNER_TEMP 'annot-inst'
+          $log = Join-Path $env:RUNNER_TEMP 'annot-inst.log'
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$log`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 40; Write-Host "STOP the silent install exited $($p.ExitCode)"; exit 1 }
+          $exe = Join-Path $dir 'Annotshot.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Host "STOP the install left no $exe"; exit 1 }
+          if (-not (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable\shell\open\command')) { Write-Host 'STOP the install registered no .annotshot file type for this user'; exit 1 }
+          $out = Join-Path $env:RUNNER_TEMP 'annot-inst-check.txt'
+          $c = Start-Process -FilePath $exe -ArgumentList '--check' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out
+          $lines = @(Get-Content -LiteralPath $out | Where-Object { $_.Trim() -ne '' })
+          $lines | ForEach-Object { Write-Host $_ }
+          $last = ''
+          if ($lines.Count) { $last = $lines[-1].Trim() }
+          $filed = Join-Path $dir 'check.txt'
+          if (-not $last -and (Test-Path -LiteralPath $filed)) { $last = (Get-Content -LiteralPath $filed -Raw).Trim() }
+          Remove-Item -LiteralPath $filed -ErrorAction SilentlyContinue
+          if ($c.ExitCode -ne 0 -or $last -ne "Annotshot $v OK") { Write-Host "STOP the installed Annotshot.exe --check ended '$last' (exit $($c.ExitCode)), wanted 'Annotshot $v OK'"; exit 1 }
+          Write-Host "installed copy: $last"
+          $un = Join-Path $dir 'unins000.exe'
+          if (-not (Test-Path -LiteralPath $un)) { Write-Host "STOP the install left no uninstaller $un"; exit 1 }
+          $u = Start-Process -FilePath $un -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($u.ExitCode -ne 0) { Write-Host "STOP the silent uninstall exited $($u.ExitCode)"; exit 1 }
+          # The uninstaller finishes from a copy of itself; give it a moment to remove the folder.
+          for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $dir); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host "left: $($_.FullName)" }; Write-Host "STOP the uninstall left $dir"; exit 1 }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable') { Write-Host 'STOP the uninstall left the .annotshot file type'; exit 1 }
+          Write-Host "installer OK: installed, checked, uninstalled ($dir is gone)"
+
       - name: Zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -131,7 +178,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Annotshot-${{ matrix.label }}
-          path: Annotshot-*-${{ matrix.label }}.zip
+          path: |
+            Annotshot-*-${{ matrix.label }}.zip
+            Annotshot-*-setup.exe
           if-no-files-found: error
 
   release:
@@ -150,6 +199,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: zips/*.zip
+          files: |
+            zips/*.zip
+            zips/*-setup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
