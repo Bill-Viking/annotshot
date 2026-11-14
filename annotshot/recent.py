@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -68,6 +69,15 @@ def editable_for(path) -> Path:
 
 def png_for(path) -> Path:
     return Path(path).with_suffix(".png")
+
+
+def _without_extended_prefix(path: str) -> str:
+    """Remove Windows' extended path prefix by text, on any system."""
+    if path[:8].upper() == "\\\\?\\UNC\\":
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
 
 
 def taken_at(path: Path) -> QDateTime:
@@ -129,8 +139,15 @@ class RecentStore:
 
     def owns(self, path) -> bool:
         """True when `path` is a capture's file in the Recent folder."""
+        # ASSUMES: a path the app made from the folder's name carries that name.
         try:
-            return Path(path).parent.resolve() == self.folder.resolve()
+            parent, folder = Path(path).parent, self.folder
+            if os.path.normcase(os.path.abspath(parent)) == \
+                    os.path.normcase(os.path.abspath(folder)):
+                return True
+            resolved_parent = _without_extended_prefix(str(parent.resolve()))
+            resolved_folder = _without_extended_prefix(str(folder.resolve()))
+            return os.path.normcase(resolved_parent) == os.path.normcase(resolved_folder)
         except OSError:
             return False
 
@@ -252,14 +269,20 @@ class _Saver(QObject):
     failed = Signal(object, int, str, str)      # doc, change count, path, why
 
 
+@dataclass
+class WriteOutcome:
+    error: str | None = None
+
+
 class _SaveJob(QRunnable):
     """One autosave write on the writer thread."""
 
     def __init__(self, doc, gen: int, path: str, meta: str, base: QImage,
-                 signals: _Saver):
+                 signals: _Saver, outcome: WriteOutcome):
         super().__init__()
         self.doc, self.gen, self.path = doc, gen, path
         self.meta, self.base, self.signals = meta, base, signals
+        self.outcome = outcome
 
     def run(self) -> None:
         from .scene import write_project
@@ -267,8 +290,9 @@ class _SaveJob(QRunnable):
             try:
                 write_project(self.path, self.meta, self.base)
             except Exception as e:      # noqa: BLE001 - never raise on a thread
+                self.outcome.error = _one_line(e)
                 self.signals.failed.emit(self.doc, self.gen, self.path,
-                                         _one_line(e))
+                                         self.outcome.error)
                 return
             self.signals.written.emit(self.doc, self.gen, self.path)
         except RuntimeError:            # the window closed meanwhile

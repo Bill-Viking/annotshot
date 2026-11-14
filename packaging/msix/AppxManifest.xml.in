@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap rescap">
+  <Identity Name="$identity_name" Publisher="$publisher" Version="$version" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Annotshot</DisplayName>
+    <PublisherDisplayName>$publisher_display</PublisherDisplayName>
+    <Description>Annotshot is a screenshot app for Windows, macOS and Linux with PowerPoint-style editing.</Description>
+    <Logo>Assets/StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="Annotshot" Executable="Annotshot.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Annotshot"
+                          Description="Annotshot is a screenshot app for Windows, macOS and Linux with PowerPoint-style editing."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets/Square150x150Logo.png"
+                          Square44x44Logo="Assets/Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets/Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="annotshot">
+            <uap:DisplayName>Annotshot editable</uap:DisplayName>
+            <uap:Logo>Assets/Square44x44Logo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.annotshot</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

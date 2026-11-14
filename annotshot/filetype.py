@@ -4,6 +4,7 @@ Windows: at every start the app writes its own per-user registration under
 HKEY_CURRENT_USER (no installer, no admin), reading first and writing only
 what differs, so a moved folder or a new version never leaves a dead file
 type. Every error is swallowed: a start never fails on the registry.
+Packaged Windows apps use the manifest's association and write nothing.
 macOS: the bundle's Info.plist declares the type (packaging/annotshot.spec)
 and the app answers Qt's FileOpen event (annotshot/app.py). Linux: the file
 as the command-line argument.
@@ -14,6 +15,7 @@ import os
 import sys
 
 from .scene import FORMAT, LEGACY_FORMATS
+from .packaged import is_packaged
 
 PROGID = "Annotshot.Editable"
 PROGID_NAME = "Annotshot editable file"
@@ -97,7 +99,7 @@ def register(hive_path: str = "Software\\Classes") -> str | None:
     "written" when anything changed (and Explorer was told), "same" when all
     was already in place, None elsewhere or on any error (nothing raised).
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or is_packaged():
         return None
     try:
         import winreg

@@ -14,14 +14,25 @@ import os
 import sys
 from pathlib import Path
 
+from .packaged import app_data_directory, is_packaged
+
+
+def _check_file() -> Path:
+    """A packaged self-check's receipt belongs in the user's app data."""
+    if is_packaged():
+        folder = app_data_directory()
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / "check.txt"
+    return Path(sys.executable).resolve().parent / "check.txt"
+
 
 def _say(line: str, to_file: bool = False) -> None:
     """Print a line where it can be read. A windowed (no console) frozen
     exe on Windows has no stdout, so only then does the frozen app write
-    check.txt beside the exe; with a working stdout (always on macOS and
-    Linux) it writes nothing, so a signed macOS bundle is never changed. A
-    stdout that is there but refuses the line counts as none, so the
-    verdict is never lost."""
+    check.txt in app data when packaged, else beside the exe. With working
+    stdout (macOS and Linux) it writes nothing, so a signed bundle is never
+    changed. A stdout that refuses the line counts as none, so the verdict
+    is never lost."""
     printed = False
     if sys.stdout is not None:
         try:
@@ -31,8 +42,7 @@ def _say(line: str, to_file: bool = False) -> None:
             pass
     if to_file and not printed and getattr(sys, "frozen", False):
         try:
-            (Path(sys.executable).resolve().parent / "check.txt").write_text(
-                line + "\n", encoding="utf-8")
+            _check_file().write_text(line + "\n", encoding="utf-8")
         except OSError:
             pass
 
@@ -48,7 +58,14 @@ def _check_office() -> None:
     from annotshot.office import export_docx, export_pptx
     img = QImage(4, 4, QImage.Format_ARGB32)
     img.fill(QColor("#0878D5"))
-    with tempfile.TemporaryDirectory() as tmp:
+    temp_root = None
+    if is_packaged():
+        from PySide6.QtCore import QStandardPaths
+        location = QStandardPaths.writableLocation(QStandardPaths.TempLocation)
+        temp_root = (Path(location) if location and Path(location).is_absolute()
+                     else app_data_directory())
+        temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
         docx_path, pptx_path = f"{tmp}/check.docx", f"{tmp}/check.pptx"
         export_docx(img, docx_path)
         export_pptx(img, pptx_path)
@@ -149,6 +166,10 @@ def check() -> int:
 
 
 def run(argv: list[str]) -> int:
+    if "--screen-permission" in argv:
+        from annotshot.macos import screen_capture_state
+        _say(screen_capture_state())
+        return 0
     if "--version" in argv:
         from annotshot import __version__
         _say(__version__)

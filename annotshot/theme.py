@@ -21,6 +21,8 @@ import re
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QFont, QPalette
 
+from . import typefaces
+
 SETTING = "look/theme"
 DEFAULT = "light"
 # (key, the name the Theme pull-down shows), in the pull-down's order
@@ -75,8 +77,8 @@ DERIVED = {
 # The fonts: Light and Dark keep the system font at the size it had; Retro
 # is the bundled pixel font, which needs the bigger size to be legible.
 FONTS = {
-    "light": ("Segoe UI", 13, 12),     # (family, ui px, small px)
-    "dark": ("Segoe UI", 13, 12),
+    "light": (None, 13, 12),     # None resolves the system interface family
+    "dark": (None, 13, 12),
     "retro": ("VT323", 17, 16),
 }
 
@@ -255,6 +257,12 @@ QStatusBar { background: @status-bg; border-top: 1px solid @status-line;
              color: @status-text; font-size: @small-px; }
 QStatusBar::item { border: none; }
 QStatusBar QLabel { color: @status-label; padding: 0px 6px; }
+/* Reserve space on the right for the zoom menu's arrow. */
+QToolButton#zoomButton {
+    color: @status-text; padding: 2px 22px 2px 6px; }
+QToolButton#zoomButton::menu-indicator {
+    subcontrol-origin: padding; subcontrol-position: right center;
+    width: 10px; height: 10px; right: 6px; }
 """
 
 _TOKEN = re.compile(r"@([a-z][a-z0-9-]*)")
@@ -326,7 +334,7 @@ def palette(name: str | None = None) -> QPalette:
 
 def font(name: str | None = None) -> QFont:
     family, ui_px, _small = FONTS[normalise(name or _current)]
-    f = QFont(family)
+    f = QFont(family or typefaces.interface_family())
     f.setPixelSize(ui_px)
     return f
 

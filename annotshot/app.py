@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from . import __version__, filetype, theme, typefaces
 from .mainwindow import MainWindow
+from .packaged import is_packaged
 
 if sys.platform == "win32":
     from . import win32
@@ -45,7 +46,7 @@ def apply_look(app: QApplication, name: str | None = None) -> str:
 
 def set_app_id(app_id: str) -> None:
     """The taskbar grouping id on Windows; a no-op elsewhere."""
-    if win32 is not None:
+    if win32 is not None and not is_packaged():
         win32.set_app_id(app_id)
 
 
@@ -85,6 +86,13 @@ class FileOpenFilter(QObject):
         self._window = window
 
     def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Quit and not self._window._quitting:
+            self._window.quit_app()
+            return True
+        if sys.platform == "darwin" and event.type() == QEvent.Type.ApplicationActivate:
+            self._window._permission_tick()
+            if not self._window.isVisible():
+                self._window.reopen()
         if event.type() == QEvent.Type.FileOpen:
             path = event.file()
             if path:
@@ -126,15 +134,14 @@ def argument_problem(argv) -> str | None:
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
     app = make_app(argv)
-    window = MainWindow()           # centered at a moderate size
+    window = (MainWindow(permission_restart=True) if "--permission-restart" in argv
+              else MainWindow())
     filetype.register()             # Windows: the double-click, repaired
     choice = filetype.user_choice()
-    if choice and not filetype.is_ours(choice):
+    if choice and not is_packaged() and not filetype.is_ours(choice):
         window.statusBar().showMessage(OTHER_PROGRAM, 10000)
     app._annotshot_file_filter = FileOpenFilter(window)
     app.installEventFilter(app._annotshot_file_filter)
-    window.show()
-    window.apply_hotkey()           # the capture key, from anywhere
     path = file_argument(argv)
     if path:
         window.open_path(path)
@@ -142,4 +149,6 @@ def main(argv=None) -> int:
         problem = argument_problem(argv)
         if problem:
             window.statusBar().showMessage(problem, 10000)
+    window.show()
+    window.apply_hotkey()           # the capture key, from anywhere
     return app.exec()

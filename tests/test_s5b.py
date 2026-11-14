@@ -1,7 +1,7 @@
 """Fix round 2 (s5b): captures keep themselves. Every Recent capture is a
 pair (the original PNG and its editable `.annotshot`), every edit is written
 by the autosave on the writer thread, the pane shows each capture WITH its
-edits, and a relaunch opens the last capture again. Offscreen; every file a
+edits, and a relaunch offers the last capture in welcome. Offscreen; every file a
 test writes is under its own tmp folder."""
 import os
 import sys
@@ -51,6 +51,145 @@ def test_a_capture_knows_its_editable_beside_its_png(window, qapp, private_pictu
     assert not png.with_suffix(".annotshot").exists()   # unedited: no file yet
     assert window.windowTitle() == f"Annotshot — {png.stem}[*]"
     window.hide()
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_owns_uses_the_folder_name_without_resolving(tmp_path, monkeypatch, present):
+    from annotshot.recent import RecentStore
+    folder = tmp_path / "Pictures" / "Annotshot" / "Recent"
+    store = RecentStore(lambda: folder)
+    if present:
+        folder.mkdir(parents=True)
+    calls = []
+
+    def fail_resolve(path, *args, **kwargs):
+        calls.append(path)
+        raise OSError("disk resolution must not be needed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        owned = store.owns(store.folder / "x.annotshot")
+    assert owned
+    assert calls == []
+
+
+def test_a_capture_keeps_its_stamp_without_resolving(
+        window, qapp, private_pictures, monkeypatch):
+    from annotshot.capture import CaptureResult
+    from annotshot.recent import png_for
+    assert not window.recent_store.folder.exists()
+    assert window.quick_copy()
+    calls = []
+
+    def fail_resolve(path, *args, **kwargs):
+        calls.append(path)
+        raise OSError("disk resolution must not be needed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        window._capture_done(CaptureResult(picture()))
+        png = png_for(window.doc.path)
+        title_before_filing_settles = window.windowTitle()
+        settle(qapp)
+        title_after_filing = window.windowTitle()
+    assert calls == []
+    assert title_before_filing_settles == f"Annotshot — {png.stem}[*]"
+    assert title_after_filing == f"Annotshot — {png.stem}[*]"
+    assert png.is_file() and png.parent == private_pictures / "Recent"
+    window.hide()
+
+
+@pytest.mark.parametrize("extended, plain, equal", [
+    (r"\\?\D:\a\Recent", r"D:\a\Recent", True),
+    (r"\\?\UNC\server\share\Recent", r"\\server\share\Recent", True),
+    (r"\\?\D:\a\Recent", r"D:\a\Other", False),
+    (r"\\?\UNC\server\share\Recent", r"\\server\share\Other", False),
+])
+def test_extended_prefix_is_only_a_text_spelling(extended, plain, equal):
+    from annotshot.recent import _without_extended_prefix
+    assert (_without_extended_prefix(extended) ==
+            _without_extended_prefix(plain)) is equal
+
+
+@pytest.mark.parametrize("extended, plain", [
+    (r"\\?\D:\a\Recent", r"D:\a\Recent"),
+    (r"\\?\UNC\server\share\Recent", r"\\server\share\Recent"),
+])
+def test_owns_normalizes_both_resolved_folder_names(
+        tmp_path, monkeypatch, extended, plain):
+    from annotshot.recent import RecentStore
+    folder = tmp_path / "Recent"
+    alias = tmp_path / "alias"
+    store = RecentStore(lambda: folder)
+    for parent_name, folder_name in [(extended, plain), (plain, extended)]:
+        calls = []
+
+        def resolve(path, *args, **kwargs):
+            calls.append(path)
+            return Path({alias: parent_name, folder: folder_name}[path])
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "resolve", resolve)
+            owned = store.owns(alias / "x.annotshot")
+        assert owned
+        assert calls == [alias, folder]
+
+
+def test_owns_returns_false_when_a_differently_named_folder_cannot_resolve(
+        tmp_path, monkeypatch):
+    from annotshot.recent import RecentStore
+    store = RecentStore(lambda: tmp_path / "Recent")
+    calls = []
+
+    def fail_resolve(path, *args, **kwargs):
+        calls.append(path)
+        raise OSError("folder unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        owned = store.owns(tmp_path / "alias" / "x.annotshot")
+    assert not owned
+    assert calls == [tmp_path / "alias"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows extended paths")
+def test_owns_a_windows_extended_path(tmp_path):
+    from annotshot.recent import RecentStore
+    folder = tmp_path / "Recent"
+    folder.mkdir()
+    store = RecentStore(lambda: folder)
+    assert store.owns("\\\\?\\" + str(folder / "x.annotshot"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX folder symlink")
+def test_owns_a_file_through_a_folder_symlink(tmp_path):
+    from annotshot.recent import RecentStore
+    folder = tmp_path / "Recent"
+    folder.mkdir()
+    capture = folder / "x.annotshot"
+    capture.touch()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(folder, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"Folder symlink unavailable: {error}")
+    store = RecentStore(lambda: folder)
+    assert store.owns(link / capture.name)
+
+
+@pytest.mark.parametrize("location", ["sibling", "parent", "nested"])
+def test_owns_excludes_files_outside_the_recent_folder(tmp_path, location):
+    from annotshot.recent import RecentStore
+    folder = tmp_path / "Recent"
+    folders = {"sibling": tmp_path / "Other", "parent": tmp_path,
+               "nested": folder / "Under"}
+    folder.mkdir()
+    other = folders[location]
+    other.mkdir(parents=True, exist_ok=True)
+    path = other / "x.annotshot"
+    path.touch()
+    store = RecentStore(lambda: folder)
+    assert not store.owns(path)
 
 
 def test_delete_removes_both_files_and_lets_go_of_the_open_one(window, qapp, private_pictures):
@@ -145,6 +284,7 @@ def no_question(monkeypatch):
 
 def test_a_shape_on_a_capture_is_written_within_the_debounce(window, qapp, private_pictures):
     from annotshot.scene import Document
+    window.settings.setValue("capture/copy", False)     # the plain path: copy is on by default
     png = captured(window, qapp)
     editable = png.with_suffix(".annotshot")
     draw(window)
@@ -313,15 +453,18 @@ def test_a_refresh_draws_an_unchanged_capture_from_its_cache(window, qapp, priva
 
 
 # -- item 4: the app comes back where it was -----------------------------------
-def test_a_relaunch_opens_the_last_capture_with_its_edits(window, qapp, private_pictures, monkeypatch):
+def test_a_relaunch_offers_the_last_capture_with_its_edits(window, qapp, private_pictures, monkeypatch):
     from annotshot.mainwindow import CURRENT_KEY, MainWindow
     no_question(monkeypatch)
     png = captured(window, qapp)
     draw(window)
+    window.set_keep_running(False)
     window.close()
     assert window.settings.value(CURRENT_KEY) == str(png.with_suffix(".annotshot"))
     again = MainWindow()                            # the same settings
-    assert again.doc.path == str(png.with_suffix(".annotshot"))
+    assert again.state_name == "welcome" and again.doc.path is None
+    assert again.open_recent(str(png))
+    assert again.state_name == "editor"
     assert len(again.doc.annotation_items()) == 1
     assert again.windowTitle() == f"Annotshot — {png.stem}[*]"
     again.deleteLater()
@@ -337,7 +480,7 @@ def test_a_relaunch_with_the_capture_gone_starts_empty(window, qapp, private_pic
     again.deleteLater()
 
 
-def test_an_opened_file_keeps_itself_and_comes_back(window, qapp, tmp_path, monkeypatch):
+def test_an_opened_file_keeps_itself_and_reopens_explicitly(window, qapp, tmp_path, monkeypatch):
     from annotshot.mainwindow import MainWindow
     from annotshot.scene import Document
     no_question(monkeypatch)
@@ -351,6 +494,8 @@ def test_an_opened_file_keeps_itself_and_comes_back(window, qapp, tmp_path, monk
     assert not window.isWindowModified()
     window.close()
     again = MainWindow()
+    assert again.state_name == "welcome" and again.doc.path is None
+    assert again.open_path(str(mine), ask=False)
     assert again.doc.path == str(mine)
     again.deleteLater()
 

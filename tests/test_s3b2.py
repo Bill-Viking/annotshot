@@ -73,7 +73,7 @@ def test_the_installer_is_per_user_and_asks_for_the_folder():
 def test_the_installer_names_its_publisher_and_icon():
     s = _setup()
     assert s["AppName"] == "Annotshot"
-    assert s["AppPublisher"] == "Viking Software"
+    assert s["AppPublisher"] == "Stet Software"
     assert s["AppPublisherURL"] == "https://github.com/Bill-Viking/annotshot"
     assert s["AppSupportURL"] == "https://github.com/Bill-Viking/annotshot/issues"
     assert re.fullmatch(r"\{\{[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}\}",
@@ -348,6 +348,7 @@ def test_the_pane_docks_right_and_its_place_is_remembered(window, private_settin
     from PySide6.QtCore import QSettings, Qt
     from PySide6.QtWidgets import QDockWidget
     from annotshot.mainwindow import MainWindow
+    window.show_editor()
     pane = window.recent
     assert window.dockWidgetArea(pane) == Qt.RightDockWidgetArea
     assert pane.allowedAreas() == Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
@@ -361,16 +362,20 @@ def test_the_pane_docks_right_and_its_place_is_remembered(window, private_settin
     assert QSettings(private_settings, QSettings.IniFormat).contains(
         "window/state")
     again = MainWindow()
+    assert again.state_name == "welcome"
+    again.show_editor()
     assert again.dockWidgetArea(again.recent) == Qt.LeftDockWidgetArea
     again.recent.hide()                            # the user closes it
     again.close()
     third = MainWindow()
+    third.show_editor()
     assert third.recent.isHidden()
     for w in (again, third):
         w.deleteLater()
 
 
 def test_the_menu_entry_shows_and_hides_the_pane(window, qapp):
+    window.show_editor()
     window.show()                       # offscreen: the entry follows a shown pane
     qapp.processEvents()
     a = window.a_recent
@@ -388,6 +393,7 @@ def test_the_menu_entry_shows_and_hides_the_pane(window, qapp):
 
 def test_a_capture_is_filed_in_the_recent_folder(window, qapp, private_pictures):
     from annotshot.capture import CaptureResult
+    window.settings.setValue("capture/copy", False)     # the plain path: copy is on by default
     window._capture_done(CaptureResult(picture(1280, 720)))
     settle(qapp)
     folder = private_pictures / "Recent"
@@ -544,8 +550,10 @@ def test_the_capture_tab_has_the_keep_box(window):
 
 
 def test_the_docked_pane_leaves_the_canvas_the_rest(window):
+    window.show_editor()
     window.resize(1100, 720)
     window.layout().setGeometry(window.rect())
+    window.pages.layout().setGeometry(window.pages.rect())
     pane, view = window.recent.geometry(), window.view.geometry()
     assert pane.left() > view.right()               # on the right
     assert pane.width() < 260 and view.width() > 800
@@ -579,7 +587,7 @@ def test_the_font_box_lists_vt323_first_then_a_line(window):
     assert box.is_separator(1)
     rest = [box.itemText(i) for i in range(2, box.count())]
     assert "VT323" not in rest and len(rest) > 0
-    assert box.width() == 150
+    assert box.width() >= 180
 
 
 def test_a_text_box_set_to_vt323_draws_with_it_and_keeps_it(window, tmp_path):

@@ -162,6 +162,34 @@ jobs:
           if (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable') { Write-Host 'STOP the uninstall left the .annotshot file type'; exit 1 }
           Write-Host "installer OK: installed, checked, uninstalled ($dir is gone)"
 
+      # Unsigned by design. The Microsoft Store signs the MSIX on publication.
+      - name: MSIX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'StetSoftware.Annotshot' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=Stet Software' }}
+          MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY || 'Stet Software' }}
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          python tools/make-msix.py --dist dist/Annotshot --version $v --out build/msix
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP MSIX layout exit $LASTEXITCODE"; exit 1 }
+          $search = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\makeappx.exe'
+          $makeappx = Get-ChildItem -Path $search -File -ErrorAction SilentlyContinue | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $makeappx) { Write-Host "STOP makeappx.exe not found: searched $search"; exit 1 }
+          # The unplated target-size icon needs a resource index to be selected.
+          $makepri = Join-Path $makeappx.Directory.FullName 'makepri.exe'
+          if (-not (Test-Path -LiteralPath $makepri)) { Write-Host "STOP makepri.exe not found: searched $makepri"; exit 1 }
+          & $makepri createconfig /cf build/msix-priconfig.xml /dq en-US /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri createconfig exit $LASTEXITCODE"; exit 1 }
+          & $makepri new /pr build/msix /cf build/msix-priconfig.xml /mn build/msix/AppxManifest.xml /of build/msix/resources.pri /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri new exit $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path -LiteralPath 'build/msix/resources.pri')) { Write-Host 'STOP makepri left no build/msix/resources.pri'; exit 1 }
+          & $makeappx.FullName pack /d build/msix /p "Annotshot-$v.msix" /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makeappx exit $LASTEXITCODE"; exit 1 }
+          $package = Get-Item -LiteralPath "Annotshot-$v.msix"
+          Write-Host ("MSIX built: {0} ({1:N0} bytes)" -f $package.Name, $package.Length)
+
       - name: Zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -181,6 +209,7 @@ jobs:
           path: |
             Annotshot-*-${{ matrix.label }}.zip
             Annotshot-*-setup.exe
+            Annotshot-*.msix
           if-no-files-found: error
 
   release:
@@ -202,5 +231,6 @@ jobs:
           files: |
             zips/*.zip
             zips/*-setup.exe
+            zips/Annotshot-*.msix
           generate_release_notes: true
           fail_on_unmatched_files: true

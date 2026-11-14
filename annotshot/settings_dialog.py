@@ -18,7 +18,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame,
                                QGridLayout, QHBoxLayout, QKeySequenceEdit,
-                               QLabel, QPushButton, QScrollArea, QTabWidget,
+                               QLabel, QPushButton, QScrollArea, QSizePolicy, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from . import hotkey, recent, theme
@@ -74,6 +74,8 @@ class SettingsDialog(QDialog):
         e = QKeySequenceEdit(seq, self)
         e.setMaximumSequenceLength(1)
         e.setClearButtonEnabled(True)
+        e.setMinimumWidth(80)
+        e.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         return e
 
     def _keys_tab(self) -> QWidget:
@@ -87,7 +89,9 @@ class SettingsDialog(QDialog):
             edit.editingFinished.connect(lambda k=key: self.commit(k))
             reset = QPushButton("Reset", page)
             reset.clicked.connect(lambda _=False, k=key: self.reset(k))
-            grid.addWidget(QLabel(name, page), row, 0)
+            label = QLabel(name, page)
+            label.setWordWrap(True)
+            grid.addWidget(label, row, 0)
             grid.addWidget(edit, row, 1)
             grid.addWidget(reset, row, 2)
             self.edits[key], self.resets[key] = edit, reset
@@ -101,6 +105,7 @@ class SettingsDialog(QDialog):
         self.hotkey_off.setChecked(w.hotkey_off())
         self.hotkey_off.toggled.connect(lambda _: self.commit_hotkey())
         label = QLabel(HOTKEY_NAME, page)
+        label.setWordWrap(True)
         label.setToolTip("Works while Annotshot is not in front")
         grid.addWidget(label, row + 1, 0)
         cell = QWidget(page)
@@ -203,6 +208,14 @@ class SettingsDialog(QDialog):
         self.keep_recent.toggled.connect(
             lambda on: w.settings.setValue(recent.SETTING, bool(on)))
         box.addWidget(self.keep_recent)
+        self.keep_running = QCheckBox(
+            "Keep Annotshot running when its window is closed", page)
+        self.keep_running.setChecked(w.keep_running())
+        if sys.platform == "linux":
+            self.keep_running.setEnabled(False)
+            self.keep_running.setToolTip("Not available on Linux yet")
+        self.keep_running.toggled.connect(w.set_keep_running)
+        box.addWidget(self.keep_running)
         box.addStretch(1)
         return page
 

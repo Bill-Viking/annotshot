@@ -19,7 +19,7 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath,
                            QTextBlockFormat, QTextCursor, QTextOption)
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsTextItem
 
-from . import theme
+from . import theme, typefaces
 
 SELECT_COLOR = QColor("#1E88E5")      # Light's; the theme's "select" token
 MIN_SIZE = 8.0            # smallest box a handle drag can make (scene px)
@@ -136,6 +136,8 @@ class BaseItem(QGraphicsItem):
         return key if key in self.DEFAULTS else None
 
     def normalize(self, key: str, value):
+        if key == "font_family" and str(value).strip().startswith("."):
+            return typefaces.text_family()
         if key in self.COLOR_KEYS:
             return color_hex(value)
         default = self.DEFAULTS[key]
@@ -356,12 +358,15 @@ class TextBoxItem(BaseItem):
     DEFAULTS = {
         "text": "", "text_color": "#000000", "fill_color": "#FFFFFF",
         "border_color": "#E53935", "border_width": 2,
-        "font_family": "Segoe UI", "font_px": 24, "bold": False,
+        "font_family": "", "font_px": 24, "bold": False,
         "italic": False, "align": "left", "opacity": 1.0, "padding": 6,
     }
     COLOR_KEYS = ("text_color", "fill_color", "border_color")
 
     def __init__(self):
+        # Resolve after QApplication exists; saved props are applied later
+        # and retain public family names, including unavailable families.
+        self.DEFAULTS["font_family"] = typefaces.text_family()
         super().__init__()
         self._editing = False
         self._edit_geom: tuple | None = None

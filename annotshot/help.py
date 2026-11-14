@@ -7,6 +7,8 @@ the user's own keys at the top, and two buttons to the project's pages.
 """
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl
@@ -16,8 +18,9 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                                QVBoxLayout, QWidget)
 
 from . import __version__
+from .feedback import CHOOSER_URL
 
-PUBLISHER = "Viking Software"
+PUBLISHER = "Stet Software"
 PROJECT_URL = "https://github.com/Bill-Viking/annotshot"
 ISSUES_URL = PROJECT_URL + "/issues"
 MANUAL_URL = PROJECT_URL + "/blob/main/docs/USER-MANUAL.md"
@@ -42,6 +45,24 @@ def _root() -> Path:
 
 
 # -- About ----------------------------------------------------------------------
+def build_stamp() -> str:
+    """When this build's own code was last written, in the reader's local
+    time: the newest file of the app's package when run from source, the
+    program file when packaged. Two builds with one version number are told
+    apart by it. '' when the dates cannot be read."""
+    # ASSUMES: the app's own files can be read for their dates. Tested
+    # false: an unreadable folder or program file gives '' and no line.
+    try:
+        if getattr(sys, "frozen", False):
+            stamp = Path(sys.executable).stat().st_mtime
+        else:
+            stamp = max(f.stat().st_mtime
+                        for f in Path(__file__).resolve().parent.glob("*.py"))
+        return time.strftime("%a %d %b %Y, %H:%M", time.localtime(stamp))
+    except (OSError, ValueError, OverflowError):
+        return ""
+
+
 def about_widget(parent=None, on_help=None) -> QWidget:
     """The About content: the icon, name and version, one line of what it
     does, the publisher, the project page, the licence, and the buttons for
@@ -67,7 +88,16 @@ def about_widget(parent=None, on_help=None) -> QWidget:
     head = QHBoxLayout()
     head.addWidget(icon)
     head.addSpacing(10)
-    head.addWidget(name, 1)
+    titles = QVBoxLayout()
+    titles.setSpacing(2)
+    titles.addWidget(name)
+    built = build_stamp()
+    if built:                       # tells two builds of one version apart
+        build = QLabel(f"Build: {built}", w)
+        build.setObjectName("aboutBuild")
+        build.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        titles.addWidget(build)
+    head.addLayout(titles, 1)
     box.addLayout(head)
     line = QLabel(ABOUT_LINE, w)
     line.setWordWrap(True)
@@ -79,6 +109,12 @@ def about_widget(parent=None, on_help=None) -> QWidget:
     link.setTextInteractionFlags(Qt.TextBrowserInteraction)
     link.setOpenExternalLinks(True)
     box.addWidget(link)
+    feedback = QPushButton("Send feedback…", w)
+    feedback.setObjectName("feedbackButton")
+    feedback.setToolTip("Report a bug or suggest an improvement — opens the "
+                        "feedback page in your browser")
+    feedback.clicked.connect(lambda: open_url(CHOOSER_URL))
+    box.addWidget(feedback)
     box.addWidget(QLabel(LICENCE_LINE, w))
     buttons = QHBoxLayout()
     notices = QPushButton("Third-party notices", w)
@@ -177,7 +213,9 @@ def shortcuts_markdown(rows) -> str:
     """The Keyboard shortcuts section from (what it does, [key sequences])."""
     lines = ["## Keyboard shortcuts", "",
              "Your keys as they are set now (change them in **Settings…**). "
-             "The table further down lists the keys Annotshot starts with.",
+             "The table further down lists the keys Annotshot starts with. "
+             "Same area is a button on the capture bar. Hover to preview it, "
+             "then click once to capture it. No key takes the last area.",
              "", "| Keys | Does |", "|---|---|"]
     lines += [f"| {_cell(keys_text(seqs))} | {_cell(name)} |"
               for name, seqs in rows]
@@ -239,5 +277,6 @@ class HelpWindow(QDialog):
         the manual names that are not on this computer are left out."""
         from .__main__ import MANUAL
         self.browser.setSearchPaths([str(_root() / MANUAL.parent)])
-        self.browser.setMarkdown(help_markdown(rows, manual_text()))
+        self.browser.setMarkdown(help_markdown(rows, manual_text()).replace(
+            "## Privacy", '<a name="privacy"></a>\n\n## Privacy'))
         self.browser.moveCursor(QTextCursor.Start)

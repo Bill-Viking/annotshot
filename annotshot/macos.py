@@ -12,6 +12,10 @@ from __future__ import annotations
 import ctypes
 import subprocess
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QImage
 
 IS_MAC = sys.platform == "darwin"
 
@@ -42,21 +46,77 @@ def _cg() -> ctypes.CDLL:
     return _lib(CORE_GRAPHICS)
 
 
-def screen_capture_allowed() -> bool:
-    """True when this app may record the screen. Off macOS, or when the
-    check itself fails, True: the check never stops a capture by mistake."""
+def screen_capture_state() -> str:
+    """The current process's grant; an unavailable check is unknown."""
     if not IS_MAC:
-        return True
+        return "unknown"
     try:
-        # ASSUMES: macOS 10.15 or newer, where CoreGraphics has
-        # CGPreflightScreenCaptureAccess (the app's minimum is Apple silicon,
-        # macOS 11+). Tested false: a missing function reads as allowed.
+        # ASSUMES: the preflight function exists. Missing or failing is unknown.
         fn = _cg().CGPreflightScreenCaptureAccess
         fn.restype = ctypes.c_bool
         fn.argtypes = []
-        return bool(fn())
-    except (OSError, AttributeError):
-        return True
+        return "allowed" if fn() else "denied"
+    except Exception:
+        return "unknown"
+
+
+def screen_capture_allowed() -> bool:
+    """Unknown never stops a capture by mistake."""
+    return screen_capture_state() != "denied"
+
+
+def permission_check_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--screen-permission"]
+    return [sys.executable, "-m", "annotshot", "--screen-permission"]
+
+
+def permission_relaunch_command() -> list[str]:
+    from pathlib import Path
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable)
+        if len(executable.parents) > 2:
+            bundle = executable.parents[2]
+            if bundle.suffix == ".app":
+                return ["/usr/bin/open", "-n", str(bundle), "--args",
+                        "--permission-restart"]
+    return [sys.executable, "-m", "annotshot", "--permission-restart"]
+
+
+# Constant script; paths are positional arguments, never shell source.
+# ASSUMES: the old process exits before the elapsed-seconds deadline.
+# Otherwise give up, including a deadline check immediately before launch.
+RELAUNCH_SECONDS = 30
+RELAUNCH_WAIT = ('started=$(/bin/date +%s) || exit 1; '
+                 'while /bin/kill -0 "$1" 2>/dev/null; do '
+                 'now=$(/bin/date +%s) || exit 1; '
+                 '[ "$((now-started))" -lt "$2" ] || exit 1; '
+                 '/bin/sleep 0.1; done; '
+                 'now=$(/bin/date +%s) || exit 1; '
+                 '[ "$((now-started))" -lt "$2" ] || exit 1; '
+                 'shift 2; exec "$@"')
+
+
+def window_picture(number: int) -> QImage | None:
+    """The window's own pixels, without raising it; no temporary data survives."""
+    if not IS_MAC or type(number) is not int:
+        return None
+    import tempfile
+    from pathlib import Path
+    from PySide6.QtGui import QImage
+    try:
+        with tempfile.TemporaryDirectory(prefix="annotshot-window-") as folder:
+            path = Path(folder) / "window.png"
+            result = subprocess.run(
+                ["/usr/sbin/screencapture", "-x", "-o", f"-l{number}",
+                 "-t", "png", str(path)], timeout=3, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if result.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
+                return None
+            image = QImage(str(path))
+            return None if image.isNull() else image
+    except Exception:
+        return None
 
 
 def request_screen_capture() -> None:
@@ -127,3 +187,154 @@ def float_above_menu_bar(widget) -> bool:
         return True
     except Exception:                    # noqa: BLE001 - never block a capture
         return False
+
+
+# CoreGraphics window coordinates use global, top-left logical points. They
+# are converted by the overlay's existing to_device mapping on each display.
+CORE_FOUNDATION = ("/System/Library/Frameworks/CoreFoundation.framework/"
+                   "CoreFoundation")
+
+
+class _CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+class _CGSize(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+class _CGRect(ctypes.Structure):
+    _fields_ = [("origin", _CGPoint), ("size", _CGSize)]
+
+
+def _window_info() -> list[dict]:
+    """Copy and release the native list; convert only typed, borrowed values."""
+    from PySide6.QtCore import QRectF
+    cg, cf = _cg(), _lib(CORE_FOUNDATION)
+    vp, index = ctypes.c_void_p, ctypes.c_long
+
+    def signature(lib, name, result, args):
+        fn = getattr(lib, name)
+        fn.restype, fn.argtypes = result, args
+        return fn
+
+    copy = signature(cg, "CGWindowListCopyWindowInfo", vp,
+                     [ctypes.c_uint32, ctypes.c_uint32])
+    bounds = signature(cg, "CGRectMakeWithDictionaryRepresentation", ctypes.c_bool,
+                       [vp, ctypes.POINTER(_CGRect)])
+    release = signature(cf, "CFRelease", None, [vp])
+    type_id = signature(cf, "CFGetTypeID", ctypes.c_ulong, [vp])
+    types = {kind: signature(cf, f"CF{kind}GetTypeID", ctypes.c_ulong, [])()
+             for kind in ("Array", "Dictionary", "Number", "String")}
+    count = signature(cf, "CFArrayGetCount", index, [vp])
+    at = signature(cf, "CFArrayGetValueAtIndex", vp, [vp, index])
+    get = signature(cf, "CFDictionaryGetValue", vp, [vp, vp])
+    number = signature(cf, "CFNumberGetValue", ctypes.c_bool,
+                       [vp, ctypes.c_int, vp])
+    length = signature(cf, "CFStringGetLength", index, [vp])
+    string = signature(cf, "CFStringGetCString", ctypes.c_bool,
+                       [vp, ctypes.c_char_p, index, ctypes.c_uint32])
+    keys = {key: vp.in_dll(cg, key).value for key in (
+        "kCGWindowLayer", "kCGWindowOwnerPID", "kCGWindowNumber",
+        "kCGWindowBounds", "kCGWindowOwnerName", "kCGWindowName")}
+
+    def typed(value, kind):
+        if not value or type_id(value) != types[kind]:
+            raise ValueError(f"Expected CF{kind}")
+        return value
+
+    def integer(value):
+        out = ctypes.c_int64()
+        if not number(typed(value, "Number"), 4, ctypes.byref(out)):  # kCFNumberSInt64Type
+            raise ValueError("Bad window number")
+        return out.value
+
+    def text(value, optional=False):
+        if not value and optional:
+            return ""
+        typed(value, "String")
+        buf = ctypes.create_string_buffer(length(value) * 4 + 1)
+        if not string(value, buf, len(buf), 0x08000100):  # kCFStringEncodingUTF8
+            raise ValueError("Bad window title")
+        return buf.value.decode("utf-8")
+
+    # kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    array = copy((1 << 0) | (1 << 4), 0)
+    if not array:
+        return []
+    try:
+        typed(array, "Array")
+        rows = []
+        for i in range(count(array)):
+            row = typed(at(array, i), "Dictionary")
+            value = lambda key: get(row, keys[key])
+            layer = integer(value("kCGWindowLayer"))
+            pid = integer(value("kCGWindowOwnerPID"))
+            # Filter before reading optional properties of non-app windows.
+            import os
+            if layer != 0 or pid == os.getpid():
+                continue
+            rect = _CGRect()
+            if not bounds(typed(value("kCGWindowBounds"), "Dictionary"), ctypes.byref(rect)):
+                raise ValueError("Bad window bounds")
+            rows.append({
+                "kCGWindowLayer": layer, "kCGWindowOwnerPID": pid,
+                "kCGWindowNumber": integer(value("kCGWindowNumber")),
+                "kCGWindowBounds": QRectF(rect.origin.x, rect.origin.y,
+                                           rect.size.width, rect.size.height),
+                "kCGWindowOwnerName": text(value("kCGWindowOwnerName")),
+                "kCGWindowName": text(value("kCGWindowName"), optional=True)})
+        return rows
+    finally:
+        release(array)
+
+
+def _parse_windows(rows):
+    import math
+    import os
+    from typing import NamedTuple
+    from PySide6.QtCore import QRectF
+
+    class Window(NamedTuple):
+        hwnd: int
+        title: str
+        rect: QRectF
+
+    # ASSUMES: CoreGraphics gives a well-formed dictionary list. Reject a
+    # malformed list as a whole; enumeration failure never blocks capture.
+    if not isinstance(rows, list):
+        raise ValueError("Expected a window dictionary list")
+    windows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Expected a window dictionary")
+        layer, pid = row["kCGWindowLayer"], row["kCGWindowOwnerPID"]
+        if not isinstance(layer, int) or not isinstance(pid, int):
+            raise ValueError("Bad window owner or layer")
+        if layer != 0 or pid == os.getpid():
+            continue
+        number = row["kCGWindowNumber"]
+        rect = row["kCGWindowBounds"]
+        owner, name = row["kCGWindowOwnerName"], row.get("kCGWindowName", "")
+        if (not isinstance(number, int) or not isinstance(rect, QRectF)
+                or not isinstance(owner, str) or not isinstance(name, str)
+                or not all(math.isfinite(v) for v in (rect.x(), rect.y(), rect.width(), rect.height()))):
+            raise ValueError("Bad window dictionary")
+        if rect.isEmpty():
+            continue
+        title = owner + (f" — {name}" if name else "")
+        windows.append(Window(number, title, QRectF(rect)))
+    return windows
+
+
+def list_windows() -> list:
+    """On-screen, layer-zero windows, front to back; never our own process.
+
+    Any framework, permission or parsing failure returns an empty list.
+    """
+    if not IS_MAC:
+        return []
+    try:
+        return _parse_windows(_window_info())
+    except Exception:                    # noqa: BLE001 - never block a capture
+        return []

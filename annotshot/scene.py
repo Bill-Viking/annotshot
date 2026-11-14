@@ -10,6 +10,7 @@ import os
 import warnings
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (QBuffer, QIODevice, QPointF, QRect, QRectF, Qt,
                             Signal)
@@ -20,6 +21,9 @@ from .commands import (AddItems, ChangeProps, Crop, MoveResize, RemoveItems,
                        ZOrder)
 from . import theme
 from .items import DUPLICATE_OFFSET, HANDLE_VIEW_PX, BaseItem, item_from_dict
+
+if TYPE_CHECKING:
+    from .recent import WriteOutcome
 
 FORMAT = "annotshot"
 LEGACY_FORMATS = ("snagup",)       # files saved before the rename (same zip)
@@ -113,6 +117,7 @@ class Document(QGraphicsScene):
         # last write done (-1 after a failed one).
         self.changes = 0
         self.written = 0
+        self.last_write: WriteOutcome | None = None
         self.base = QImage()
         # The start-up blank (no capture, no file): the view shows a hint
         # instead of a white page. Any capture or open makes a new Document
@@ -317,6 +322,7 @@ class Document(QGraphicsScene):
         self.write(path)
         self.path = str(path)
         self.written = self.changes
+        self.last_write = None  # this synchronous save supersedes an autosave
         self.undo_stack.setClean()
 
     @classmethod

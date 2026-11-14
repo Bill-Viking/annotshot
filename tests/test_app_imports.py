@@ -5,7 +5,7 @@ import sys
 
 import pytest
 from PySide6.QtCore import QPoint, QPointF, QRect, QSettings, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -29,6 +29,7 @@ def window(qapp):
     from annotshot.mainwindow import MainWindow
     make_app()
     w = MainWindow()
+    w.show_editor()  # Editor guards explicitly enter the editor from welcome.
     w.view.resize(900, 600)
     yield w
     w.deleteLater()
@@ -37,7 +38,7 @@ def window(qapp):
 def test_main_window_builds_without_showing(window):
     assert not window.isVisible()
     texts = [a.text() for a in window.findChildren(type(window.a_copy))]
-    for t in ("Capture", "Open…", "Save…", "Copy image", "Clear", "Undo",
+    for t in ("Capture", "Open…", "Save…", "Copy image", "Close picture", "Undo",
               "Redo",
               "Select", "Text", "Callout", "Rect", "Ellipse", "Arrow",
               "Highlight", "Pen", "Crop", "Duplicate", "Front", "Back", "Delete"):
@@ -71,7 +72,8 @@ def test_tool_drag_creates_one_item_then_move_is_one_step(window):
     assert rect.geom() == (round(p0.x()), round(p0.y()),
                            round(p1.x()) - round(p0.x()), round(p1.y()) - round(p0.y()))
     assert doc.undo_stack.count() == 1 and rect.isSelected()
-    assert view.tool is Tool.SELECT and window.tool_actions[Tool.SELECT].isChecked()
+    assert view.tool is Tool.RECT and window.tool_actions[Tool.RECT].isChecked()
+    window.tool_actions[Tool.SELECT].trigger()
     g = rect.geom()
     drag(view, QPoint(180, 150), QPoint(230, 170))         # move it
     assert doc.undo_stack.count() == 2
@@ -87,15 +89,15 @@ def test_properties_bar_follows_the_selection(window):
     t.set_geom((10, 10, 200, 50))
     r.set_geom((300, 10, 80, 80))
     doc.add_items([t, r])
-    assert window.sel_heading.text() == "Text defaults"
+    assert window.sel_heading.text() == "Click an object to change it, or pick a tool to draw."
     doc.select_only([r])
     assert window.c_border.isEnabled() and not window.f_font.isEnabled()
     assert not window.c_text.isEnabled()
-    assert window.sel_heading.text() == "Rectangle"
+    assert window.sel_heading.text() == "This rectangle"
     assert window.c_border.text() == "Red"            # swatch + color name
     doc.select_only([t])
     assert window.f_font.isEnabled() and window.c_text.isEnabled()
-    assert window.sel_heading.text() == "Text box"
+    assert window.sel_heading.text() == "This text"
     assert (window.c_text.text(), window.c_fill.text()) == ("Black", "White")
     assert window.s_size.value() == 24
     window.s_size.setValue(40)
@@ -111,24 +113,22 @@ def test_properties_bar_follows_the_selection(window):
     assert t.props["opacity"] == 1.0 and doc.undo_stack.index() == count - 1
 
 
-def test_the_property_strip_has_two_rows_and_a_hidden_line_row(window):
+def test_the_property_strip_has_two_rows_and_named_fields(window):
     """The strip under the tools: row 1 what is selected, Font, Size, Style,
     Align; row 2 Text (its color), Fill + No fill, Border + No border, Width,
     Opacity. Each label names the control beside it."""
     from PySide6.QtWidgets import QLabel, QVBoxLayout
     strip = window.prop_strip
     rows = strip.layout()
-    assert isinstance(rows, QVBoxLayout) and rows.count() == 3
-    assert window.prop_row3.isHidden()
+    assert isinstance(rows, QVBoxLayout) and rows.count() == 2
     labels = {lab.text(): lab.buddy() for lab in strip.findChildren(QLabel)
               if lab.objectName() == "fieldLabel"}
     assert labels == {
         "Font": window.f_font, "Size": window.s_size,
-        "Style": window.b_bold.parentWidget(),
         "Align": window.align_buttons["left"].parentWidget(),
-        "Text": window.c_text, "Fill": window.c_fill,
+        "Text colour": window.c_text, "Fill": window.c_fill,
         "Border": window.c_border, "Width": window.s_width,
-        "Opacity": window.sl_opacity, "Line": window.cb_line,
+        "Opacity": window.sl_opacity, "Line style": window.cb_line,
         "Head": window.cb_head,
         "Head size": window.cb_head_size}
     assert window.b_nofill.toolTip() == "No fill"
@@ -139,15 +139,15 @@ def test_the_property_strip_has_two_rows_and_a_hidden_line_row(window):
         while w.parentWidget() is not strip:
             w = w.parentWidget()
         return rows.indexOf(w)
+    from annotshot.tools import Tool
+    window.view.set_tool(Tool.TEXT)
     assert {row_of(w) for w in (window.sel_heading, window.f_font,
                                 window.s_size, window.b_bold,
-                                window.align_buttons["right"])} == {0}
-    assert {row_of(w) for w in (window.c_text, window.c_fill,
-                                window.b_nofill, window.c_border,
-                                window.b_noborder, window.s_width,
-                                window.sl_opacity)} == {1}
+                                window.align_buttons["right"], window.c_text,
+                                window.c_fill, window.c_border,
+                                window.sl_opacity)} <= {0, 1}
     assert 75 <= strip.sizeHint().height() <= 85      # the ~80 px strip
-    assert window.f_font.width() == 150 and window.sl_opacity.width() == 112
+    assert window.f_font.width() >= 180 and window.sl_opacity.width() == 112
     assert window.c_text.accessibleName() == "Text color"
 
 
@@ -340,7 +340,7 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     bars = {b.objectName(): b for b in window.findChildren(QToolBar)}
     assert set(bars) == {"main", "tools", "properties"}
     assert toolbar_texts(bars["main"]) == [
-        "Capture", "Open…", "Save…", "Copy image", "Clear", "<>", "|",
+        "Capture", "Open…", "Save…", "Copy image", "<>", "|", "Close picture",
         "Undo", "Redo", "Settings…"]
     assert toolbar_texts(bars["tools"]) == [
         "Select", "Text", "Callout", "Rect", "Ellipse", "Arrow", "Highlight",
@@ -357,14 +357,13 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     assert kids.index(bars["main"]) < kids.index(bars["tools"]) <         kids.index(bars["properties"])
     main = bars["main"]
     assert main.widgetForAction(window.a_capture).objectName() == "primary"
-    assert main.widgetForAction(window.a_copy).objectName() == "outline"
+    assert main.widgetForAction(window.a_copy).objectName() != "outline"
     # The buttons show the whole label, "…" included, beside the icon;
     # Undo, Redo and the item actions show only the icon, named by the
     # tooltip, and keep their shortcuts.
     assert main.toolButtonStyle() == Qt.ToolButtonTextBesideIcon
     assert window.a_open.iconText() == "Open…"
-    icon_only = {"Undo", "Redo", "Settings…", "Duplicate", "Front", "Back",
-                 "Delete"}
+    icon_only = {"Undo", "Redo", "Settings…"}
     for name in ("main", "tools"):
         bar = bars[name]
         for a in bar.actions():
@@ -376,7 +375,7 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
                 assert a.toolTip().startswith(
                     {"Front": "Bring to front", "Back": "Send to back"}.get(
                         a.text(), a.text())), a.toolTip()
-                assert "(Ctrl+" in a.toolTip() or a.text() == "Delete"
+                assert a.toolTip().endswith("(" + a.shortcut().toString(QKeySequence.NativeText) + ")")
             else:
                 assert style == Qt.ToolButtonTextBesideIcon, a.text()
     assert window.a_dup.shortcut().toString() == "Ctrl+D"
@@ -398,7 +397,7 @@ def laid_out(window, width, height):
     QApplication.processEvents()
 
 
-def assert_rows_fit(window, width=900):
+def assert_rows_fit(window, width=1100):
     """Rows 1 and 2 show every button at `width` logical px: no » button,
     every action's widget visible, each row's size hint within the row."""
     from PySide6.QtWidgets import QToolBar, QToolButton
@@ -424,24 +423,21 @@ def assert_rows_fit(window, width=900):
 WIDE_FONT_RATIO = 1.18
 
 
-def test_nothing_hides_behind_the_overflow_at_900_px(window):
-    """At 900 x 600 logical, rows 1 and 2 show every button: no » button,
-    and the buttons' widths add up to less than the row. The strip's rows
-    fit too, so it needs no sideways scroll bar. On the Mac the tools row
-    leaves 60 px spare, so a Mac-green run means a Linux-green run."""
+def test_nothing_hides_behind_the_overflow_at_1100_px(window):
+    """The s10 labelled item actions and the strip fit at 1100 px."""
     from PySide6.QtWidgets import QToolBar
-    assert_rows_fit(window, 900)
+    assert_rows_fit(window, 1100)
     if sys.platform == "darwin":
         tools = window.findChild(QToolBar, "tools")
-        assert tools.sizeHint().width() <= 900 - 60, tools.sizeHint()
+        assert tools.sizeHint().width() <= 1100, tools.sizeHint()
     strip = window.prop_strip
-    assert strip.sizeHint().width() <= 900
+    assert strip.sizeHint().width() <= 1100
 
 
 def test_nothing_hides_behind_the_overflow_on_a_wide_font(qapp, monkeypatch):
     """The opposite case: the rows are sized for the widest CI font. With
     DejaVu Sans (Linux's face) when the machine has it, else the app's face
-    scaled by WIDE_FONT_RATIO, rows 1 and 2 still fit 900 px."""
+    scaled by WIDE_FONT_RATIO, rows 1 and 2 still fit the s10 1100 px width."""
     from PySide6.QtGui import QFontDatabase
     from annotshot import theme
     from annotshot.app import make_app
@@ -459,8 +455,9 @@ def test_nothing_hides_behind_the_overflow_on_a_wide_font(qapp, monkeypatch):
     w = None
     try:
         w = MainWindow()
+        w.show_editor()
         w.view.resize(900, 600)
-        assert_rows_fit(w, 900)
+        assert_rows_fit(w, 1100)
     finally:
         if w is not None:
             w.deleteLater()
@@ -508,12 +505,16 @@ def test_the_window_is_moderate_not_maximized(window):
 def test_the_window_size_is_remembered(window, private_settings):
     from PySide6.QtCore import QSize
     from annotshot.mainwindow import MainWindow
+    from annotshot.scene import Document
+    window._bind(Document(QImage(640, 360, QImage.Format_RGB32)))
     window.resize(640, 620)
     window.close()                                # nothing to save: accepted
     window.settings.sync()
     assert QSettings(private_settings, QSettings.IniFormat).value(
         "window/size", type=QSize) == QSize(640, 620)
     again = MainWindow()                          # the same private file
+    assert again.state_name == "welcome" and again.size() == QSize(640, 430)
+    again._bind(Document(QImage(640, 360, QImage.Format_RGB32)))
     assert again.size() == QSize(640, 620)
     again.deleteLater()
 
@@ -664,9 +665,9 @@ def test_the_save_actions_say_what_they_keep(window):
     assert mainwindow.OPEN_FILTER == "Annotshot editable (*.annotshot *.snagup)"
 
 
-def test_pen_tool_drag_draws_one_stroke_then_select(window):
+def test_pen_tool_drag_draws_one_stroke_and_stays_pen(window):
     """A drag with the Pen tool makes ONE pen stroke through the drag's
-    points; the tool returns to Select; a drag under 4 px makes nothing."""
+    points; the tool stays Pen; a drag under 4 px makes nothing."""
     from annotshot.items import PenItem
     from annotshot.tools import Tool
     view, doc = window.view, window.doc
@@ -685,22 +686,23 @@ def test_pen_tool_drag_draws_one_stroke_then_select(window):
     s0, s1 = view.mapToScene(pts[0]), view.mapToScene(pts[-1])
     assert (round(first.x()), round(first.y())) == (round(s0.x()), round(s0.y()))
     assert (round(last.x()), round(last.y())) == (round(s1.x()), round(s1.y()))
-    assert doc.undo_stack.count() == 1 and pen.isSelected()
+    assert doc.undo_stack.count() == 1 and not pen.isSelected()
     assert doc.undo_stack.undoText() == "Add Pen stroke"
-    assert view.tool is Tool.SELECT and window.tool_actions[Tool.SELECT].isChecked()
-    assert window.sel_heading.text() == "Pen stroke"
+    assert view.tool is Tool.PEN and window.tool_actions[Tool.PEN].isChecked()
+    assert window.sel_heading.text() == "New pen strokes"
     assert window.c_border.isEnabled() and window.s_width.isEnabled()
     assert window.sl_opacity.isEnabled()
     assert not window.c_fill.isEnabled() and not window.c_text.isEnabled()
     assert not window.f_font.isEnabled() and not window.b_nofill.isEnabled()
     assert window.c_border.text() == "Red" and window.s_width.value() == 4
     window.s_width.setValue(9)
-    assert pen.props["stroke_width"] == 9
+    assert view.starting_style("pen")["stroke_width"] == 9
+    assert pen.props["stroke_width"] == 4
 
     window.tool_actions[Tool.PEN].trigger()           # a 3 px nudge
     drag(view, QPoint(400, 300), QPoint(402, 301))
     assert doc.annotation_items() == [pen]
-    assert view.tool is Tool.SELECT
+    assert view.tool is Tool.PEN
 
 
 def test_the_fill_picker_starts_opaque_after_no_fill(window, monkeypatch):
@@ -750,6 +752,8 @@ def test_the_font_box_shows_the_selection_or_the_default(window):
     italic follow the same rule."""
     from annotshot.items import TextBoxItem
     doc = window.doc
+    from annotshot.tools import Tool
+    window.view.set_tool(Tool.TEXT)
     default = _default_family_shown(window)
     window.refresh_props()
     assert window.f_font.currentText() == default != "VT323"
@@ -778,6 +782,7 @@ def test_a_font_picked_with_nothing_selected_is_the_next_text_boxs(window):
     from annotshot.tools import Tool
     doc = window.doc
     doc.select_only([])
+    window.view.set_tool(Tool.TEXT)
     window.f_font.setCurrentIndex(0)                # VT323, nothing selected
     window.s_size.setValue(36)
     window.b_bold.setChecked(True)

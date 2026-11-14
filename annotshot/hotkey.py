@@ -17,7 +17,7 @@ import sys
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QObject, Qt, Signal
 from PySide6.QtGui import QKeySequence
 
-DEFAULT = "Ctrl+Shift+A"
+DEFAULT = "Ctrl+Shift+2"
 NOT_ON_LINUX = "not available on Linux yet"
 NEED_MODIFIER = "Use Ctrl, Alt or Shift with the key (or an F key alone)"
 ONE_KEY = "Use one key with its modifiers"

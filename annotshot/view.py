@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QGuiApplication, QPainter,
                            QPainterPath, QPen, QTransform)
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView, QMenu
@@ -24,7 +24,7 @@ from .tools import (ITEM_FOR_TOOL, MIN_DRAG, TYPING_TOOLS, Tool, click_geom, dra
 
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.05, 16.0, 1.25
 EMPTY_HINT = ("No picture yet",
-              "Click Capture (Ctrl+N) to take a screenshot, or Open… a saved file")
+              "Click Capture to take a screenshot, or Open… a saved file")
 HINT_INK = QColor("#7D8994")         # Light's; the theme's "hint" token
 # Beyond the picture (after a crop) shapes are kept and still editable, but
 # drawn faded: the canvas surround laid over them at about 65 %, so they show
@@ -43,7 +43,7 @@ def fade_color() -> QColor:
 
 class EditorView(QGraphicsView):
     zoomChanged = Signal(float)
-    toolDone = Signal()          # a create/crop tool finished: back to Select
+    toolDone = Signal()          # only Crop returns to Select
     toolChanged = Signal()
 
     def __init__(self, doc: Document, parent=None, settings=None):
@@ -54,8 +54,10 @@ class EditorView(QGraphicsView):
         self.setMouseTracking(True)
         self.zoom = 1.0
         self.tool = Tool.SELECT
+        self.empty_hint = EMPTY_HINT
         self._press = None           # (view pos, scene pos) of a tool drag
         self._preview = None
+        self._handle_drag = None
         self._before: dict | None = None
         self._fit_pending = True
         self.settings = settings
@@ -65,7 +67,6 @@ class EditorView(QGraphicsView):
         # callable(on_item: bool) -> the menu's QActions, None = separator
         self.menu_actions = None
         self._menu_blocked = False       # a right-click that cancelled a drag
-        self.doc = doc
         self.set_document(doc)
         self.set_tool(Tool.SELECT)
 
@@ -73,7 +74,7 @@ class EditorView(QGraphicsView):
     @staticmethod
     def factory_style(kind: str) -> dict:
         """Only style: never the previous object's text or geometry."""
-        return {k: v for k, v in ITEM_TYPES[kind].DEFAULTS.items()
+        return {k: v for k, v in ITEM_TYPES[kind]().props.items()
                 if k not in ("text", "padding")}
 
     def _remember_enabled(self) -> bool:
@@ -96,7 +97,8 @@ class EditorView(QGraphicsView):
             value = str(value).lower() in ("true", "1")
         if key == "align" and value not in ("left", "center", "right"):
             raise ValueError("not an alignment")
-        if key == "font_family" and (not isinstance(value, str) or not value.strip()):
+        if key == "font_family" and (not isinstance(value, str) or not value.strip()
+                                     or value.strip().startswith(".")):
             raise ValueError("not a font family")
         return item.normalize(key, value)
 
@@ -119,9 +121,11 @@ class EditorView(QGraphicsView):
         return dict(self.tool_defaults[kind] if self.remember_props
                     else self.factory_style(kind))
 
-    def defaults_item(self) -> BaseItem:
-        """The active tool's strip target; Select and Crop use text."""
-        cls = ITEM_FOR_TOOL.get(self.tool, ITEM_TYPES["text"])
+    def defaults_item(self) -> BaseItem | None:
+        """The active drawing tool's target; Select and Crop have no style."""
+        cls = ITEM_FOR_TOOL.get(self.tool)
+        if cls is None:
+            return None
         item = cls()
         item.apply_props(self.starting_style(item.KIND))
         return item
@@ -133,7 +137,10 @@ class EditorView(QGraphicsView):
         for control_key in keys:
             key = item.key_for(control_key)
             if key in style:
-                value = self._style_value(item, key, item.props[key])
+                try:
+                    value = self._style_value(item, key, item.props[key])
+                except (ValueError, TypeError, OverflowError):
+                    continue
                 style[key] = value
                 if self.settings is not None:
                     self.settings.setValue(f"props/{item.KIND}/{key}", value)
@@ -156,9 +163,14 @@ class EditorView(QGraphicsView):
 
     # -- document / zoom --------------------------------------------------
     def set_document(self, doc: Document) -> None:
-        self._press = self._preview = self._before = None
+        if hasattr(self, "doc"):
+            self.doc.editingChanged.disconnect(self._typing_changed)
+            self.doc.end_text_edit()
+        self._press = self._preview = self._before = self._handle_drag = None
         self.doc = doc
+        doc.editingChanged.connect(self._typing_changed)
         self.setScene(doc)
+        self._typing_changed(doc.editing_item)
         self._fit_pending = True
         self.set_zoom(1.0)
         if self.isVisible():
@@ -239,7 +251,7 @@ class EditorView(QGraphicsView):
         painter.save()
         painter.resetTransform()
         box = QRectF(self.viewport().rect())
-        title, line = EMPTY_HINT
+        title, line = self.empty_hint
         big = QFont(self.font())
         scale = theme.ui_scale()        # Retro's pixel font needs the size
         big.setPixelSize(round(20 * scale))
@@ -266,6 +278,19 @@ class EditorView(QGraphicsView):
         super().wheelEvent(event)
 
     # -- tools ------------------------------------------------------------
+    def event(self, event):
+        # An unmodified tool letter belongs to the text editor while typing.
+        # Modified editing/action shortcuts retain their existing behaviour.
+        if (event.type() == QEvent.ShortcutOverride
+                and hasattr(self, "doc") and self.doc.is_editing()
+                and not event.modifiers() & (Qt.ControlModifier
+                                             | Qt.AltModifier
+                                             | Qt.MetaModifier)
+                and event.text() and event.text().isprintable()):
+            event.accept()
+            return True
+        return super().event(event)
+
     def set_tool(self, tool: Tool) -> None:
         self.doc.end_text_edit()
         self._cancel_preview()
@@ -276,6 +301,16 @@ class EditorView(QGraphicsView):
                          else QGraphicsView.NoDrag)
         self.viewport().setCursor(Qt.ArrowCursor if select else Qt.CrossCursor)
         self.toolChanged.emit()
+
+    def _typing_changed(self, item):
+        self.setInteractive(self.tool is Tool.SELECT or item is not None)
+
+    def selected_handle_at(self, point):
+        for item in reversed(self.doc.selected()):
+            handle = item.handle_at(item.mapFromScene(point))
+            if handle is not None:
+                return item, handle
+        return None
 
     def _scene_pos(self, event) -> QPointF:
         return self.mapToScene(event.position().toPoint())
@@ -335,15 +370,34 @@ class EditorView(QGraphicsView):
             else:
                 item.set_geom(geom)
                 self.doc.add_items([item], f"Add {item.LABEL}")
-        self.set_tool(Tool.SELECT)
-        self.toolDone.emit()
+        if tool is Tool.CROP:
+            self.set_tool(Tool.SELECT)
+            self.toolDone.emit()
+        self.doc.select_only([item] if item is not None and tool is not Tool.PEN else [])
         if item is not None:
-            self.doc.select_only([item])
             if tool in TYPING_TOOLS:
                 item.start_edit()
 
+    def viewportEvent(self, event):
+        result = super().viewportEvent(event)
+        if (event.type() == QEvent.MouseMove and self.tool is not Tool.SELECT
+                and not self.doc.is_editing()):
+            # Qt also chooses item cursors inside viewportEvent. Apply the
+            # drawing tool's cursor after that, including over an object's body.
+            hit = self.selected_handle_at(self._scene_pos(event))
+            self.viewport().setCursor(hit[0].handle_cursor(hit[1]) if hit else Qt.CrossCursor)
+        return result
+
     # -- mouse ------------------------------------------------------------
     def mousePressEvent(self, event):
+        if self.tool is not Tool.SELECT and self.doc.is_editing():
+            editor = self.doc.editing_item.editor
+            if editor.contains(editor.mapFromScene(self._scene_pos(event))):
+                super().mousePressEvent(event)
+            else:
+                self.doc.end_text_edit()
+                event.accept()       # this press only ends typing
+            return
         if self.tool is Tool.SELECT:
             super().mousePressEvent(event)
             if event.button() == Qt.LeftButton:
@@ -352,6 +406,13 @@ class EditorView(QGraphicsView):
         if event.button() == Qt.LeftButton:
             self._menu_blocked = False
             p = self._scene_pos(event)
+            handle = self.selected_handle_at(p)
+            if handle is not None:
+                self._handle_drag = handle
+                self._before = {handle[0]: handle[0].geom()}
+                event.accept()
+                return
+            self.doc.clearSelection()
             self._press = (event.position(), p)
             self._start_preview(p)
         elif event.button() == Qt.RightButton:
@@ -361,13 +422,34 @@ class EditorView(QGraphicsView):
         event.accept()
 
     def mouseMoveEvent(self, event):
+        if self._handle_drag is not None:
+            item, handle = self._handle_drag
+            item.drag_handle(handle, self._scene_pos(event))
+            event.accept()
+            return
         if self._press is not None and self._preview is not None:
             self._update_preview(self._press[1], self._scene_pos(event))
+            event.accept()
+            return
+        if self.tool is not Tool.SELECT and not self.doc.is_editing():
+            hit = self.selected_handle_at(self._scene_pos(event))
+            self.viewport().setCursor(hit[0].handle_cursor(hit[1]) if hit else Qt.CrossCursor)
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._handle_drag is not None and event.button() == Qt.LeftButton:
+            item, handle = self._handle_drag
+            item.drag_handle(handle, self._scene_pos(event))
+            self._handle_drag = None
+            self.doc.commit_geometry(self._before)
+            self._before = None
+            event.accept()
+            return
+        if self.tool is not Tool.SELECT and self.doc.is_editing():
+            super().mouseReleaseEvent(event)
+            return
         if self.tool is Tool.SELECT:
             super().mouseReleaseEvent(event)
             if self._before is not None and event.button() == Qt.LeftButton:

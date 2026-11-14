@@ -4,6 +4,7 @@ each test (conftest's light_theme_after)."""
 from pathlib import Path
 
 import pytest
+from annotshot import typefaces
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,6 +31,7 @@ BASELINE_OTHER = {          # the chrome colours outside the stylesheet
 }
 # One ruled change since: row 2's tools pad 3px 0px 3px 2px (was 3px 4px),
 # fix round s5a, so the row fits 900 px on Linux's DejaVu Sans.
+# s10 UI Fix 1 also reserves separate text and menu-arrow space for Zoom.
 BASELINE_STYLE_SHEET = '''
 QMainWindow { background: #F6F7F9; }
 QToolTip { color: #25313D; background: #FFFFFF; border: 1px solid #C8D0DA;
@@ -125,6 +127,12 @@ QStatusBar { background: #F7F8FA; border-top: 1px solid #D4DBE2;
              color: #66727E; font-size: 12px; }
 QStatusBar::item { border: none; }
 QStatusBar QLabel { color: #465461; padding: 0px 6px; }
+/* Reserve space on the right for the zoom menu's arrow. */
+QToolButton#zoomButton {
+    color: #66727E; padding: 2px 22px 2px 6px; }
+QToolButton#zoomButton::menu-indicator {
+    subcontrol-origin: padding; subcontrol-position: right center;
+    width: 10px; height: 10px; right: 6px; }
 '''
 
 DARK = {
@@ -176,7 +184,7 @@ def test_light_is_the_look_before_themes_exactly(qapp):
     for token, value in BASELINE_OTHER.items():
         assert t[token] == value, token
     f = theme.font("light")
-    assert (f.family(), f.pixelSize()) == BASELINE_FONT
+    assert (f.family(), f.pixelSize()) == (typefaces.interface_family(), BASELINE_FONT[1])
 
 
 @pytest.mark.parametrize("name, ruled", [("dark", DARK), ("retro", RETRO)])
@@ -206,7 +214,7 @@ def test_the_three_themes_and_their_fonts(qapp):
     assert qapp.font().family() == "VT323"
     assert qapp.font().pixelSize() == 17
     theme.apply(qapp, "dark")
-    assert (qapp.font().family(), qapp.font().pixelSize()) == BASELINE_FONT
+    assert (qapp.font().family(), qapp.font().pixelSize()) == (typefaces.interface_family(), BASELINE_FONT[1])
 
 
 def test_an_unknown_setting_is_light():
@@ -248,6 +256,7 @@ def test_the_document_is_byte_identical_under_every_theme(window, qapp):
 
 def test_the_canvas_surround_and_hint_follow_the_theme(window, qapp):
     from annotshot import theme
+    window.show_editor()
     window.show()                       # offscreen: nothing on the screen
     for name in ("light", "dark", "retro"):
         window.set_theme(name)

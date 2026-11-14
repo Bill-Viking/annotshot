@@ -68,12 +68,12 @@ def test_a_callout_is_drawn_by_drag_and_starts_typing(window):
     (c,) = doc.annotation_items()
     assert isinstance(c, CalloutItem) and c.is_editing and c.isSelected()
     assert c.geom()[:4] == (200, 60, 220, 70)
-    assert window.sel_heading.text() == "Callout"
+    assert window.sel_heading.text() == "This callout"
     assert window.f_font.isEnabled() and window.c_fill.isEnabled()
     c.editor.textCursor().insertText("Look here")
     window.escape()
     assert c.props["text"] == "Look here" and not c.is_editing
-    assert view.tool is Tool.SELECT
+    assert view.tool is Tool.CALLOUT
 
 
 def test_a_plain_click_places_a_ready_sized_callout(window):
@@ -186,10 +186,12 @@ def test_the_callout_tool_has_its_icon_and_a_shortcut_row(window):
 # -- 4. the crop fade ---------------------------------------------------------
 def crop_with_an_arrow_half_out(window):
     from annotshot.items import ArrowItem
-    # The test screen is 800 px wide, so the window is 640: the Recent pane
-    # is put away to leave the canvas the 420 px these points need.
-    window.recent.hide()
+    # Enter editor before changing its restored dock state. The test screen
+    # is 800 px wide, so hide Recent to leave these points a 420 px canvas.
     view, doc = at_100(window, picture(640, 360, "#FFFFFF"))
+    window.recent.hide()
+    window.layout().setGeometry(window.rect())
+    window.pages.layout().setGeometry(window.pages.rect())
     a = ArrowItem()
     a.apply_props({"stroke_color": "#E53935", "stroke_width": 6})
     a.set_geom((100, 200, 400, 200))
@@ -246,6 +248,35 @@ def labels_of(widget):
     return [lab.text() for lab in widget.findChildren(QLabel) if lab.text()]
 
 
+def test_about_shows_when_this_build_was_made(window, monkeypatch):
+    """Two builds of one version number are told apart by the build line:
+    the newest file of the package from source, the program file when
+    packaged; with unreadable dates the line is left out, never guessed."""
+    import os
+    import re
+    import sys
+    import time
+    from pathlib import Path
+    from annotshot import help as about
+    from PySide6.QtWidgets import QLabel
+    newest = max(f.stat().st_mtime
+                 for f in Path(about.__file__).resolve().parent.glob("*.py"))
+    stamp = about.build_stamp()
+    assert stamp == time.strftime("%a %d %b %Y, %H:%M", time.localtime(newest))
+    assert re.fullmatch(r"\w{3} \d{2} \w{3} \d{4}, \d{2}:\d{2}", stamp)
+    line = about.about_widget().findChild(QLabel, "aboutBuild")
+    assert line is not None and line.text() == f"Build: {stamp}"
+    # packaged: the program file's own date
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", about.__file__)
+    assert about.build_stamp() == time.strftime(
+        "%a %d %b %Y, %H:%M", time.localtime(os.stat(about.__file__).st_mtime))
+    # the opposite case: dates that cannot be read
+    monkeypatch.setattr(sys, "executable", str(Path(about.__file__).parent / "no-such-file"))
+    assert about.build_stamp() == ""
+    assert about.about_widget().findChild(QLabel, "aboutBuild") is None
+
+
 def test_about_says_what_who_where_and_the_licence(window):
     from annotshot import __version__
     from annotshot.help import (ABOUT_LINE, PROJECT_URL, PUBLISHER,
@@ -253,8 +284,8 @@ def test_about_says_what_who_where_and_the_licence(window):
     from PySide6.QtWidgets import QLabel, QPushButton
     w = about_widget()
     texts = labels_of(w)
-    assert f"Annotshot {__version__}" in texts and __version__ == "0.3.1"
-    assert ABOUT_LINE in texts and PUBLISHER == "Viking Software"
+    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.0"
+    assert ABOUT_LINE in texts and PUBLISHER == "Stet Software"
     assert PUBLISHER in texts and "MIT licence" in texts
     assert PROJECT_URL == "https://github.com/Bill-Viking/annotshot"
     link = w.findChild(QLabel, "aboutLink")
@@ -271,7 +302,8 @@ def test_about_is_last_in_the_menu_and_a_settings_tab(window, monkeypatch):
     from annotshot.settings_dialog import SettingsDialog
     view, doc = at_100(window)
     menu = view.context_menu_at(view.mapFromScene(QPointF(600, 340)))
-    assert menu.actions()[-1] is window.a_about
+    assert menu.actions()[-3] is window.a_about
+    assert menu.actions()[-1] is window.a_quit
     assert window.a_about.text() == "About Annotshot…"
     menu.deleteLater()
     shown = []
@@ -352,8 +384,8 @@ def test_help_is_in_the_menu_and_its_buttons_open_the_pages(window, no_show):
     from annotshot.help import ISSUES_URL, MANUAL_URL
     view, doc = at_100(window)
     menu = view.context_menu_at(view.mapFromScene(QPointF(600, 340)))
-    assert [a.text() for a in menu.actions()][-2:] == ["Help",
-                                                        "About Annotshot…"]
+    assert [a.text() for a in menu.actions() if not a.isSeparator()][-4:] == [
+        "Help", "Send feedback…", "About Annotshot…", "Quit Annotshot"]
     menu.deleteLater()
     window.show_help()
     h = window._help_window
@@ -427,30 +459,30 @@ def test_the_permission_message_names_the_way_back(window, monkeypatch):
     from pathlib import Path
     from PySide6.QtWidgets import QMessageBox
     from annotshot import mainwindow
-    way_back = ("If Annotshot is already switched on and macOS still "
-                "refuses: in that same list remove Annotshot with − and add "
-                "it again with + from Applications, switch it on, then quit "
-                "and reopen Annotshot.")
+    way_back = ("If Annotshot is already switched on there and macOS still "
+                "refuses: remove it with −, add "
+                "it again with + from Applications, and switch it on.")
     assert mainwindow.PERMISSION_WAY_BACK == way_back
     assert mainwindow.PERMISSION_TEXT.endswith(way_back)
     assert "Screen & System Audio Recording" in mainwindow.PERMISSION_TEXT
     seen, opened = [], []
-    monkeypatch.setattr(QMessageBox, "exec",
-                        lambda self: seen.append(
-                            (self.text(), [b.text() for b in self.buttons()]))
-                        or 0)
+    class RecordingBox(QMessageBox):
+        def exec(self):
+            seen.append((self.text(), [b.text() for b in self.buttons()]))
+            return 0
+    monkeypatch.setattr(mainwindow, "QMessageBox", RecordingBox)
     monkeypatch.setattr(mainwindow.macos, "open_privacy_settings",
                         lambda: opened.append(1))
     window._permission_message()
     text, buttons = seen[0]
     assert text == mainwindow.PERMISSION_TEXT
-    assert sorted(buttons) == ["Not now", "Open System Settings"]
+    assert sorted(buttons) == ["Not now", "Open System Settings", "Restart Annotshot"]
     manual = (Path(__file__).resolve().parent.parent / "docs" /
               "USER-MANUAL.md").read_text(encoding="utf-8")
     updating = manual[manual.index("### Updating to a new version"):
                       manual.index("## The first ten seconds")]
     mac = [l for l in updating.splitlines() if l.startswith("- **macOS:**")][0]
-    assert way_back in mac and "every update asks for screen recording" in mac
+    assert way_back in mac and "after every update macOS asks again" in mac
     install = manual[manual.index("### macOS — four steps"):
                      manual.index("### Linux — three steps")]
     assert way_back in install

@@ -20,7 +20,7 @@ def pytest_configure(config):
 
 
 # Every module of the app that builds a QSettings; each test gets its own.
-SETTINGS_MODULES = ("annotshot.mainwindow", "annotshot.theme")
+SETTINGS_MODULES = ("annotshot.mainwindow", "annotshot.theme", "annotshot.capture")
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +41,19 @@ def qapp():
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def no_failed_write_box(monkeypatch, request):
+    """A test must answer the failed-write seam explicitly to ask it."""
+    from annotshot.mainwindow import MainWindow
+
+    def unexpected(self, why):
+        raise AssertionError(
+            f"{request.node.nodeid}: the failed-write box was asked ({why})")
+
+    unexpected.original = MainWindow._ask_failed_write   # for the seam's own test
+    monkeypatch.setattr(MainWindow, "_ask_failed_write", unexpected)
 
 
 @pytest.fixture

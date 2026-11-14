@@ -139,12 +139,14 @@ def test_no_permission_means_no_capture_and_the_message(window, monkeypatch):
                         lambda: requested.append(1))
     monkeypatch.setattr(window, "_permission_message",
                         lambda: asked.append(1))
-    monkeypatch.setattr(window, "_start_capture", lambda: started.append(1))
+    monkeypatch.setattr(window, "_start_capture", lambda mode=None: started.append(1))
+    monkeypatch.setattr(window, "_fresh_permission", lambda callback: callback("denied"))
     window.capture()
     QTest.qWait(mainwindow.CAPTURE_DELAY_MS + 100)
     assert asked == [1] and requested == [1] and started == []
     assert window._capture is None and window.isVisible()
-    assert window.statusBar().currentMessage() == mainwindow.PERMISSION_STATUS
+    assert window.statusBar().currentMessage() == mainwindow.PERMISSION_STATUS == (
+        "Capture is waiting for macOS to allow it")
     window.hide()
 
 
@@ -156,7 +158,7 @@ def test_with_permission_the_capture_starts(window, monkeypatch):
                         lambda: True)
     monkeypatch.setattr(window, "_permission_message",
                         lambda: pytest.fail("asked with permission"))
-    monkeypatch.setattr(window, "_start_capture", lambda: started.append(1))
+    monkeypatch.setattr(window, "_start_capture", lambda mode=None: started.append(1))
     window.capture()
     QTest.qWait(mainwindow.CAPTURE_DELAY_MS + 100)
     assert started == [1]
@@ -213,10 +215,10 @@ def test_clear_replaces_the_document_and_the_title(window, monkeypatch):
     window.a_clear.trigger()
     assert window.doc is not old and window.doc.is_placeholder
     assert window.windowTitle() == "Annotshot — Untitled[*]"
-    assert window.statusBar().currentMessage() == "Cleared"
+    assert window.statusBar().currentMessage() == "Picture closed"
     assert window.a_clear.shortcut() == QKeySequence("Ctrl+W")
     assert window.a_clear.toolTip().startswith(
-        "Remove the picture and start empty")
+        "Close this picture; kept captures stay in Recent captures")
 
 
 def test_clear_keeps_the_picture_when_the_question_says_cancel(window,
@@ -252,9 +254,9 @@ def test_the_menu_on_an_item_lists_the_item_actions(window):
     assert not r.isSelected()
     menu = window.view.context_menu_at(on_item)
     assert menu_texts(menu) == ["Copy image", "Save…", "|", "Duplicate",
-                                "Front", "Back", "Delete", "|", "Clear",
+                                "Front", "Back", "Delete", "|", "Close picture",
                                 "Capture", "Recent captures", "|", "Settings…", "Help",
-                                "About Annotshot…"]
+                                "Send feedback…", "About Annotshot…", "|", "Quit Annotshot"]
     assert r.isSelected()                        # selected first
     assert menu.actions()[0] is window.a_copy    # the same actions
     menu.deleteLater()
@@ -264,9 +266,9 @@ def test_the_menu_on_empty_canvas_has_no_item_actions(window):
     r, _ = with_rect(window)
     empty = window.view.mapFromScene(QPointF(600, 340))
     menu = window.view.context_menu_at(empty)
-    assert menu_texts(menu) == ["Copy image", "Save…", "|", "Clear",
+    assert menu_texts(menu) == ["Copy image", "Save…", "|", "Close picture",
                                 "Capture", "Recent captures", "|", "Settings…", "Help",
-                                "About Annotshot…"]
+                                "Send feedback…", "About Annotshot…", "|", "Quit Annotshot"]
     menu.deleteLater()
 
 
@@ -276,9 +278,9 @@ def test_the_same_menu_with_a_tool_active(window):
     window.tool_actions[Tool.ARROW].trigger()
     empty = window.view.mapFromScene(QPointF(600, 340))
     menu = window.view.context_menu_at(empty)
-    assert menu_texts(menu)[-7:] == ["Clear", "Capture", "Recent captures",
+    assert menu_texts(menu)[-10:] == ["Close picture", "Capture", "Recent captures",
                                      "|", "Settings…", "Help",
-                                     "About Annotshot…"]
+                                     "Send feedback…", "About Annotshot…", "|", "Quit Annotshot"]
     menu.deleteLater()
 
 
@@ -340,7 +342,7 @@ def test_saved_shortcuts_apply_at_start(qapp, private_settings):
     s.sync()
     w = MainWindow()
     assert w.a_copy.shortcut() == QKeySequence("Ctrl+K")
-    assert w.a_copy.toolTip().endswith("(Ctrl+K)")
+    assert w.a_copy.toolTip().endswith("(" + QKeySequence("Ctrl+K").toString(QKeySequence.NativeText) + ")")
     from annotshot.tools import Tool
     assert w.tool_actions[Tool.RECT].shortcut() == QKeySequence("R")
     assert w.a_delete.shortcut() == QKeySequence("Delete")
@@ -369,7 +371,7 @@ def test_ctrl_s_follows_the_saves_own_key(window):
 
 def test_the_capture_key_round_trips(window, fake_hotkey, private_settings):
     from annotshot.mainwindow import MainWindow
-    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+A")
+    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+2")
     assert not window.hotkey_off()
     assert window.set_hotkey(QKeySequence("Ctrl+Alt+P"), off=False) is None
     assert fake_hotkey.registered[-1] == "Ctrl+Alt+P"
@@ -385,9 +387,9 @@ def test_the_capture_key_round_trips(window, fake_hotkey, private_settings):
 def test_the_capture_key_may_not_be_an_actions_key(window, fake_hotkey):
     problem = window.set_hotkey(QKeySequence("Ctrl+N"), off=False)
     assert problem and "Capture" in problem
-    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+A")
+    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+2")
     # and an action may not take the capture key
-    problem = window.set_shortcut("copy", QKeySequence("Ctrl+Shift+A"))
+    problem = window.set_shortcut("copy", QKeySequence("Ctrl+Shift+2"))
     assert problem and "Capture from anywhere" in problem
 
 
@@ -468,7 +470,7 @@ def test_the_settings_page_lists_every_action(window, fake_hotkey):
     assert [d.tabs.tabText(i) for i in range(d.tabs.count())] == [
         "Shortcuts", "Capture", "Look", "About"]      # Look: s3b3
     assert list(d.edits) == [k for k, _ in SHORTCUT_ROWS]
-    assert len(SHORTCUT_ROWS) == 22
+    assert len(SHORTCUT_ROWS) == 27
     d.edits["copy"].setKeySequence(QKeySequence("Ctrl+D"))
     problem = d.commit("copy")
     assert "Duplicate" in problem and d.message.text() == problem
@@ -515,7 +517,7 @@ def test_quick_capture_copies_then_minimizes(window, monkeypatch):
     assert len(board.images) == 1 and board.images[0].width() == 1280
     assert window.isMinimized()
     assert window.statusBar().currentMessage() == \
-        "Copied 1280 × 720 — Ctrl+V to paste"
+        f"Copied 1280 × 720 — {QKeySequence(QKeySequence.Paste).toString(QKeySequence.NativeText)} to paste"
     assert not window.doc.undo_stack.needs_save()    # counts as exported
     window.showNormal()
     assert window.statusBar().currentMessage().startswith("Copied 1280")
@@ -535,6 +537,7 @@ def test_minimize_alone_does_nothing(window, monkeypatch):
     """The second box counts only while the first is on."""
     from annotshot.capture import CaptureResult
     board = stub_clipboard(monkeypatch)
+    window.settings.setValue("capture/copy", False)     # the first box off
     window.settings.setValue("capture/minimize", True)
     window._capture_done(CaptureResult(picture()))
     assert board.images == [] and not window.isMinimized()
@@ -542,13 +545,15 @@ def test_minimize_alone_does_nothing(window, monkeypatch):
     window.hide()
 
 
-def test_the_capture_tab_boxes_start_off_and_follow(window):
+def test_the_capture_tab_copy_starts_on_minimize_off_and_follow(window):
     from annotshot.settings_dialog import COPY_TEXT, MINIMIZE_TEXT, SettingsDialog
     d = SettingsDialog(window)
     assert d.quick_copy.text() == COPY_TEXT
     assert d.quick_minimize.text() == MINIMIZE_TEXT
-    assert not d.quick_copy.isChecked() and not d.quick_minimize.isChecked()
-    assert not d.quick_minimize.isEnabled()
+    assert d.quick_copy.isChecked() and not d.quick_minimize.isChecked()
+    assert d.quick_minimize.isEnabled() and window.quick_copy()
+    d.quick_copy.setChecked(False)          # the user's pick is kept
+    assert not d.quick_minimize.isEnabled() and not window.quick_copy()
     d.quick_copy.setChecked(True)
     assert d.quick_minimize.isEnabled() and window.quick_copy()
     d.quick_minimize.setChecked(True)

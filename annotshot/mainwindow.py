@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import warnings
 import zipfile
 import zlib
@@ -17,29 +18,30 @@ from pathlib import Path
 
 import shiboken6
 
-from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QRect, QSettings,
+from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QProcess, QRect, QSettings,
                             QSize, Qt, QTimer, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont,
-                           QFontDatabase, QFontInfo, QFontMetrics,
+                           QFontInfo, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QKeySequence,
-                           QPainter, QPixmap, QUndoGroup)
+                           QPainter, QPixmap, QShortcut, QUndoGroup)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
                                QCheckBox, QColorDialog, QComboBox, QFileDialog,
                                QFrame, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QScrollArea,
+                               QMainWindow, QMenu, QMessageBox, QScrollArea,
                                QSizePolicy, QSlider, QSpinBox,
-                               QStyledItemDelegate, QToolBar,
+                               QStackedWidget, QStyledItemDelegate, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
-from . import hotkey, macos
+from . import feedback, hotkey, macos
 from .capture import CaptureSession
 from .items import HighlightItem, without_alpha
 from .office import OFFICE_FORMATS, export
 from . import recent, theme, typefaces
 from .scene import Document
+from .packaged import app_data_directory, is_packaged
 from .tools import Tool
-from .view import EditorView
+from .view import EditorView, ZOOM_STEP
 
 PROJECT_FILTER = "Annotshot editable (*.annotshot)"
 PROJECT_FORMAT = "ANNOTSHOT"
@@ -64,21 +66,41 @@ DEFAULT_DIR = Path.home() / "Pictures" / "Annotshot"
 RECENT_SUBDIR = "Recent"            # the kept captures: DEFAULT_DIR/Recent
 CAPTURE_DELAY_MS = 250
 AUTOSAVE_MS = 700                   # the autosave's debounce after an edit
-CURRENT_KEY = "recent/current"      # the capture on screen, back at launch
+CURRENT_KEY = "recent/current"      # retained record, ignored at launch
 AUTOSAVE_FAILED = "Could not keep your changes to this picture: {why}"
+CLOSE_SAVE_FAILED = (
+    "Your last changes to this picture could not be kept ({why}).\n\n"
+    "Save a copy somewhere else, or discard those changes.")
+CLOSE_SAVE_COPY = "Save a copy…"
+CLOSE_DISCARD = "Discard changes"
+RESTART_SAVE_FAILED = (
+    "Annotshot did not restart: your changes to this picture could not be kept ({why})")
 # The way back when macOS refuses an app it already lists as switched on (an
 # update that is not signed by Apple keeps the old entry, which no longer
 # matches): the user manual's Updating -> macOS bullet says the same words.
 PERMISSION_WAY_BACK = (
-    "If Annotshot is already switched on and macOS still refuses: in that "
-    "same list remove Annotshot with − and add it again with + from "
-    "Applications, switch it on, then quit and reopen Annotshot.")
+    "If Annotshot is already switched on there and macOS still refuses: "
+    "remove it with −, add it again with + from "
+    "Applications, and switch it on.")
 PERMISSION_TEXT = (
-    "Annotshot needs permission to record the screen. Open System Settings "
-    "→ Privacy & Security → Screen & System Audio Recording, switch "
-    "Annotshot on, then quit Annotshot and start it again.\n\n"
+    "macOS has not yet allowed Annotshot to take pictures of your screen.\n\n"
+    "This is normal the first time, and it can come back after an update. "
+    "Nothing is broken.\n\n"
+    "Open System Settings and switch Annotshot on. macOS lists it under "
+    '"Screen & System Audio Recording": that is macOS\'s own name for the setting. '
+    "Annotshot takes still pictures only, never video or sound. "
+    "Annotshot then restarts by itself.\n\n"
     + PERMISSION_WAY_BACK)
-PERMISSION_STATUS = "Capture needs screen-recording permission"
+PERMISSION_STATUS = "Capture is waiting for macOS to allow it"
+PERMISSION_ON = "macOS now allows capture"
+PERMISSION_RESTART = "macOS now allows capture. Annotshot needs to restart to use it."
+PERMISSION_FIX = (
+    'To fix it: open System Settings, find Annotshot under "Screen & System Audio Recording", '
+    "remove it with −, add it again with + from Applications, and switch it on.")
+RESTART_STILL_REFUSED = (
+    "macOS shows Annotshot switched on but still refuses it. "
+    "This can happen after an update. Nothing is broken.\n\n"
+    + PERMISSION_FIX)
 # The window: it opens centered at a moderate size (never maximized), at
 # most SCREEN_SHARE of the screen's free area, never smaller than MIN_SIZE
 # (logical px). After a capture it grows to the picture at 100 %.
@@ -86,17 +108,34 @@ START_SIZE = QSize(1100, 720)
 MIN_SIZE = QSize(900, 600)
 SCREEN_SHARE = 0.8
 # Buttons that show only their icon (the tooltip names them).
-ICON_ONLY = ("Undo", "Redo", "Settings…", "Duplicate", "Front", "Back",
-             "Delete")
+ICON_ONLY = ("Undo", "Redo", "Settings…")
 # The shortcuts the user may set: (settings key, the name the page shows).
 # The tools' keys are their names in lower case. Saved as shortcuts/<key>.
 SHORTCUT_ROWS = (
     ("capture", "Capture"), ("open", "Open…"), ("save", "Save…"),
-    ("copy", "Copy image"), ("clear", "Clear"), ("undo", "Undo"),
+    ("copy", "Copy image"), ("clear", "Close picture"), ("undo", "Undo"),
     ("redo", "Redo"), *((t.name.lower(), t.value) for t in Tool),
     ("duplicate", "Duplicate"), ("front", "Front"), ("back", "Back"),
-    ("delete", "Delete"), ("settings", "Settings…"), ("help", "Help"))
+    ("delete", "Delete"), ("fit", "Fit"), ("zoom100", "100 %"),
+    ("zoom200", "200 %"), ("zoom_in", "Zoom in"), ("zoom_out", "Zoom out"),
+    ("settings", "Settings…"), ("help", "Help"))
+TOOL_KEYS = dict(zip(Tool, ("V", "T", "B", "R", "E", "A", "H", "P", "C")))
+KIND_WORDS = {
+    "text": ("text", "text objects"), "callout": ("callout", "callouts"),
+    "rect": ("rectangle", "rectangles"), "ellipse": ("ellipse", "ellipses"),
+    "arrow": ("arrow", "arrows"), "highlight": ("highlight", "highlights"),
+    "pen": ("pen stroke", "pen strokes")}
+TOOL_HINTS = {
+    Tool.SELECT: "Click an object to change it, or pick a tool to draw.",
+    Tool.CROP: "Drag a box to crop the picture; objects outside it stay editable."}
 HOTKEY_NAME = "Capture from anywhere"
+
+
+def default_directory() -> Path:
+    """Store captures stay in the user's app data. Other builds keep Pictures."""
+    if is_packaged():
+        return app_data_directory() / "Captures"
+    return DEFAULT_DIR
 
 
 # -- icons ----------------------------------------------------------------
@@ -112,7 +151,7 @@ ICON_SCALES = (1, 1.25, 1.5, 1.75, 2, 3)
 # Toolbar action text -> icon file (without .svg).
 TOOLBAR_ICONS = {
     "Capture": "capture", "Open…": "open", "Save…": "save",
-    "Copy image": "copy-image", "Clear": "clear-picture", "Undo": "undo",
+    "Copy image": "copy-image", "Close picture": "clear-picture", "Undo": "undo",
     "Redo": "redo", "Settings…": "settings",
     "Select": "select", "Text": "text", "Callout": "callout", "Rect": "rect",
     "Ellipse": "ellipse",
@@ -408,15 +447,16 @@ class FontBox(QComboBox):
         self.blockSignals(True)
         try:
             self.clear()
-            self.bundled = typefaces.load_bundled()
+            self.bundled = [f for f in typefaces.load_bundled()
+                            if not f.startswith(".")]
             for family in self.bundled:
                 self.addItem(family)
                 i = self.count() - 1
                 self.setItemData(i, typefaces.tooltip(family), Qt.ToolTipRole)
             if self.bundled:
                 self.insertSeparator(self.count())
-            for family in QFontDatabase.families():
-                if family in self.bundled or QFontDatabase.isPrivateFamily(family):
+            for family in typefaces.public_families():
+                if family in self.bundled:
                     continue
                 self.addItem(family)
         finally:
@@ -432,6 +472,8 @@ class FontBox(QComboBox):
     def setCurrentFont(self, font: QFont) -> None:  # noqa: N802 - Qt's name
         """Select the family, or the one Qt would draw it with; a family this
         system lacks is shown by its name."""
+        if font.family().strip().startswith("."):
+            font = QFont(typefaces.text_family())
         i = self.findText(font.family(), Qt.MatchFixedString)
         if i < 0:
             i = self.findText(QFontInfo(font).family(), Qt.MatchFixedString)
@@ -442,17 +484,52 @@ class FontBox(QComboBox):
             self.setEditText(font.family())
 
     def currentFont(self) -> QFont:  # noqa: N802 - Qt's name
-        return QFont(self.currentText())
+        family = self.currentText()
+        return QFont(typefaces.text_family() if family.strip().startswith(".") else family)
+
+
+class _ReadableRecentStore(recent.RecentStore):
+    def files(self):
+        # ASSUMES: Recent is readable. An unavailable store still permits launch.
+        try:
+            return super().files()
+        except Exception:
+            return []
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, permission_restart=False):
         super().__init__()
         self.settings = QSettings("Annotshot", "Annotshot")
         self.undo_group = QUndoGroup(self)
         self.doc = Document()
         self._bound: Document | None = None
         self._capture: CaptureSession | None = None
+        self._capture_pending = False
+        self._capture_was_visible = True
+        self._quitting = False
+        self.tray = None
+        self._permission_restarted = permission_restart
+        self._permission_process = None
+        self._permission_callback = None
+        self._permission_expired = False
+        self._permission_deadline = 0.0
+        self._permission_stale = False
+        self._restart_pending = False
+        self._restart_save = None
+        self._save_jobs = set()         # document, change count, path awaiting an outcome
+        self._restart_dialog = False
+        self._permission_box = None
+        self._permission_watch = QTimer(self)
+        self._permission_watch.setInterval(3000)
+        self._permission_watch.timeout.connect(self._permission_tick)
+        self._permission_timeout = QTimer(self)
+        self._permission_timeout.setSingleShot(True)
+        self._permission_timeout.setInterval(5000)
+        self._permission_timeout.timeout.connect(self._permission_check_timeout)
+        QApplication.instance().aboutToQuit.connect(self._permission_quitting)
+        QApplication.instance().applicationStateChanged.connect(self._permission_active)
+        self.state_name = "welcome"
         # One open at a time: Open…, open_path and macOS's FileOpen events
         # share this flag; a file that arrives meanwhile is kept (the newest
         # wins) and opens when the running open returns.
@@ -462,7 +539,9 @@ class MainWindow(QMainWindow):
         self._refreshing = False
         self._marks: dict = {}          # the heading's kind marks
         self.view = EditorView(self.doc, self, settings=self.settings)
-        self.setCentralWidget(self.view)
+        self.pages = QStackedWidget(self)
+        self.pages.addWidget(self.view)
+        self.setCentralWidget(self.pages)
         self._build_actions()
         self._apply_saved_shortcuts()
         self.hotkey = hotkey.GlobalHotkey(self)
@@ -470,7 +549,17 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_props_bar()
         self.view.toolChanged.connect(self.refresh_props)
-        self.zoom_label, self.size_label = QLabel(), QLabel()
+        self.view.toolChanged.connect(
+            lambda: self.tool_actions[self.view.tool].setChecked(True))
+        self.zoom_label, self.size_label = QToolButton(), QLabel()
+        self.zoom_label.setObjectName("zoomButton")
+        self.zoom_label.setToolTip("Zoom")
+        self.zoom_label.setPopupMode(QToolButton.InstantPopup)
+        zoom_menu = QMenu(self.zoom_label)
+        for action in (self.a_fit, self.a_zoom100, self.a_zoom200,
+                       self.a_zoom_in, self.a_zoom_out):
+            zoom_menu.addAction(action)
+        self.zoom_label.setMenu(zoom_menu)
         bar = self.statusBar()
         bar.addPermanentWidget(self.size_label)
         bar.addPermanentWidget(self.zoom_label)
@@ -489,28 +578,99 @@ class MainWindow(QMainWindow):
         self._saver.failed.connect(self._autosave_failed)
         self._remembering = False       # recent/current, from launch on
         self._build_recent()
+        from .welcome import WelcomeWidget
+        self.welcome = WelcomeWidget(self)
+        self.pages.addWidget(self.welcome)
+        self._welcome_keys = []
+        for key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(lambda: self.capture())
+            self._welcome_keys.append(shortcut)
+        self._editor_state = self.saveState()
         self._bind(self.doc)
+        self.show_welcome()
+        bar.showMessage(self.capture_status(), 8000)
+        self._remembering = True
+        self.configure_background()
+        if permission_restart and macos.IS_MAC and macos.screen_capture_state() == "allowed":
+            bar.showMessage(PERMISSION_ON)
+
+    def _save_editor_geometry(self):
+        if self.state_name == "editor":
+            size = (self.normalGeometry().size() if self.isMaximized()
+                    or self.isFullScreen() else self.size())
+            self._editor_state = self.saveState()
+            self.settings.setValue("window/size", size)
+            self.settings.setValue("window/state", self._editor_state)
+
+    def _picture_actions(self, enabled):
+        for shortcut in self._welcome_keys:
+            shortcut.setEnabled(not enabled)
+        for action in (self.a_save, self.a_copy, self.a_clear, self.a_dup,
+                       self.a_front, self.a_back, self.a_delete, self.a_fit,
+                       self.a_zoom100, self.a_zoom200, self.a_zoom_in,
+                       self.a_zoom_out, *self.tool_actions.values()):
+            action.setEnabled(enabled)
+        if not enabled:
+            self.a_undo.setEnabled(False)
+            self.a_redo.setEnabled(False)
+
+    def show_welcome(self):
+        self._save_editor_geometry()
+        self.state_name = "welcome"
+        self.pages.setCurrentWidget(self.welcome)
+        for toolbar in self.findChildren(QToolBar):
+            toolbar.hide()
+        self.recent.hide()
+        self.statusBar().hide()
+        self._picture_actions(False)
+        self.welcome.refresh()
         area = self._screen_area()
+        if self.isMaximized() or self.isFullScreen():
+            was_visible = self.isVisible()
+            self.showNormal()
+            if not was_visible:
+                self.hide()
+        self.setFixedSize(640, 430)
+        frame = self.frameGeometry()
+        frame.moveCenter(area.center())
+        self.move(frame.topLeft())
+        # Account for native frame margins and integer rounding on screens
+        # whose logical origin is negative.
+        self.move(self.pos() + area.center() - self.frameGeometry().center())
+        self.welcome.setFocus()
+
+    def show_editor(self):
+        if self.state_name == "editor":
+            return
+        self.state_name = "editor"
+        area = self._screen_area()
+        self.setMaximumSize(QSize(16777215, 16777215))
         self.setMinimumSize(MIN_SIZE.boundedTo(self._cap(area)))
+        self.pages.setCurrentWidget(self.view)
+        self.restoreState(self._editor_state)
+        for toolbar in self.findChildren(QToolBar):
+            toolbar.show()
+        self.statusBar().show()
         saved = self.settings.value("window/size", START_SIZE, type=QSize)
         self._place(saved if saved.isValid() else START_SIZE, area)
+        self._picture_actions(True)
+        self._sync_undo()
         self.view.setFocus()
-        bar.showMessage("Ctrl+N to capture a region or a window", 8000)
-        self.restore_last()
-        self._remembering = True
 
     # -- building ---------------------------------------------------------
     def _build_recent(self) -> None:
         """The Recent captures pane: docked on the right the first time,
         then where the user left it (docked left or right, floating, or
         closed), restored from the saved window state."""
-        self.recent_store = recent.RecentStore(
-            lambda: Path(DEFAULT_DIR) / RECENT_SUBDIR)
+        self.recent_store = _ReadableRecentStore(
+            lambda: default_directory() / RECENT_SUBDIR)
         self.recent = recent.RecentPane(self.recent_store, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.recent)
         self.recent.openRequested.connect(self.open_recent)
         self.recent.filingFailed.connect(self._filing_failed)
         self.recent.deleted.connect(self._recent_deleted)
+        self.recent._filer.filed.connect(self._refresh_welcome_recent)
         self.a_recent = self.recent.toggleViewAction()
         self.a_recent.setText(recent.TITLE)
         self.a_recent.setToolTip("Show or hide the Recent captures pane")
@@ -518,6 +678,10 @@ class MainWindow(QMainWindow):
                                     type=QByteArray)
         if state is not None and not state.isEmpty():
             self.restoreState(state)
+
+    def _refresh_welcome_recent(self, *_):
+        if hasattr(self, "welcome") and self.state_name == "welcome":
+            self.welcome.refresh_recent()
 
     def keep_recent(self) -> bool:
         return self.settings.value(recent.SETTING, True, type=bool)
@@ -590,50 +754,42 @@ class MainWindow(QMainWindow):
             return False
         meta, base = doc.snapshot()
         gen = doc.written = doc.changes
+        outcome = doc.last_write = recent.WriteOutcome()
+        self._save_jobs.add((doc, gen, doc.path))
         recent.writer().start(recent._SaveJob(
-            doc, gen, doc.path, meta, base, self._saver))
+            doc, gen, doc.path, meta, base, self._saver, outcome))
         return True
 
     def _autosaved(self, doc, gen: int, path: str) -> None:
         """A write landed: the document is clean if nothing changed since,
         and its thumbnail shows the edit."""
+        key = (doc, gen, path)
+        self._save_jobs.discard(key)
         if shiboken6.isValid(doc) and doc.changes == gen:
             doc.undo_stack.setClean()
         if self.recent_store.owns(path):
             self.recent.refresh_one(path)
+        if self._restart_pending and self._restart_save == key:
+            self._restart_save = None
+            self._save_before_permission_restart()
 
     def _autosave_failed(self, doc, gen: int, path: str, why: str) -> None:
         """One sentence; the next change (or switch) tries again."""
+        key = (doc, gen, path)
+        self._save_jobs.discard(key)
         if shiboken6.isValid(doc) and doc.written == gen:
             doc.written = -1
         self.statusBar().showMessage(AUTOSAVE_FAILED.format(why=why), 10000)
+        if self._restart_pending and self._restart_save == key:
+            self._restart_pending = False
+            self._restart_save = None
+            self.statusBar().showMessage(RESTART_SAVE_FAILED.format(why=why))
 
     def changeEvent(self, event):       # noqa: N802 - Qt's name
         if event.type() == QEvent.ActivationChange and \
                 not self.isActiveWindow():
             self.autosave_now()         # the window lost focus: keep it now
         super().changeEvent(event)
-
-    def restore_last(self) -> bool:
-        """Launch: open the capture (or file) that was on screen when the
-        app last closed, with its edits; the empty page when it is gone."""
-        last = self.settings.value(CURRENT_KEY, "", type=str)
-        if not last:
-            return False
-        if self.recent_store.owns(last):
-            if not (Path(last).is_file() or recent.png_for(last).is_file()):
-                return False
-            return self.open_recent(last, quiet=True)
-        if not os.path.isfile(last):
-            return False
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                doc = Document.load(last)
-        except Exception:               # noqa: BLE001 - a broken file: start empty
-            return False
-        self._bind(doc)
-        return True
 
     def is_recent_doc(self, doc: Document | None = None) -> bool:
         doc = doc or self.doc
@@ -677,10 +833,11 @@ class MainWindow(QMainWindow):
         """The tooltip: what it does, then its first key."""
         keys = a.shortcuts()
         tip = a.property("tip") or a.text()
-        a.setToolTip(f"{tip} ({keys[0].toString()})" if keys else tip)
+        key = keys[0].toString(QKeySequence.NativeText) if keys else ""
+        a.setToolTip(f"{tip} ({key})" if key else tip)
 
     def _build_actions(self) -> None:
-        self.a_capture = self._act("Capture", self.capture, "Ctrl+N",
+        self.a_capture = self._act("Capture", lambda: self.capture(), "Ctrl+N",
                                    "Capture a region or a window")
         self.a_open = self._act("Open…", self.open_project, "Ctrl+O",
                                 "Open an Annotshot editable file")
@@ -690,10 +847,12 @@ class MainWindow(QMainWindow):
             cls=SaveAction)
         self.a_copy = self._act("Copy image", self.copy_image, "Ctrl+C",
                                 "Copy the picture to the clipboard")
-        self.a_clear = self._act("Clear", self.clear_picture, "Ctrl+W",
-                                 "Remove the picture and start empty")
+        self.a_clear = self._act("Close picture", self.clear_picture, "Ctrl+W",
+                                 "Close this picture; kept captures stay in Recent captures")
         self.a_undo = self._act("Undo", self.undo, "Ctrl+Z")
-        self.a_redo = self._act("Redo", self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"])
+        self.a_redo = self._act("Redo", self.redo,
+                               ["Ctrl+Shift+Z", "Ctrl+Y"] if macos.IS_MAC
+                               else ["Ctrl+Y", "Ctrl+Shift+Z"])
         # While a text box is edited, Undo / Redo drive its text's own
         # history; otherwise the undo stack (see _sync_undo).
         self._typing_doc = None
@@ -705,7 +864,10 @@ class MainWindow(QMainWindow):
         self.tool_actions: dict[Tool, QAction] = {}
         for tool in Tool:
             a = self._act(tool.value, lambda _=False, t=tool: self.view.set_tool(t),
-                          checkable=True)
+                          TOOL_KEYS[tool], checkable=True)
+            self.removeAction(a)
+            self.view.addAction(a)
+            a.setShortcutContext(Qt.WidgetWithChildrenShortcut)
             group.addAction(a)
             self.tool_actions[tool] = a
         self.tool_actions[Tool.SELECT].setChecked(True)
@@ -716,6 +878,13 @@ class MainWindow(QMainWindow):
                                 "Send to back")
         self.a_delete = self._act("Delete", self.delete_selected, "Delete")
         self.a_escape = self._act("Deselect", self.escape, "Esc")
+        self.a_fit = self._act("Fit", self.view.zoom_to_fit_or_100, "Ctrl+0")
+        self.a_zoom100 = self._act("100 %", lambda: self.view.set_zoom(1), "Ctrl+1")
+        self.a_zoom200 = self._act("200 %", lambda: self.view.set_zoom(2))
+        self.a_zoom_in = self._act("Zoom in", lambda: self.view.set_zoom(
+            self.view.zoom * ZOOM_STEP), "Ctrl+=")
+        self.a_zoom_out = self._act("Zoom out", lambda: self.view.set_zoom(
+            self.view.zoom / ZOOM_STEP), "Ctrl+-")
         self.a_settings = self._act("Settings…", self.open_settings, "Ctrl+,",
                                     "Settings… — shortcuts and quick capture")
         self.a_settings.setMenuRole(QAction.NoRole)
@@ -723,10 +892,18 @@ class MainWindow(QMainWindow):
                                 "Help — the user manual and your keys")
         self.a_help.setMenuRole(QAction.NoRole)
         self._help_window = None
+        self.a_feedback = self._act(
+            "Send feedback…", self.send_feedback,
+            tip="Report a bug or suggest an improvement — opens the feedback "
+                "page in your browser")
+        self.a_feedback.setMenuRole(QAction.NoRole)
         self.a_about = self._act("About Annotshot…", self.show_about,
                                  tip="About Annotshot — version, publisher, "
                                      "licence")
         self.a_about.setMenuRole(QAction.NoRole)
+        self.a_quit = self._act("Quit Annotshot", self.quit_app,
+                                [QKeySequence(QKeySequence.Quit)])
+        self.a_quit.setMenuRole(QAction.QuitRole)
         self.shortcut_actions: dict[str, QAction] = {
             "capture": self.a_capture, "open": self.a_open,
             "save": self.a_save, "copy": self.a_copy, "clear": self.a_clear,
@@ -734,17 +911,30 @@ class MainWindow(QMainWindow):
             **{t.name.lower(): self.tool_actions[t] for t in Tool},
             "duplicate": self.a_dup, "front": self.a_front,
             "back": self.a_back, "delete": self.a_delete,
+            "fit": self.a_fit, "zoom100": self.a_zoom100,
+            "zoom200": self.a_zoom200, "zoom_in": self.a_zoom_in,
+            "zoom_out": self.a_zoom_out,
             "settings": self.a_settings, "help": self.a_help}
         self.shortcut_names = dict(SHORTCUT_ROWS)
         self.default_shortcuts = {k: a.shortcuts()
                                   for k, a in self.shortcut_actions.items()}
+        self._update_capture_hint()
+
+    def capture_status(self) -> str:
+        key = self.a_capture.shortcut().toString(QKeySequence.NativeText)
+        return f"{key} to take a screenshot" if key else "Click Capture to take a screenshot"
+
+    def _update_capture_hint(self) -> None:
+        # ASSUMES: Capture has a key. A cleared key removes the whole bracket.
+        key = self.a_capture.shortcut().toString(QKeySequence.NativeText)
+        capture = f"Capture ({key})" if key else "Capture"
+        self.view.empty_hint = ("No picture yet", f"Click {capture} to take a screenshot, or Open… a saved file")
+        self.view.viewport().update()
 
     def _build_toolbar(self) -> None:
-        """Row 1: Capture, Open, Save, Copy image, Clear | Undo, Redo. Row 2: the
-        tools | the item actions. (The property strip is row 3.) Capture,
-        Open, Save, Copy image and the tools are an icon with its label
-        beside it; Undo, Redo and the item actions are icon-only (ICON_ONLY),
-        named by their tooltips."""
+        """Capture and file actions on the left; Close picture and history
+        on the right. Tools and labelled object actions occupy row 2.
+        Undo, Redo and Settings use icons named by their tooltips."""
         def new_bar(title: str, name: str, height: int) -> QToolBar:
             bar = QToolBar(title, self)
             bar.setObjectName(name)
@@ -771,20 +961,17 @@ class MainWindow(QMainWindow):
         self.a_capture.setIconVisibleInMenu(False)
 
         bar = new_bar("Main", "main", 40)
-        for a in (self.a_capture, self.a_open, self.a_save, self.a_copy,
-                  self.a_clear):
+        for a in (self.a_capture, self.a_open, self.a_save, self.a_copy):
             bar.addAction(a)
         spacer(bar)                     # Undo, Redo keep the right edge
         bar.addSeparator()
-        for a in (self.a_undo, self.a_redo, self.a_settings):
+        for a in (self.a_clear, self.a_undo, self.a_redo, self.a_settings):
             bar.addAction(a)
         bar.widgetForAction(self.a_capture).setObjectName("primary")
-        bar.widgetForAction(self.a_copy).setObjectName("outline")
         bar.widgetForAction(self.a_settings).setObjectName("last")
         self.addToolBar(bar)
-        # ASSUMES: the rows are sized for the widest of the three CI fonts
-        # (Linux's DejaVu Sans); the tools' padding in theme.TEMPLATE keeps
-        # row 2 inside 900 px there (the wide-font test proves it).
+        # Labelled object actions fit the brief's 1100 px tools row;
+        # narrower windows retain Qt's normal toolbar overflow menu.
         bar = new_bar("Tools", "tools", 36)
         for a in self.tool_actions.values():
             bar.addAction(a)
@@ -818,7 +1005,7 @@ class MainWindow(QMainWindow):
         for b in (getattr(self, "b_nofill", None),
                   getattr(self, "b_noborder", None)):
             if b is not None:
-                b.setIcon(themed_icon("clear", size=14))
+                b.setIcon(themed_icon("no-color", size=14))
         for key, b in getattr(self, "align_buttons", {}).items():
             b.setIcon(themed_icon(ALIGN_ICONS[key], size=17,
                                   checked="mark-ink"))
@@ -839,6 +1026,8 @@ class MainWindow(QMainWindow):
         self.recent.retheme()
         self.doc.update()
         self.view.viewport().update()
+        if hasattr(self, "welcome"):
+            self.welcome.retheme()
         if self._help_window is not None:
             self._help_window.update()
 
@@ -859,7 +1048,7 @@ class MainWindow(QMainWindow):
         return s
 
     def _build_props_bar(self) -> None:
-        """The property strip, with an extra row for arrow and pen lines."""
+        """Two constant rows; only applicable fields occupy the strip."""
         self._key_widgets: dict[str, list] = {}
         bar = QToolBar("Properties", self)
         bar.setObjectName("properties")
@@ -879,7 +1068,7 @@ class MainWindow(QMainWindow):
             b.setObjectName("field")
             b.setText("")
             b.setAccessibleName(name)
-            b.setIcon(themed_icon("clear", size=14))
+            b.setIcon(themed_icon("no-color", size=14))
             b.setIconSize(QSize(14, 14))
             b.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.s_width = self._spin(0, 40, "Border width",
@@ -889,7 +1078,7 @@ class MainWindow(QMainWindow):
         self.f_font.setSizeAdjustPolicy(
             QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.f_font.setMinimumContentsLength(8)
-        self.f_font.setFixedWidth(150)
+        self.f_font.setFixedWidth(180)
         self.f_font.currentFontChanged.connect(
             lambda f: set_({"font_family": f.family()}, "Font"))
         self.s_size = self._spin(6, 400, "Font size (pixels)",
@@ -944,21 +1133,12 @@ class MainWindow(QMainWindow):
             lambda v: self.opacity_label.setText(f"{v}%"))
         self.opacity_label.setText(f"{self.sl_opacity.value()}%")
 
-        # What is selected: a small kind mark and its name. The name keeps
-        # one width so the row never shifts as the selection changes.
         self.sel_mark = QLabel(self)
         self.sel_mark.setObjectName("objectMark")
         self.sel_mark.setFixedSize(21, 21)
         self.sel_mark.setAlignment(Qt.AlignCenter)
         self.sel_heading = QLabel(self)
         self.sel_heading.setObjectName("objectHeading")
-        bold = QFont(self.sel_heading.font())
-        bold.setBold(True)
-        fm = QFontMetrics(bold)
-        self.sel_heading.setMinimumWidth(max(
-            fm.horizontalAdvance(t) for t in (
-                "Nothing selected", "Text box", "Rectangle", "Highlight",
-                "Pen stroke", "99 objects")) + 4)
 
         strip = QWidget(self)
         strip.setObjectName("strip")
@@ -966,53 +1146,43 @@ class MainWindow(QMainWindow):
         rows.setContentsMargins(8, 2, 8, 2)
         rows.setSpacing(0)
 
-        def row(height: int, *parts) -> QWidget:
+        def row() -> QWidget:
             w = QWidget(strip)
-            w.setMinimumHeight(height)
+            w.setFixedHeight(36)
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(6)
-            for part in parts:
-                h.addWidget(part)
+            h.setSpacing(8)
             h.addStretch(1)
             rows.addWidget(w)
             return w
 
-        row(36,
-            self._group(None, self.sel_mark, self.sel_heading, gap=6),
-            self._divider(),
-            self._group("Font", self.f_font),
-            self._group("Size", self.s_size),
-            self._divider(),
-            self._group("Style", self._segment(self.b_bold, self.b_italic)),
-            self._group("Align", self._segment(*self.align_buttons.values())))
+        self.prop_row1, self.prop_row2 = row(), row()
+        heading = self._group(None, self.sel_mark, self.sel_heading, gap=6)
         self.border_group = self._group("Border", self.c_border, self.b_noborder)
         self.border_label = self.border_group.findChild(QLabel, "fieldLabel")
-        self.line_group = self._group("Line", self.cb_line)
-        # Shapes keep Line style on row 2, so they still need only two rows.
-        self.shape_line_slot = QWidget(strip)
-        shape_line = QHBoxLayout(self.shape_line_slot)
-        shape_line.setContentsMargins(0, 0, 0, 0)
-        self.prop_row2 = row(36,
-            self._group("Text", self.c_text),
-            self._divider(),
-            self._group("Fill", self.c_fill, self.b_nofill),
-            self._divider(),
-            self.border_group,
-            self._group("Width", self.s_width),
-            self.shape_line_slot,
-            self._divider(),
-            self._group("Opacity", self.sl_opacity, self.opacity_label,
-                        gap=6))
-        self.prop_row3 = row(36,
-            *self._shown_with("line_style", self.line_group),
-            *self._shown_with("head", self._divider(),
-                              self._group("Head", self.cb_head),
-                              self._group("Head size", self.cb_head_size),
-                              self.ch_both))
+        self.fill_group = self._group("Fill", self.c_fill, self.b_nofill)
+        self.fill_label = self.fill_group.findChild(QLabel, "fieldLabel")
+        self.line_group = self._group("Line style", self.cb_line)
+        self._prop_groups = [
+            (None, heading),
+            ("font_family", self._group("Font", self.f_font)),
+            ("font_px", self._group("Size", self.s_size)),
+            ("bold", self._group(None, self._segment(self.b_bold, self.b_italic))),
+            ("align", self._group("Align", self._segment(*self.align_buttons.values()))),
+            ("text_color", self._group("Text colour", self.c_text)),
+            ("fill_color", self.fill_group),
+            ("border_color", self.border_group),
+            ("border_width", self._group("Width", self.s_width)),
+            ("line_style", self.line_group),
+            ("head", self._group("Head", self.cb_head)),
+            ("head_size", self._group("Head size", self.cb_head_size)),
+            ("both_ends", self.ch_both),
+            ("opacity", self._group("Opacity", self.sl_opacity, self.opacity_label, gap=6))]
+        for key, group in self._prop_groups:
+            self.prop_row1.layout().insertWidget(self.prop_row1.layout().count() - 1, group)
+            if key:
+                self._shown_with(key, group)
 
-        # In a window narrower than the strip, it scrolls sideways instead
-        # of widening the window.
         scroll = QScrollArea(bar)
         scroll.setObjectName("stripScroll")
         scroll.setFrameShape(QFrame.NoFrame)
@@ -1023,17 +1193,10 @@ class MainWindow(QMainWindow):
         scroll.setWidget(strip)
         scroll.viewport().setAutoFillBackground(False)
         strip.setAutoFillBackground(False)
-        sideways = scroll.horizontalScrollBar()
-
-        def fit_height(*_):
-            if not shiboken6.isValid(sideways):     # at teardown
-                return
-            extra = sideways.sizeHint().height() if sideways.maximum() > 0 else 0
-            scroll.setFixedHeight(strip.sizeHint().height() + extra)
-        sideways.rangeChanged.connect(fit_height)
-        fit_height()
+        # Fixed even when Select/Crop have only one instruction line.
+        scroll.setFixedHeight(76)
         self.prop_strip = strip
-        self._fit_props_height = fit_height
+        self.prop_scroll = scroll
         bar.addWidget(scroll)
 
         self._controls = {
@@ -1117,6 +1280,11 @@ class MainWindow(QMainWindow):
         doc.undo_stack.cleanChanged.connect(self.update_title)
         doc.editingChanged.connect(self._editing_changed)
         self.view.set_document(doc)
+        if hasattr(self, "welcome"):
+            if doc.is_placeholder and not doc.path:
+                self.show_welcome()
+            else:
+                self.show_editor()
         if old is not None and old is not doc:
             old.selectionChanged.disconnect(self.refresh_props)
             old.undo_stack.indexChanged.disconnect(self._doc_changed)
@@ -1125,7 +1293,7 @@ class MainWindow(QMainWindow):
             old.editingChanged.disconnect(self._editing_changed)
             self.undo_group.removeStack(old.undo_stack)
             old.deleteLater()
-        self.tool_actions[Tool.SELECT].setChecked(True)
+        self.tool_actions[self.view.tool].setChecked(True)
         self._editing_changed(doc.editing_item)
         self._doc_changed()
         if self._remembering:
@@ -1180,7 +1348,8 @@ class MainWindow(QMainWindow):
         """Show the selection's style, or the active tool's starting style."""
         items = self.doc.selected()
         self._show_selection(items)
-        targets = items or [self.view.defaults_item()]
+        default = self.view.defaults_item()
+        targets = items or ([default] if default is not None else [])
 
         def first(key):
             for it in targets:
@@ -1193,17 +1362,21 @@ class MainWindow(QMainWindow):
         try:
             for w, key in self._controls.items():
                 w.setEnabled(first(key) is not None)
+                w.setVisible(first(key) is not None)
             # A highlight's fill alpha is fixed: "No fill" does nothing to it.
             self.b_nofill.setEnabled(any(
                 it.key_for("fill_color") is not None
                 and not isinstance(it, HighlightItem) for it in targets))
             line = any(it.KIND in ("arrow", "pen") for it in targets)
-            self.border_label.setText("Line" if line else "Border")
+            self.border_label.setText("Line colour" if line else "Border")
+            highlight = bool(targets) and all(isinstance(it, HighlightItem) for it in targets)
+            self.fill_label.setText("Fill colour" if highlight else "Fill")
+            self.b_nofill.setVisible(self.b_nofill.isEnabled())
             self.c_border.setAccessibleName("Line" if line else "Border")
             self.c_border._title = "Line color" if line else "Border color"
             self.c_border.setToolTip(self.c_border._title)
             self.s_width.setToolTip("Line width" if line else "Border width")
-            self.b_noborder.setVisible(not line)
+            self.b_noborder.setVisible(not line and first("border_color") is not None)
             for button, key in ((self.c_text, "text_color"),
                                 (self.c_fill, "fill_color"),
                                 (self.c_border, "border_color")):
@@ -1228,19 +1401,7 @@ class MainWindow(QMainWindow):
                     box.setCurrentIndex(max(0, box.findData(first(key))))
             self.ch_both.setChecked(bool(first("both_ends")))
             self._show_key_widgets(first)
-            destination = self.prop_row3 if line else self.shape_line_slot
-            if self.line_group.parentWidget() is not destination:
-                self.line_group.parentWidget().layout().removeWidget(self.line_group)
-                destination.layout().insertWidget(0, self.line_group)
-            self.line_group.setVisible(first("line_style") is not None)
-            self.shape_line_slot.setVisible(not line and first("line_style") is not None)
-            self.prop_row3.setVisible(
-                (line and first("line_style") is not None)
-                or first("head") is not None)
-            self.prop_row2.layout().invalidate()
-            self.prop_row3.layout().invalidate()
-            self.prop_strip.layout().activate()
-            self._fit_props_height()
+            self._arrange_props()
         finally:
             self._refreshing = False
 
@@ -1259,26 +1420,60 @@ class MainWindow(QMainWindow):
         for row in changed:
             row.updateGeometry()
 
+    def _arrange_props(self) -> None:
+        """Partition visible fields across two rows, keeping their order.
+
+        ASSUMES: a kind's controls fit two rows at 1100 px. If a larger
+        font or longer value falsifies that, retain two rows and allow
+        horizontal scrolling instead of shifting the picture down.
+        """
+        groups = [g for _key, g in self._prop_groups if not g.isHidden()]
+        widths = [g.sizeHint().width() for g in groups]
+
+        def width(a, b):
+            return sum(widths[a:b]) + max(0, b - a - 1) * 8
+
+        cut = min(range(1, len(groups) + 1),
+                  key=lambda i: max(width(0, i), width(i, len(groups))))
+        for row in (self.prop_row1, self.prop_row2):
+            layout = row.layout()
+            while layout.count() > 1:
+                layout.takeAt(0)
+        for index, group in enumerate(groups):
+            row = self.prop_row1 if index < cut else self.prop_row2
+            row.layout().insertWidget(row.layout().count() - 1, group)
+            group.show()  # Qt hides a widget when moving it to another row.
+        for row in (self.prop_row1, self.prop_row2):
+            row.layout().invalidate()
+        self.prop_strip.layout().invalidate()
+        self.prop_strip.layout().activate()
+        self.prop_strip.updateGeometry()
+
     def _show_selection(self, items) -> None:
-        """The strip's heading: what the controls will change."""
-        if len(items) == 1:
-            item = items[0]
-            text = "Text box" if item.KIND == "text" else item.LABEL
-            kind = KIND_ICONS.get(item.KIND, "select")
+        """Plain words for the objects or new drawing the controls affect."""
+        target = items[0] if items else self.view.defaults_item()
+        hint = not items and target is None
+        if hint:
+            text, kind = TOOL_HINTS[self.view.tool], "select"
         else:
-            if items:
-                text, kind = f"{len(items)} objects", "select"
+            same = all(item.KIND == target.KIND for item in items)
+            singular, plural = KIND_WORDS[target.KIND]
+            kind = KIND_ICONS[target.KIND] if same else "select"
+            if not items:
+                text = "New " + ("text" if target.KIND == "text" else plural)
+            elif len(items) == 1:
+                text = "This " + singular
             else:
-                target = self.view.defaults_item()
-                text = f"{target.LABEL} defaults"
-                kind = KIND_ICONS.get(target.KIND, "select")
+                text = f"{len(items)} {plural if same else 'objects'}"
         self.sel_heading.setText(text)
-        self.sel_heading.setEnabled(True)
+        self.sel_heading.setObjectName("stripHint" if hint else "objectHeading")
+        self.sel_heading.style().unpolish(self.sel_heading)
+        self.sel_heading.style().polish(self.sel_heading)
+        self.sel_mark.setVisible(not hint)
         dpr = self.devicePixelRatioF()
         if (kind, dpr) not in self._marks:
             self._marks[kind, dpr] = themed_icon(kind, size=13,
-                                                 ink="mark-ink").pixmap(
-                QSize(13, 13), dpr)
+                                                ink="mark-ink").pixmap(QSize(13, 13), dpr)
         self.sel_mark.setPixmap(self._marks[kind, dpr])
 
     def _new_slider_session(self) -> None:
@@ -1311,8 +1506,10 @@ class MainWindow(QMainWindow):
         if items:
             self.doc.set_props(items, props, text, merge_key)
         else:
-            items = [self.view.defaults_item()]
-            item = items[0]
+            item = self.view.defaults_item()
+            if item is None:
+                return
+            items = [item]
             picked = {}
             for control_key, value in props.items():
                 key = item.key_for(control_key)
@@ -1331,7 +1528,8 @@ class MainWindow(QMainWindow):
             actions += [self.a_dup, self.a_front, self.a_back, self.a_delete,
                         None]
         return actions + [self.a_clear, self.a_capture, self.a_recent, None,
-                          self.a_settings, self.a_help, self.a_about]
+                          self.a_settings, self.a_help, self.a_feedback,
+                          self.a_about, None, self.a_quit]
 
     # -- the keys the user sets -------------------------------------------
     def _key_owner(self, seq: QKeySequence, skip: str | None = None,
@@ -1362,6 +1560,11 @@ class MainWindow(QMainWindow):
             self._sync_undo()
         else:
             self._retip(a)
+        if key == "capture":
+            previous = self.statusBar().currentMessage()
+            self._update_capture_hint()
+            if not previous or previous.endswith("to take a screenshot"):
+                self.statusBar().showMessage(self.capture_status(), 8000)
 
     def set_shortcut(self, key: str, seq: QKeySequence) -> str | None:
         """Give an action its own key (an empty one removes its key). The
@@ -1423,6 +1626,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("hotkey/sequence",
                                seq.toString(QKeySequence.PortableText))
         self.settings.setValue("hotkey/off", bool(off))
+        if hasattr(self, "welcome"):
+            self.welcome.refresh()
+        if self.tray is not None:
+            self.tray.refresh()
         return self.apply_hotkey()
 
     def apply_hotkey(self) -> str | None:
@@ -1437,15 +1644,69 @@ class MainWindow(QMainWindow):
         return problem
 
     def capture_from_anywhere(self) -> None:
-        """The capture key: bring the window back if it is minimized or
-        hidden, then Capture."""
-        if self._capture is not None:
+        """Start a capture while preserving a hidden window's return state."""
+        if self._capture is None and not self._capture_pending:
+            if self.isMinimized():
+                self.showNormal()
+            self.capture()
+
+    def capture_key_text(self):
+        seq = self.hotkey_sequence()
+        return "" if self.hotkey_off() or seq.isEmpty() else seq.toString(QKeySequence.NativeText)
+
+    def keep_running(self):
+        # ASSUMES: keep-running is on. Turning it off restores quit on close.
+        return self.settings.value("app/keep_running", True, type=bool)
+
+    def set_keep_running(self, enabled):
+        self.settings.setValue("app/keep_running", bool(enabled))
+        self.configure_background()
+
+    def _ensure_tray(self):
+        if (self._quitting or sys.platform == "darwin" or not self.keep_running()
+                or self.tray is not None):
             return
-        if self.isMinimized() or not self.isVisible():
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        self.capture()
+        from .tray import QSystemTrayIcon, TrayController
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            from .app import app_icon
+            self.tray = TrayController(self, app_icon())
+
+    def hideEvent(self, event):
+        self._ensure_tray()
+        super().hideEvent(event)
+
+    def configure_background(self):
+        QApplication.instance().setQuitOnLastWindowClosed(not self.can_hide_on_close())
+        self.welcome.refresh()
+
+    def can_hide_on_close(self):
+        from .tray import QSystemTrayIcon
+        return (sys.platform != "linux" and self.keep_running() and
+                (sys.platform == "darwin" or
+                 QSystemTrayIcon.isSystemTrayAvailable()))
+
+    def reopen(self):
+        if self._capture is not None or self._capture_pending:
+            return
+        if not self.isVisible():
+            self.show_welcome()
+        self._show_again()
+
+    def quit_app(self):
+        """Use the close guard once, including when the window is hidden."""
+        if self._restart_save is not None:
+            # A person's quit while the restart waits is an ordinary quit.
+            self._restart_save = None
+            self._restart_pending = False
+        self._quitting = True
+        if self.close():
+            QApplication.instance().quit()
+        else:
+            self._quitting = False
+
+    def send_feedback(self) -> None:
+        from .help import open_url
+        open_url(feedback.CHOOSER_URL)
 
     def show_about(self) -> None:
         from .help import AboutDialog
@@ -1489,15 +1750,27 @@ class MainWindow(QMainWindow):
             self._help_window.deleteLater()
             self._help_window = None
 
-    def open_settings(self) -> None:
+    def show_privacy(self) -> None:
+        self.show_help()
+        self._help_window.browser.scrollToAnchor("privacy")
+
+    def open_shortcut_settings(self) -> None:
+        self.open_settings(tab="Shortcuts")
+
+    def open_settings(self, tab=None) -> None:
         from .settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
+        if tab == "Shortcuts":
+            dialog.tabs.setCurrentIndex(0)
         dialog.exec()
         dialog.deleteLater()
+        self.welcome.refresh()
 
     # -- quick capture ----------------------------------------------------------
     def quick_copy(self) -> bool:
-        return self.settings.value("capture/copy", False, type=bool)
+        # On to begin with: a capture is on the clipboard at once, so a
+        # paste works without a click on Copy image. Off is the user's pick.
+        return self.settings.value("capture/copy", True, type=bool)
 
     def quick_minimize(self) -> bool:
         """Minimize after the copy: only while the copy is on too."""
@@ -1541,7 +1814,8 @@ class MainWindow(QMainWindow):
     def escape(self) -> None:
         if self.doc.is_editing():
             self.doc.end_text_edit()
-        else:
+        elif self.view._press is None and self.view._handle_drag is None and self.view._before is None:
+            self.view.set_tool(Tool.SELECT)
             self.doc.clearSelection()
 
     def _exported(self) -> None:
@@ -1554,7 +1828,7 @@ class MainWindow(QMainWindow):
         if self._capture is not None or not self.maybe_discard():
             return
         self._bind(Document())
-        self.statusBar().showMessage("Cleared", 3000)
+        self.statusBar().showMessage("Picture closed", 3000)
 
     def copy_image(self) -> None:
         QApplication.clipboard().setImage(self.doc.render_image())
@@ -1563,9 +1837,10 @@ class MainWindow(QMainWindow):
 
     # -- files ------------------------------------------------------------
     def _folder(self, kind: str) -> Path:
-        folder = Path(self.settings.value(f"last_dir/{kind}", "", type=str) or DEFAULT_DIR)
+        folder = Path(self.settings.value(f"last_dir/{kind}", "", type=str)
+                      or default_directory())
         if not folder.is_dir():
-            folder = DEFAULT_DIR
+            folder = default_directory()
             folder.mkdir(parents=True, exist_ok=True)
         return folder
 
@@ -1789,18 +2064,63 @@ class MainWindow(QMainWindow):
                     else self.save_as())
         return answer == QMessageBox.Discard
 
+    def _failed_write_box(self, why: str) -> QMessageBox:
+        box = QMessageBox(QMessageBox.Warning, "Annotshot", "",
+                          QMessageBox.NoButton, self)
+        box.setText(CLOSE_SAVE_FAILED.format(why=why))
+        save = box.addButton(CLOSE_SAVE_COPY, QMessageBox.AcceptRole)
+        box.addButton(CLOSE_DISCARD, QMessageBox.DestructiveRole)
+        cancel = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(save)
+        box.setEscapeButton(cancel)
+        return box
+
+    def _ask_failed_write(self, why: str) -> str:
+        """Show the box; "save", "discard" or "cancel" by the ROLE of the
+        button pressed (Escape and the box's own close button: "cancel")."""
+        box = self._failed_write_box(why)
+        box.exec()
+        clicked = box.clickedButton()
+        role = box.buttonRole(clicked) if clicked is not None else None
+        box.deleteLater()
+        if role == QMessageBox.AcceptRole:
+            return "save"
+        if role == QMessageBox.DestructiveRole:
+            return "discard"
+        return "cancel"
+
     def closeEvent(self, event):
-        if self._capture is None and self.maybe_discard():
-            recent.writer().waitForDone()   # every edit on disk first
-            size = (self.normalGeometry().size() if self.isMaximized()
-                    or self.isFullScreen() else self.size())
-            self.settings.setValue("window/size", size)
-            self.settings.setValue("window/state", self.saveState())
-            self.settings.setValue(CURRENT_KEY, self.doc.path or "")
-            self.hotkey.clear()
-            event.accept()
-        else:
+        if self._restart_save is not None:
+            self._restart_save = None
+            self._restart_pending = False
+        if self._capture is not None or self._capture_pending or not self.maybe_discard():
             event.ignore()
+            return
+        recent.writer().waitForDone()   # every edit on disk first
+        # ASSUMES: waitForDone() has returned, so this document's last write
+        # has ended and its outcome is set; its queued signal may not have
+        # been delivered yet.
+        outcome = self.doc.last_write
+        if outcome is not None and outcome.error is not None:
+            answer = self._ask_failed_write(outcome.error)
+            if answer == "cancel" or (answer == "save" and not self.save_as()):
+                event.ignore()
+                return
+        self._save_editor_geometry()
+        if not self._quitting and self.can_hide_on_close():
+            self.hide()
+            self._bind(Document())
+            if self.tray is not None:
+                self.tray.notify_hidden()
+            event.ignore()
+            return
+        self.settings.setValue(CURRENT_KEY, self.doc.path or "")
+        self.hotkey.clear()
+        if self.tray is not None:
+            self.tray.shutdown()
+        QApplication.instance().setQuitOnLastWindowClosed(True)
+        self._quitting = True
+        event.accept()
 
     # -- window size --------------------------------------------------------
     def _screen_area(self) -> QRect:
@@ -1830,6 +2150,7 @@ class MainWindow(QMainWindow):
         """The window's size around the picture area: the toolbar rows, the
         property strip, the status line and the view's frame."""
         self.layout().setGeometry(self.rect())  # laid out at today's size
+        self.pages.layout().setGeometry(self.pages.rect())
         view = self.view.geometry().size()
         frame = 2 * self.view.frameWidth()
         return QSize(self.width() - view.width() + frame,
@@ -1846,39 +2167,50 @@ class MainWindow(QMainWindow):
         want = QSize(round(img.width() / dpr) + chrome.width() + 4,
                      round(img.height() / dpr) + chrome.height() + 4)
         self._place(want, area)
+        self.layout().setGeometry(self.rect())
+        self.pages.layout().setGeometry(self.pages.rect())
         self.view.fit_after_resize()
 
     # -- capture ----------------------------------------------------------
-    def capture(self) -> None:
-        if self._capture is not None or not self.maybe_discard():
+    def capture(self, mode=None) -> None:
+        if self._capture is not None or self._capture_pending:
             return
-        if not self._may_record_screen():
+        if not self._may_record_screen() or not self.maybe_discard():
             return
+        self._capture_was_visible = self.isVisible()
+        self._capture_pending = True
         self.hide()
-        QTimer.singleShot(CAPTURE_DELAY_MS, self._start_capture)
+        QTimer.singleShot(CAPTURE_DELAY_MS, lambda: self._start_capture(mode))
 
-    def _start_capture(self) -> None:
+    def _start_capture(self, mode=None) -> None:
+        self._capture_pending = False
         self._capture = CaptureSession(self)
         self._capture.finished.connect(self._capture_done)
         try:
-            self._capture.start()
+            self._capture.start(mode)
         except Exception as e:          # never leave the window hidden
             self._capture = None
-            self._show_again()
+            if self._capture_was_visible:
+                self._show_again()
             self._warn(f"Capture failed: {e}")
 
     def _capture_done(self, result) -> None:
         session, self._capture = self._capture, None
         if session is not None:
             session.deleteLater()
-        self._show_again()
+        self._capture_pending = False
         if result is None:
+            if self._capture_was_visible:
+                self._show_again()
+            if session is not None and session.error:
+                self.statusBar().showMessage(f"Capture failed: {session.error}", 8000)
             return
         doc, png = Document(result.image), None
         if self.keep_recent():          # its record: the PNG and, from the
             png = self.recent_store.reserve()   # first edit, the editable
             doc.path = str(recent.editable_for(png))
         self._bind(doc)
+        self._show_again()
         self.fit_to_picture()
         if png is not None:             # never waits on the disk
             self.recent.file_capture(result.image, path=png)
@@ -1886,8 +2218,8 @@ class MainWindow(QMainWindow):
         if self.quick_copy():           # quick capture: straight out
             QApplication.clipboard().setImage(self.doc.render_image())
             self._exported()
-            self.statusBar().showMessage(f"Copied {size} — Ctrl+V to paste")
-            if self.quick_minimize():
+            self.statusBar().showMessage(f"Copied {size} — {QKeySequence(QKeySequence.Paste).toString(QKeySequence.NativeText)} to paste")
+            if self.quick_minimize() and self._capture_was_visible:
                 self.showMinimized()
             return
         self.statusBar().showMessage(
@@ -1895,27 +2227,203 @@ class MainWindow(QMainWindow):
             5000)
 
     def _may_record_screen(self) -> bool:
-        """macOS: without the screen-recording permission macOS hands over
-        only the wallpaper, so no capture is made; macOS's own prompt is
-        asked for and the window says what to switch on. True elsewhere."""
         if not macos.IS_MAC or macos.screen_capture_allowed():
             return True
+        if self._permission_stale:
+            self._offer_permission_restart()
+        else:
+            self._fresh_permission(self._permission_for_capture)
+        return False
+
+    def _fresh_permission(self, callback):
+        if not macos.IS_MAC or self._quitting or self._permission_process is not None:
+            return
+        process = QProcess(self)
+        self._permission_process = process
+        self._permission_callback = callback
+        self._permission_expired = False
+        process.finished.connect(lambda code, status: self._permission_checked(process, code, status))
+        process.errorOccurred.connect(lambda error: self._permission_process_error(process, error))
+        command = macos.permission_check_command()
+        self._permission_timeout.start()
+        process.start(command[0], command[1:])
+
+    def _permission_process_error(self, process, error):
+        if error == QProcess.FailedToStart:
+            self._permission_checked(process, -1, QProcess.CrashExit)
+
+    def _permission_check_timeout(self):
+        if self._permission_process is not None:
+            self._permission_expired = True
+            self._permission_process.kill()
+
+    def _permission_checked(self, process, code, status):
+        if self._permission_process is not process:
+            return
+        self._permission_timeout.stop()
+        output = bytes(process.readAllStandardOutput()).strip()
+        state = "unknown"
+        if not self._permission_expired and code == 0 and status == QProcess.NormalExit:
+            if output in (b"allowed", b"denied", b"unknown"):
+                state = output.decode("ascii")
+        callback = self._permission_callback
+        self._permission_process = self._permission_callback = None
+        process.deleteLater()
+        if callback is not None and not self._quitting:
+            callback(state)
+
+    def _permission_for_capture(self, state):
+        # ASSUMES: a fresh process sees the current grant. Denied/unknown asks.
+        if state == "allowed" and not macos.screen_capture_allowed():
+            self._permission_granted()
+            return
         macos.request_screen_capture()
         self._show_again()
         self.statusBar().showMessage(PERMISSION_STATUS)
         self._permission_message()
-        return False
 
     def _permission_message(self) -> None:
+        if self._permission_box is not None:
+            return
         box = QMessageBox(QMessageBox.Information, "Annotshot",
                           PERMISSION_TEXT, QMessageBox.NoButton, self)
-        settings = box.addButton("Open System Settings",
-                                 QMessageBox.AcceptRole)
+        settings = box.addButton("Open System Settings", QMessageBox.AcceptRole)
+        restart = box.addButton("Restart Annotshot", QMessageBox.ActionRole)
         box.addButton("Not now", QMessageBox.RejectRole)
         box.setDefaultButton(settings)
+        self._permission_box = box
+        self._permission_deadline = time.monotonic() + 600
+        self._permission_watch.start()
         box.exec()
+        self._permission_box = None
         if box.clickedButton() is settings:
             macos.open_privacy_settings()
+        elif box.clickedButton() is restart:
+            self._request_permission_restart()
+        box.deleteLater()
+
+    def _permission_active(self, state):
+        if macos.IS_MAC and state == Qt.ApplicationActive:
+            self._permission_tick()
+
+    def _permission_tick(self):
+        if not self._permission_watch.isActive():
+            return
+        # ASSUMES: the watch ends. Expiry and quit never start another check.
+        if self._quitting or time.monotonic() >= self._permission_deadline:
+            self._permission_watch.stop()
+            return
+        self._fresh_permission(self._permission_watched)
+
+    def _permission_watched(self, state):
+        if (self._permission_watch.isActive() and
+                time.monotonic() < self._permission_deadline and state == "allowed"
+                and not macos.screen_capture_allowed()):
+            self._permission_granted()
+
+    def _permission_granted(self):
+        if self._restart_dialog or self._restart_pending:
+            return
+        self._permission_watch.stop()
+        self._permission_stale = not self._permission_restarted
+        if self._permission_box is not None:
+            self._permission_box.reject()
+            self._permission_box = None
+        # ASSUMES: the restarted process agrees. A denied restarted run never loops.
+        self.statusBar().showMessage("Restart Annotshot to capture")
+        if self._permission_restarted:
+            self._restart_refused_message()
+        else:
+            self._offer_permission_restart()
+
+    def _restart_refused_message(self):
+        if self._permission_box is not None or self._restart_dialog or self._quitting:
+            return
+        self._restart_dialog = True
+        box = QMessageBox(QMessageBox.Information, "Annotshot",
+                          RESTART_STILL_REFUSED, QMessageBox.NoButton, self)
+        restart = box.addButton("Restart Annotshot", QMessageBox.ActionRole)
+        settings = box.addButton("Open System Settings", QMessageBox.AcceptRole)
+        box.addButton("Not now", QMessageBox.RejectRole)
+        box.setDefaultButton(restart)
+        self._permission_box = box
+        box.exec()
+        self._permission_box = None
+        self._restart_dialog = False
+        if not self._quitting:
+            if box.clickedButton() is restart:
+                self._request_permission_restart()
+            elif box.clickedButton() is settings:
+                macos.open_privacy_settings()
+        box.deleteLater()
+
+    def _offer_permission_restart(self):
+        if self._restart_pending or self._restart_dialog:
+            return
+        self.doc.end_text_edit()
+        # ASSUMES: nothing is unsaved. The opposite case asks once before quit.
+        # Same predicate as maybe_discard, without asking or saving here.
+        if self.doc.path or not self.doc.undo_stack.needs_save():
+            self._request_permission_restart()
+            return
+        self._restart_dialog = True
+        box = QMessageBox(QMessageBox.Information, "Annotshot",
+                          PERMISSION_RESTART,
+                          QMessageBox.NoButton, self)
+        restart = box.addButton("Restart now", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.setDefaultButton(restart)
+        box.exec()
+        self._restart_dialog = False
+        if box.clickedButton() is restart:
+            self._request_permission_restart()
+        else:
+            self.statusBar().showMessage("Restart Annotshot to capture")
+        box.deleteLater()
+
+    def _request_permission_restart(self):
+        if self._restart_pending:
+            return
+        self._restart_pending = True
+        self._save_before_permission_restart()
+
+    def _save_before_permission_restart(self):
+        self.doc.end_text_edit()
+        if self.doc.path:
+            key = (self.doc, self.doc.changes, self.doc.path)
+            # ASSUMES: the write lands. A failed result cancels the restart;
+            # a queued change count is not a successful write. Wait for its
+            # own outcome, then recheck the current document and change count.
+            if self.doc.needs_write():
+                self._restart_save = key
+                self.autosave_now()
+                return
+            if key in self._save_jobs:
+                self._restart_save = key
+                return
+        # No write is needed, or its successful outcome has been delivered.
+        self._restart_save = None
+        self.quit_app()
+        if not self._quitting:
+            self._restart_pending = False
+
+    def _permission_quitting(self):
+        self._permission_watch.stop()
+        self._permission_timeout.stop()
+        self._permission_callback = None
+        if self._permission_process is not None:
+            self._permission_process.kill()
+        if self._permission_box is not None:
+            self._permission_box.reject()
+        if self._restart_save is not None:
+            self._restart_save = None
+            self._restart_pending = False
+        if self._restart_pending and macos.IS_MAC:
+            self._restart_pending = False
+            QProcess.startDetached("/bin/sh", ["-c", macos.RELAUNCH_WAIT,
+                                   "annotshot-relaunch", str(os.getpid()),
+                                   str(macos.RELAUNCH_SECONDS),
+                                   *macos.permission_relaunch_command()])
 
     def _show_again(self) -> None:
         self.show()

@@ -94,9 +94,9 @@ def test_check_entry_prints_ok():
     assert lines[1].startswith("manual OK (") and lines[1].endswith(" lines)")
     assert lines[2] == "font OK (VT323)"
     assert lines[3:] == [f"Annotshot {annotshot.__version__} OK"]
-    assert annotshot.__version__ == "0.3.1"
+    assert annotshot.__version__ == "0.4.0"
 
 
 def test_version_entry_prints_the_version():
     done = _run("--version")
-    assert done.returncode == 0 and done.stdout.strip() == "0.3.1"
+    assert done.returncode == 0 and done.stdout.strip() == "0.4.0"

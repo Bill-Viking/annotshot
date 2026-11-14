@@ -1,0 +1,14 @@
+{
+  "blank_issues_enabled": false,
+  "contact_links": [
+    {
+      "name": "Read the manual first",
+      "url": "https://github.com/Bill-Viking/annotshot/blob/main/docs/USER-MANUAL.md",
+      "about": "Find help with every button and shortcut."
+    }
+  ]
+}
+# Feedback email: add this second contact link when the Stet Software mailbox exists.
+# - name: Email Stet Software
+#   url: mailto:REPLACE_WITH_FEEDBACK_EMAIL
+#   about: Send feedback by email.

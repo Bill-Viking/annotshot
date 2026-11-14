@@ -7,12 +7,12 @@ Annotshot is a screenshot app for Windows, macOS and Linux with PowerPoint-style
 ## Download the app
 
 <p>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.3.1/Annotshot-0.3.1-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.3.1/Annotshot-0.3.1-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.3.1/Annotshot-0.3.1-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.0/Annotshot-0.4.0-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.0/Annotshot-0.4.0-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.0/Annotshot-0.4.0-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
 </p>
 
-Version 0.3.1. The Windows button downloads the installer; the macOS download is for Macs with Apple silicon (M1 or newer). Each button downloads one file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
+Version 0.4.0. The Windows button downloads the installer; the macOS download is for Macs with Apple silicon (M1 or newer). Each button downloads one file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
 
 ![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
 
@@ -24,8 +24,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** above. `Annotshot-0.3.1-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.3.1-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
+1. **Download:** click **Download for Windows** above. `Annotshot-0.4.0-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.4.0-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: docs/windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](docs/windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -34,8 +34,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The zip — three steps
 
-1. **Download:** [`Annotshot-0.3.1-windows.zip`](https://github.com/Bill-Viking/annotshot/releases/download/v0.3.1/Annotshot-0.3.1-windows.zip) appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.3.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.3.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** [`Annotshot-0.4.0-windows.zip`](https://github.com/Bill-Viking/annotshot/releases/download/v0.4.0/Annotshot-0.4.0-windows.zip) appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.4.0-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.0-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: docs/windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](docs/windows-protected.png) -->
@@ -46,8 +46,8 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** above. `Annotshot-0.3.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.3.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** above. `Annotshot-0.4.0-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.0-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -58,8 +58,8 @@ The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** above. `Annotshot-0.3.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.3.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** above. `Annotshot-0.4.0-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.0-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -129,6 +129,12 @@ The whole app, button by button: **[User manual](docs/USER-MANUAL.md)**.
 - **Self-check:** `python -m annotshot --check` saves a small Word and
   PowerPoint file in a scratch folder, re-opens both, and ends with
   `Annotshot <version> OK`.
+
+## Found a bug? Have an idea?
+
+[Report a bug](https://github.com/Bill-Viking/annotshot/issues/new?template=bug.yml) and tell us what happened.
+[Suggest an improvement](https://github.com/Bill-Viking/annotshot/issues/new?template=idea.yml) and tell us what would make Annotshot easier to use.
+<!-- Feedback email: add the Stet Software mailbox here when it exists. -->
 
 ## Licence
 

@@ -1,6 +1,6 @@
 # Annotshot user manual
 
-Sunday 2026-11-08 · for Annotshot 0.3.1
+Tuesday 2026-11-10 · for Annotshot 0.4.0
 
 ## What Annotshot is
 
@@ -8,7 +8,7 @@ Annotshot takes a picture of part of your screen and lets you mark it up the way
 
 This is a first version. It does one job: capture, mark up, copy or save. It has no screen recording, scrolling capture or picture library; it keeps only your last 12 captures, in the Recent captures pane.
 
-Annotshot is made by Viking Software.
+Annotshot is made by Stet Software.
 
 ## Install and start
 
@@ -20,8 +20,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.3.1-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
+1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.4.0-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.4.0-setup.exe`. Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -30,8 +30,8 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The zip — three steps
 
-1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.3.1-windows.zip`. It appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.3.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.3.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.4.0-windows.zip`. It appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.4.0-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.0-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows will show a blue box, **Windows protected your PC**, because Annotshot is new and not yet signed: click **More info**, then **Run anyway**. It appears only the first time.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
@@ -42,20 +42,20 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.3.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.4.0-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.0-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
    xattr -cr /Applications/Annotshot.app
    ```
 
-4. **Start it:** open **Applications** and double-click **Annotshot**. The first time you click **Capture**, Annotshot checks that it may record your screen. macOS shows its own question the first time — click **Allow**. While the permission is off, Annotshot takes no picture and says so in a small window: click **Open System Settings**, switch Annotshot on under **Privacy & Security → Screen & System Audio Recording**, then quit Annotshot and start it again. (Click **Not now** to close the window; the status line keeps saying "Capture needs screen-recording permission".) If Annotshot is already switched on and macOS still refuses: in that same list remove Annotshot with − and add it again with + from Applications, switch it on, then quit and reopen Annotshot.
+4. **Start it:** open **Applications** and double-click **Annotshot**. The first time you click **Capture**, macOS has to allow Annotshot to take pictures of your screen. macOS shows its own question the first time — click **Allow**. macOS calls this setting **Screen & System Audio Recording**; Annotshot takes still pictures only, never video or sound. Until macOS allows it, Annotshot takes no picture and says so in a small window: click **Open System Settings** and switch Annotshot on under **Privacy & Security → Screen & System Audio Recording**. Annotshot then restarts by itself after keeping any changes to a picture that has a file; if the write fails, it stays open with your edits. (Click **Not now** to close the window; the status line keeps saying "Capture is waiting for macOS to allow it".) If Annotshot is already switched on there and macOS still refuses: remove it with −, add it again with + from Applications, and switch it on. If capture is still refused after a restart, the next **Capture** press offers **Restart Annotshot** to try again.
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.3.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.3.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.4.0-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.0-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -68,14 +68,14 @@ No one has run the Linux build by hand yet: the release workflow builds it and r
 ### After installing
 
 - **Windows:** the installer registers the `.annotshot` file type, so a double-click on a saved file opens Annotshot. With the zip, start Annotshot once before you double-click a saved `.annotshot` file; it registers the file type each time it starts. If Windows still asks **How do you want to open this file?** or opens another program, right-click the file, choose **Open with**, then **Choose another app**, pick **Annotshot**, tick **Always use this app to open .annotshot files**, and click **OK**. On a computer managed by an organisation, apps that are not signed may be blocked: if the blue box shows no **Run anyway**, or **Annotshot.exe** will not start, the computer's administrator has to allow it.
-- **macOS:** the first **Capture** asks for screen recording, as in step 4 above. A double-click on a saved `.annotshot` file in Finder opens it in Annotshot once the app is in **Applications**.
+- **macOS:** the first **Capture** needs macOS to allow it, as in step 4 above. A double-click on a saved `.annotshot` file in Finder opens it in Annotshot once the app is in **Applications**.
 - **Linux:** no double-click on saved files yet. Use **Open…** inside Annotshot, or start Annotshot with the file's name after it: `~/Apps/Annotshot/Annotshot picture.annotshot`.
 
 ### Updating to a new version
 
 - **Windows, the installer:** close Annotshot, download the new `Annotshot-<version>-setup.exe` and run it: it replaces the old copy in place, in the same folder, and keeps your settings.
 - **Windows, the zip:** close Annotshot, delete the old `Annotshot` folder, unzip the new download in its place, and start it once so a double-click on a saved file uses the new copy.
-- **macOS:** drag the new **Annotshot.app** into **Applications** and choose **Replace**. Run the Terminal line from step 3 again (every new download is flagged again). Annotshot is not signed by Apple yet, so every update asks for screen recording again: click **Allow**. If Annotshot is already switched on and macOS still refuses: in that same list remove Annotshot with − and add it again with + from Applications, switch it on, then quit and reopen Annotshot.
+- **macOS:** drag the new **Annotshot.app** into **Applications** and choose **Replace**. Run the Terminal line from step 3 again (every new download is flagged again). Annotshot is not signed by Apple yet, so after every update macOS asks again before Annotshot can take pictures of your screen: click **Allow**, or switch Annotshot on under **Privacy & Security → Screen & System Audio Recording** as in step 4. Nothing is broken. If Annotshot is already switched on there and macOS still refuses: remove it with −, add it again with + from Applications, and switch it on. Annotshot then restarts by itself after keeping any changes to a picture that has a file; if the write fails, it stays open with your edits. If capture is still refused after a restart, the next **Capture** press offers **Restart Annotshot** to try again.
 - **Linux:** close Annotshot and replace the `Annotshot` folder with the one from the new zip.
 
 ### Removing Annotshot
@@ -85,12 +85,37 @@ No one has run the Linux build by hand yet: the release workflow builds it and r
 - **macOS:** drag **Annotshot.app** from **Applications** to the Bin.
 - **Linux:** delete the `Annotshot` folder.
 
+## Privacy
+
+Annotshot works entirely on this computer. It has no internet code: it cannot upload, sync or report anything, and it never checks for updates by itself. Your captures are saved only in your Pictures folder, under Annotshot/Recent (or, for the Microsoft Store app, in your app data folder under Captures/Recent), and wherever you choose to save them. It opens your web browser only when you click a link, such as the project page. The source code is public, so anyone can check this.
+
+## The opening window
+
+Each launch opens a small welcome window. It shows the current capture key, privacy information, and the newest four captures. **Change keys** opens Settings → Shortcuts. Click a recent capture or **Open a saved file…** to open the editor. Opening an editable file from your file manager also opens the editor directly. **Close picture** returns to welcome. Every capture and its edits stay in Recent.
+
+## Closing and quitting
+
+**Keep Annotshot running when its window is closed** is on in Settings → Capture. Closing the window keeps your edits, returns to welcome, and hides the window. The capture-from-anywhere key stays active. A capture brings back the editor. Cancelling with Esc leaves a hidden window hidden.
+
+On macOS, click Annotshot in the Dock to reopen welcome. On Windows and Linux, the Annotshot tray icon offers **Capture** with your current key, **Open Annotshot**, and **Quit Annotshot**. Clicking the icon reopens the window. The first hide shows a message explaining that Annotshot is still running. If the tray is unavailable, closing quits.
+
+**Quit Annotshot** (Command+Q on macOS) exits through the existing save guard. Turn off **Keep Annotshot running when its window is closed** to quit when closing the window.
+
+If Annotshot cannot keep your last changes to a picture when you close its window or quit (a full disk, or a folder that is gone), it stays open and asks: **Save a copy…** somewhere else, **Discard changes**, or **Cancel** to go on working.
+
 ## The first ten seconds
 
-1. Click **Capture** (the blue button, top left), or press **Ctrl+N**.
-2. The Annotshot window steps aside for a moment, and your screen freezes and dims. A line at the top of the screen says what to do.
-3. Either **drag** a box around the part you want (a size label shows its width × height in pixels), or **click** a window to take the whole window. On Windows the window under the mouse lights up with a red frame and its title before you click.
-4. Your capture opens in the editor. Press **Esc** or right-click during capture to cancel.
+1. Click **Capture** in the opening window or editor, or press **Ctrl+N** (⌘N on a Mac). Return or Space in the opening window also starts Capture.
+2. On Windows and macOS, the screen stays live: a video keeps playing while you pick the moment. The dark capture bar has a bright cyan border and glow, and sits near the bottom of the screen holding your pointer.
+3. Each live session starts ready for either gesture. Drag a rectangle to capture an area, or click a window to capture it with its title. The picture is taken on release. **Area** restricts capture to drags. **Window** restricts it to clicks on windows. Click the checked choice again to return to both gestures. **Whole screen** takes the screen holding the bar in one click. The size label is in device pixels.
+4. Every capture starts with no area selected. When the last area still fits an attached screen, **Same area** appears as a plain button on the bar, in live capture and Freeze. Hover over it to preview the area. Moving away hides the preview. Click it once to capture that area. No key or double-click takes the last area. In live capture, Return, Enter and Space take no picture. In Freeze, they can take a selection you made in this session. The bar and frame disappear before the shot.
+5. **Timer** delays a live shot by **3 s**, **5 s** or **10 s**; **Off** takes it straight away. A countdown appears in the bar. **Esc**, a right-click, or **Cancel** cancels, including during the countdown.
+
+**Freeze** takes a still to choose from. In Area, releasing a drag captures at once (a click takes the whole screen, or a window on Windows); in Window, a click captures that window; in Whole screen, a click captures the screen. Timer is disabled while frozen. Untick Freeze to return to the moving screen. If the platform cannot provide a translucent capture window, capture starts frozen.
+
+Annotshot remembers the timer and Freeze choice. Every live session starts ready for both gestures. The Same area button is available when that screen is still attached and the rectangle fits. Each shot stays on one screen.
+
+On **Linux**, capture keeps the frozen screen and has no capture bar: drag an area or click for the whole screen. Esc or a right-click cancels.
 
 Now click **Text**, click on the picture, and type. Then **Copy image** and paste it anywhere, or **Save…** as a picture, a Word document or a PowerPoint slide.
 
@@ -98,7 +123,7 @@ Now click **Text**, click on the picture, and type. Then **Copy image** and past
 
 The Annotshot window opens in the middle of your screen at a moderate size, never full screen, and it remembers the size you leave it at. After a capture it grows to fit the picture, up to 80 % of your screen; a bigger picture scrolls or zooms inside the window.
 
-The bottom of the window shows the picture's size in pixels and the zoom level. Hold **Ctrl** and turn the mouse wheel to zoom. Zoom changes only your view, never the picture.
+The bottom of the window shows the picture's size in pixels and a zoom button. Click the percent for **Fit**, **100 %**, **200 %**, **Zoom in** or **Zoom out**. Fit uses 100 % when the picture already fits. Hold **Ctrl** and turn the mouse wheel to zoom. Zoom changes only your view, never the picture.
 
 ### Row 1: the picture
 
@@ -108,7 +133,7 @@ The bottom of the window shows the picture's size in pixels and the zoom level. 
 | **Open…** | Opens an Annotshot editable file (`.annotshot`) so you can keep editing it. | Ctrl+O |
 | **Save…** | Saves the picture as PNG, JPEG, BMP or WebP, or saves an editable Annotshot file. See "Saving" below. | Ctrl+S, Ctrl+Shift+S |
 | **Copy image** | Puts the finished picture, with all your marks, on the clipboard. | Ctrl+C |
-| **Clear** | Removes the picture and starts empty. If your picture has changes you have not saved or copied, Annotshot asks first. | Ctrl+W |
+| **Close picture** | Removes the picture and starts empty. If your picture has changes you have not saved or copied, Annotshot asks first. | Ctrl+W |
 | **Undo** | Takes back the last change. Hover over it to see which change. | Ctrl+Z |
 | **Redo** | Puts it back again. | Ctrl+Y or Ctrl+Shift+Z |
 | **Settings…** (the gear, far right) | Opens the settings: your own shortcuts, the capture key that works from anywhere, quick capture, and the theme. See "Settings" below. | Ctrl+, |
@@ -117,15 +142,15 @@ The bottom of the window shows the picture's size in pixels and the zoom level. 
 
 On the left are the tools: **Select, Text, Callout, Rect, Ellipse, Arrow, Highlight, Pen, Crop**. On the right are the buttons that act on what you have selected: **Duplicate, Front, Back, Delete**.
 
-**Undo, Redo, Settings…, Duplicate, Front, Back and Delete show only a small picture, no word.** Hover over one to see its name and its shortcut.
+**Duplicate, Front, Back and Delete show their word beside the icon.** Undo, Redo and Settings… show an icon; hover over a button to see its name and current shortcut.
 
-After you draw one object (or crop), Annotshot switches back to **Select** by itself, so you can move or change what you just made.
+A drawing tool stays selected until you choose another tool. The object you just made is selected, except a pen stroke. Pull its handles to adjust it, or press elsewhere to draw another. Crop returns to **Select**.
 
 ### Row 3: the property strip
 
-The strip starts with what is selected, or the tool whose defaults you are changing. Each control changes every selected object at once. A control is greyed out when the selection or tool has no such property. Arrows and pens show their line controls on a third strip row; rectangles and ellipses keep Line style on the second row. **Head**, **Head size** and **Both ends** appear only for arrows.
+The strip names what you are changing: for example, **New arrows**, **This arrow**, **3 arrows** or **3 objects**. It keeps two rows for every tool, so the picture stays in place. Only controls that apply are shown. A control changes every selected object that has that property. **Head**, **Head size** and **Both ends** appear only for arrows.
 
-Every tool starts with the settings you used last, even after you close and reopen Annotshot. With nothing selected, the strip sets the active tool's starting values (Select and Crop show the text defaults). In Settings → Look, turn off **Start each tool with the settings I used last** to start from factory values, or click **Reset to factory settings** to clear the saved tool values.
+Every tool starts with the settings you used last, even after you close and reopen Annotshot. With nothing selected, the strip sets the active tool's starting values (Select and Crop show a plain instruction with no style controls). In Settings → Look, turn off **Start each tool with the settings I used last** to start from factory values, or click **Reset to factory settings** to clear the saved tool values.
 
 ## The tools
 
@@ -149,13 +174,13 @@ While you are drawing with any tool, a right-click cancels that drawing.
 | **Size** | The text size, in pixels (6 to 400). | Text box, callout |
 | **Style** | **B** bold, *I* italic. | Text box, callout |
 | **Align** | Left, center or right inside the box. | Text box, callout |
-| **Text** | The color of the letters only (it was called "Text color" before). | Text box, callout |
+| **Text colour** | The color of the letters only. | Text box, callout |
 | **Fill** | The background color inside the shape. Changing it never changes the text color. | Text box, callout, rectangle, ellipse, highlight (color only) |
-| **No fill** | Makes the inside see-through. | Text box, callout, rectangle, ellipse |
-| **Border** ( **Line** for arrows and pens) | The outline or line color. | Text box, callout, rectangle, ellipse, arrow, pen stroke |
-| **No border** | Removes the outline; hidden for arrows and pens. | Text box, callout, rectangle, ellipse |
+| **No fill** (slashed square) | Makes the inside see-through. | Text box, callout, rectangle, ellipse |
+| **Border** (**Line colour** for arrows and pens) | The outline or line color. | Text box, callout, rectangle, ellipse, arrow, pen stroke |
+| **No border** (slashed square) | Removes the outline; hidden for arrows and pens. | Text box, callout, rectangle, ellipse |
 | **Width** | How thick the outline or line is, in pixels (0 to 40). | Same as Border |
-| **Line** | Solid, Dashed or Dotted. | Rectangle, ellipse, arrow, pen stroke |
+| **Line style** | Solid, Dashed or Dotted. | Rectangle, ellipse, arrow, pen stroke |
 | **Opacity** | How see-through the whole object is, from 0% (invisible) to 100% (solid). | Every object |
 | **Head** | Filled, Open or None. | Arrow |
 | **Head size** | Small, Medium or Large. | Arrow |
@@ -178,13 +203,13 @@ Press **Esc** to stop typing. Press **Esc** again to clear the selection.
 
 All four can be undone.
 
-## Clear and the empty start
+## Close picture and the empty start
 
-**Clear** (Ctrl+W) takes the picture away and leaves the window empty, ready for the next capture. When there is no picture yet, the middle of the window says "No picture yet" and how to start: click **Capture** (Ctrl+N), or **Open…** a saved file.
+**Close picture** (Ctrl+W), at the right of the main toolbar before Undo, closes the picture and returns to the small welcome window. Kept captures and their edits stay in Recent captures.
 
 ## The right-click menu
 
-Right-click the picture for a short menu: **Copy image**, **Save…**, then **Clear**, **Capture** and **Recent captures** (ticked while the pane shows), then **Settings…**, **Help** and **About Annotshot…** last. Right-click an object and the menu also has **Duplicate**, **Front**, **Back** and **Delete** for it (the object is selected first). The menu shows each item's shortcut. While you are dragging out a new object, a right-click only cancels that drag and shows no menu.
+Right-click the picture for a short menu: **Copy image**, **Save…**, then **Close picture**, **Capture** and **Recent captures** (ticked while the pane shows), then **Settings…**, **Help**, **Send feedback…** and **About Annotshot…** last. Right-click an object and the menu also has **Duplicate**, **Front**, **Back** and **Delete** for it (the object is selected first). The menu shows each item's shortcut. While you are dragging out a new object, a right-click only cancels that drag and shows no menu.
 
 ## Recent captures
 
@@ -200,11 +225,14 @@ The **Recent captures** pane on the right of the window keeps your last 12 captu
 
 **Help** (press **F1**, or right-click the picture and choose **Help**) opens this manual inside Annotshot, with a **Keyboard shortcuts** table at the top that shows your keys as they are set now. Two buttons at the bottom open pages in your browser: **Open on GitHub** shows the newest copy of this manual, and **Report a problem** opens the page where you can tell us what went wrong. The Help window stays open beside the editor while you work.
 
-**About Annotshot…** (the last line of the right-click menu, and the **About** tab in **Settings…**) shows the version, who makes Annotshot (Viking Software), the project's page, its licence, and a **Third-party notices** button with the licence texts of the parts Annotshot is built from.
+**About Annotshot…** (the last line of the right-click menu, and the **About** tab in **Settings…**) shows the version, a **Build** line with the date and time this copy was made (two copies with the same version number are told apart by it), who makes Annotshot (Stet Software), the project's page, its licence, and a **Third-party notices** button with the licence texts of the parts Annotshot is built from.
+
+**Send feedback…**, in the right-click menu and About, opens a page in your browser where you can choose **Report a bug** or **Suggest an improvement**.
+<!-- Feedback email: add the Stet Software mailbox here when it exists. -->
 
 ## Saving
 
-You never have to save a capture. Every change you make to a capture is kept the moment you make it, in the Recent folder beside the original picture (see **Recent captures**); close Annotshot and open it again, and the capture you were working on comes back with everything on it. A file you opened with **Open…** keeps itself the same way: your changes are written into that file as you work. **Undo** takes back mistakes while Annotshot is open; it does not reach back past a restart.
+You never have to save a capture. Every change you make to a capture is kept the moment you make it, in the Recent folder beside the original picture (see **Recent captures**); close Annotshot and open it again, then click the capture in Recent to find everything on it. A file you opened with **Open…** keeps itself the same way: your changes are written into that file as you work. **Undo** takes back mistakes while Annotshot is open; it does not reach back past a restart.
 
 **Save…** makes a copy somewhere else. Click it to open the Save window. Pick a file type from the "Save as type" list:
 
@@ -268,15 +296,19 @@ On a Mac, use the **Command (⌘)** key wherever this table says Ctrl.
 | Ctrl+] | Front |
 | Ctrl+[ | Back |
 | Delete | Delete |
-| Ctrl+W | Clear |
+| Ctrl+W | Close picture |
 | Ctrl+, | Settings… |
 | F1 | Help |
-| Ctrl+Shift+A | Capture, even while Annotshot is not in front (Windows and macOS) |
+| Ctrl+Shift+2 | Capture, even while Annotshot is not in front (Windows and macOS) |
 | Esc | Stop typing, then clear the selection; during capture, cancel |
+| V / T / B / R / E / A / H / P / C | Select / Text / Callout / Rectangle / Ellipse / Arrow / Highlight / Pen / Crop |
+| Ctrl+0 | Fit |
+| Ctrl+1 | 100 % |
+| Ctrl+= / Ctrl+- | Zoom in / Zoom out |
 | Ctrl + mouse wheel | Zoom in and out |
 | Double-click a text box | Edit its text |
 
-You can change any of these keys in **Settings…**.
+You can change action and tool keys in **Settings…**. Tool letters work with the picture focused; while typing in a text object or the Font box, they enter letters. Buttons, hints and Help show your current keys in your platform’s notation.
 
 ## Settings
 
@@ -284,14 +316,14 @@ Click the gear at the right end of the top row, or press **Ctrl+,**. Every chang
 
 **Shortcuts.** Each button and tool has a row with its key. Click the key box, press the new key, and wait a moment. A key that another button already uses is refused, and one line at the bottom names that button. **Reset** puts one row back to Annotshot's own key; **Reset all** puts every row back. Clear a box (the small x) to leave a button with no key.
 
-**Capture from anywhere.** One key that starts a capture even while another app is in front: **Ctrl+Shift+A** to begin with (⌘⇧A on a Mac). Annotshot comes back if it was minimized and the screen freezes for your capture. Tick **Off** to turn it off. If the system or another app already holds the key you chose, one line says so; pick another. Use Ctrl, Alt or Shift with a letter or a digit, or an F key alone. On Linux this row is greyed out: it is not available on Linux yet.
+**Capture from anywhere.** One key that starts a capture even while another app is in front: **Ctrl+Shift+2** to begin with (⇧⌘2 on a Mac). Annotshot comes back if it was minimized and starts live capture. A key you have already chosen stays unchanged. Tick **Off** to turn it off. If the system or another app already holds the key you chose, one line says so; pick another. Use Ctrl, Alt or Shift with a letter or a digit, or an F key alone. On Linux this row is greyed out: it is not available on Linux yet.
 
-**Capture.** Two boxes, both off to begin with, and the Recent captures box, on to begin with (the **About** tab, last, is described under "Help and About"):
+**Capture.** Two boxes, the first on and the second off to begin with, and the Recent captures box, on to begin with (the **About** tab, last, is described under "Help and About"):
 
-- **Copy to the clipboard right after each capture.** The picture goes straight to the clipboard; the status line says, for example, "Copied 1280 × 720 — Ctrl+V to paste". It counts as copied, so the next capture does not ask about saving.
+- **Copy to the clipboard right after each capture.** On to begin with: paste works at once, with no click on **Copy image**. After you add arrows or text, use **Copy image** again to copy the marked-up picture. The picture goes straight to the clipboard; the status line says, for example, "Copied 1280 × 720 — Ctrl+V to paste". It counts as copied, so the next capture does not ask about saving.
 - **Then minimize the window.** (Only with the first box on.) After the copy the window goes to the taskbar (the Dock on a Mac). The capture key or a click brings it back.
 
-With both on and the capture key, a screenshot is one key, one drag, and a paste.
+With both on and the capture key, a screenshot is one key, one drag or window click, and a paste. Releasing the gesture takes the picture.
 
 - **Keep the last 12 captures in the Recent pane.** On to begin with. Off: captures are no longer kept (see "Recent captures").
 
@@ -303,16 +335,16 @@ With both on and the capture key, a screenshot is one key, one drag, and a paste
 
 ## Known limits in this first version
 
-- **Clicking a window to capture it works on Windows only.** On macOS and Linux, drag a region instead; a click without dragging takes the whole screen.
+- **Linux captures the earlier way.** The capture bar, live capture, picking a window and the timer are for Windows and macOS. On Linux the screen freezes first: drag a region, or click without dragging for the whole screen.
 - **One screen per capture.** A region cannot stretch across two monitors.
-- **No scrolling capture, no screen recording, no picture library and no capture delay yet.** Annotshot must be open (it may be minimized) for the capture key to work. On Linux there is no capture key yet: start each capture from Annotshot's window.
+- **No scrolling capture, no screen recording and no picture library yet.** Annotshot must be open (it may be minimized) for the capture key to work. On Linux there is no capture key yet: start each capture from Annotshot's window.
 - **Linux on Wayland:** Qt's screen grab returns an empty picture on Wayland, the default session on new GNOME and KDE desktops, so a capture there comes back blank. Until Annotshot uses the desktop's own screenshot service, use an X11 (Xorg) session where the login screen offers one. No one has run the Linux build by hand yet.
 - **Linux:** no double-click on saved `.annotshot` files yet. Use **Open…**, or start Annotshot with the file's name after it.
 - **One style per text box.** You cannot make one word bold and the next one plain inside the same box; use two boxes.
 
 ## Licence
 
-Annotshot is made by Viking Software and is MIT-licensed. It uses Qt for Python and Qt 6 under the LGPL v3, and python-docx, python-pptx and their helpers under their own licences. Its pixel font, VT323 (by Peter Hull), is under the SIL Open Font License 1.1. The licence texts travel inside the app's folder: a `licenses` folder with the GNU texts and the font's licence, plus `LICENSE` and `THIRD-PARTY-NOTICES.md` in the public download. **About Annotshot… → Third-party notices** shows them inside the app.
+Annotshot is made by Stet Software and is MIT-licensed. It uses Qt for Python and Qt 6 under the LGPL v3, and python-docx, python-pptx and their helpers under their own licences. Its pixel font, VT323 (by Peter Hull), is under the SIL Open Font License 1.1. The licence texts travel inside the app's folder: a `licenses` folder with the GNU texts and the font's licence, plus `LICENSE` and `THIRD-PARTY-NOTICES.md` in the public download. **About Annotshot… → Third-party notices** shows them inside the app.
 
 ## For developers
 

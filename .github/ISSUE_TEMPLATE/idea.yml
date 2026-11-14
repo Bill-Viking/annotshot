@@ -1,0 +1,53 @@
+{
+  "name": "Suggest an improvement",
+  "description": "Tell us what would make Annotshot easier to use.",
+  "labels": [
+    "idea"
+  ],
+  "body": [
+    {
+      "type": "textarea",
+      "id": "what",
+      "attributes": {
+        "label": "Your idea in a sentence or two",
+        "placeholder": "What would you like Annotshot to do?"
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "why",
+      "attributes": {
+        "label": "What would it make easier?",
+        "placeholder": "Tell us what you are trying to do."
+      },
+      "validations": {
+        "required": false
+      }
+    },
+    {
+      "type": "input",
+      "id": "version",
+      "attributes": {
+        "label": "Annotshot version (optional)",
+        "placeholder": "Find it in About Annotshot…"
+      },
+      "validations": {
+        "required": false
+      }
+    },
+    {
+      "type": "input",
+      "id": "os",
+      "attributes": {
+        "label": "Windows, macOS or Linux and its version (optional)",
+        "placeholder": "For example, Windows 11, macOS 15 or Ubuntu 24.04"
+      },
+      "validations": {
+        "required": false
+      }
+    }
+  ]
+}

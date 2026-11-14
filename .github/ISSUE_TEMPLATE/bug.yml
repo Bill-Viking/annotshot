@@ -1,0 +1,75 @@
+{
+  "name": "Report a bug",
+  "description": "Tell us what went wrong in Annotshot.",
+  "labels": [
+    "bug"
+  ],
+  "body": [
+    {
+      "type": "textarea",
+      "id": "what",
+      "attributes": {
+        "label": "What happened?",
+        "placeholder": "Tell us what went wrong."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "steps",
+      "attributes": {
+        "label": "How can we make it happen again?",
+        "placeholder": "What did you click or type, in order?"
+      },
+      "validations": {
+        "required": false
+      }
+    },
+    {
+      "type": "input",
+      "id": "expected",
+      "attributes": {
+        "label": "What did you expect?",
+        "placeholder": "What should have happened?"
+      },
+      "validations": {
+        "required": false
+      }
+    },
+    {
+      "type": "input",
+      "id": "version",
+      "attributes": {
+        "label": "Annotshot version",
+        "placeholder": "For example, 0.4.0 — find it in About Annotshot…"
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "input",
+      "id": "os",
+      "attributes": {
+        "label": "Windows, macOS or Linux and its version",
+        "placeholder": "For example, Windows 11, macOS 15 or Ubuntu 24.04"
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "screenshot",
+      "attributes": {
+        "label": "A picture helps (optional)",
+        "placeholder": "Drop or paste a picture here if you have one."
+      },
+      "validations": {
+        "required": false
+      }
+    }
+  ]
+}

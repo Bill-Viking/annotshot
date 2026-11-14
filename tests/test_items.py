@@ -1,5 +1,6 @@
 """Model-level proofs for checks 2, 3, 4 and 5 (offscreen)."""
 import pytest
+from annotshot import typefaces
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor
 
@@ -200,7 +201,7 @@ def test_defaults(qapp):
     assert (t["text_color"], t["fill_color"], t["border_color"]) == \
         ("#000000", "#FFFFFF", "#E53935")
     assert (t["border_width"], t["font_family"], t["font_px"], t["align"],
-            t["opacity"], t["padding"]) == (2, "Segoe UI", 24, "left", 1.0, 6)
+            t["opacity"], t["padding"]) == (2, typefaces.text_family(), 24, "left", 1.0, 6)
 
 
 def test_undo_redo_add_remove_props(qapp, white):

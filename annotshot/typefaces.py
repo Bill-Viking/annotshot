@@ -14,6 +14,54 @@ LICENCE = "OFL-VT323.txt"
 _loaded: dict[str, str] = {}            # file name -> the family Qt read
 
 
+def public_families() -> list[str]:
+    """Installed families that can be offered as annotation fonts."""
+    from PySide6.QtGui import QFontDatabase
+    return [f for f in QFontDatabase.families()
+            if not f.startswith(".") and not QFontDatabase.isPrivateFamily(f)]
+
+
+def text_family() -> str:
+    """A public annotation font; the interface may use a private system face."""
+    families = public_families()
+    if sys.platform == "darwin":
+        for family in ("Helvetica Neue", "Arial"):
+            if family in families:
+                return family
+    else:
+        family = interface_family()
+        if family in families:
+            return family
+    if families:
+        return families[0]
+    raise RuntimeError("No public installed or bundled font is available")
+
+
+def interface_family() -> str:
+    """An actual installed family for the ordinary UI.
+
+    ASSUMES: Qt can read the system interface font. If it cannot, choose
+    an installed fallback instead of naming a font this machine lacks.
+    """
+    from PySide6.QtGui import QFontDatabase, QFontInfo
+    families = QFontDatabase.families()
+    if sys.platform == "win32" and "Segoe UI" in families:
+        return "Segoe UI"
+    try:
+        system = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+        for family in (system.family(), QFontInfo(system).family()):
+            if family in families:
+                return family
+    except (RuntimeError, AttributeError):
+        pass
+    for family in ("Helvetica Neue", "Arial", "DejaVu Sans", "Liberation Sans"):
+        if family in families:
+            return family
+    if families:
+        return families[0]
+    raise RuntimeError("No installed or bundled font is available")
+
+
 def font_folder() -> Path:
     """annotshot/fonts: under the frozen app's root in a build (the spec
     lays it there), the package folder otherwise.

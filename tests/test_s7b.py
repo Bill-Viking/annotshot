@@ -115,7 +115,7 @@ def test_arrow_tool_with_no_selection_enables_and_persists_color(window, monkeyp
     window.view.set_tool(Tool.ARROW)
     assert window.c_border.isEnabled() and window.s_width.isEnabled()
     assert not window.f_font.isEnabled()
-    assert window.sel_heading.text() == "Arrow defaults"
+    assert window.sel_heading.text() == "New arrows"
     monkeypatch.setattr(QColorDialog, "getColor", lambda *a, **k: QColor("blue"))
     window.c_border.click()
     assert window.settings.value("props/arrow/stroke_color") == "#0000FF"
@@ -186,32 +186,33 @@ def test_reset_clears_every_kind_but_keeps_shortcuts_and_remember(window):
     d.deleteLater()
 
 
-@pytest.mark.parametrize("tool,label,third", [
-    (Tool.ARROW, "Line", True), (Tool.PEN, "Line", True),
-    (Tool.RECT, "Border", False), (Tool.ELLIPSE, "Border", False),
-    (Tool.TEXT, "Border", False), (Tool.CALLOUT, "Border", False)])
-def test_line_words_and_third_row_follow_selection_and_active_tool(window, tool, label, third):
+@pytest.mark.parametrize("tool,label", [
+    (Tool.ARROW, "Line colour"), (Tool.PEN, "Line colour"),
+    (Tool.RECT, "Border"), (Tool.ELLIPSE, "Border"),
+    (Tool.TEXT, "Border"), (Tool.CALLOUT, "Border")])
+def test_line_words_and_two_rows_follow_selection_and_active_tool(window, tool, label):
     for selected in (False, True):
         if selected:
             draw(window, tool)
         else:
             window.view.set_tool(tool)
         assert window.border_label.text() == label
-        assert window.c_border.toolTip() == f"{label} color"
-        assert window.b_noborder.isHidden() == (label == "Line")
-        assert window.prop_row3.isHidden() == (not third)
+        assert window.c_border.toolTip() == ("Line color" if label == "Line colour" else "Border color")
+        assert window.b_noborder.isHidden() == (label == "Line colour")
+        assert window.prop_strip.layout().count() == 2
         assert not window.line_group.isHidden() if tool in (
             Tool.ARROW, Tool.PEN, Tool.RECT, Tool.ELLIPSE) else window.line_group.isHidden()
 
 
 def test_arrow_second_row_fits_the_start_width(window):
+    window.show_editor()
     window.resize(1100, 720)
     draw(window, Tool.ARROW)
     assert window.prop_row2.sizeHint().width() < window.width()
-    assert window.prop_row3.sizeHint().width() < window.width()
+    assert window.prop_row1.sizeHint().width() < window.width()
     assert window.prop_strip.sizeHint().width() < window.width()
     add(window, RectItem())
-    assert window.prop_row3.isHidden()
+    assert window.prop_strip.layout().count() == 2
     assert window.cb_line.isEnabled() and not window.line_group.isHidden()
 
 
