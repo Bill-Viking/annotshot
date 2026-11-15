@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu,
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import recent, theme
 from .capture import BAR_STYLE, CaptureBar, GLOW_MARGIN
+
+
+class _WelcomeLinkRow(QHBoxLayout):
+    geometryChanged = Signal()
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        # The trailing stretch can resize the row without moving either link.
+        self.geometryChanged.emit()
 
 
 class WelcomeCaptureBar(CaptureBar):
@@ -105,11 +114,26 @@ class WelcomeWidget(QWidget):
         self.running_row.row_widget.hide()  # Filled by keep-running integration.
         self.open_link = QLabel('<a href="open">Open a saved file…</a>', self)
         self.open_link.linkActivated.connect(lambda _: window.a_open.trigger())
-        left.addWidget(self.open_link)
+        self.feedback_link = QLabel('<a href="feedback">Send feedback…</a>', self)
+        self.feedback_link.linkActivated.connect(lambda _: window.a_feedback.trigger())
+        self.feedback_link.setToolTip(window.a_feedback.toolTip())
+        self.link_row = _WelcomeLinkRow()
+        self.link_row.setContentsMargins(0, 0, 0, 0)
+        self.link_row.setSpacing(16)
+        for link in (self.open_link, self.feedback_link):
+            link.setTextInteractionFlags(Qt.LinksAccessibleByMouse |
+                                         Qt.LinksAccessibleByKeyboard)
+            link.setFocusPolicy(Qt.StrongFocus)
+            self.link_row.addWidget(link)
+        self.link_row.addStretch()
+        left.addLayout(self.link_row)
+        QWidget.setTabOrder(self.open_link, self.feedback_link)
         self.status_label = QLabel(self)
         self.status_label.setTextFormat(Qt.PlainText)
         # Use the existing space below Open without changing the layout.
+        self.link_row.geometryChanged.connect(self._place_status)
         self.open_link.installEventFilter(self)
+        self.feedback_link.installEventFilter(self)
         window.statusBar().messageChanged.connect(self.status_label.setText)
         self.status_label.setText(window.statusBar().currentMessage())
         left.addStretch()
@@ -138,13 +162,36 @@ class WelcomeWidget(QWidget):
         self.refresh()
 
     def eventFilter(self, watched, event):
+        if watched in (self.open_link, self.feedback_link) and event.type() in (
+                QEvent.ShortcutOverride, QEvent.KeyPress):
+            if not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+                key = event.key()
+                if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space,
+                           Qt.Key_Tab, Qt.Key_Backtab):
+                    # Focused links own these keys ahead of capture shortcuts.
+                    if event.type() == QEvent.ShortcutOverride:
+                        event.accept()
+                        return True
+                    if key in (Qt.Key_Tab, Qt.Key_Backtab):
+                        forward = key == Qt.Key_Tab and not event.modifiers() & Qt.ShiftModifier
+                        self.focusNextPrevChild(forward)
+                    elif not event.isAutoRepeat():
+                        action = (self.window_.a_open if watched is self.open_link
+                                  else self.window_.a_feedback)
+                        action.trigger()
+                    event.accept()
+                    return True
         if watched is self.open_link and event.type() in (
                 QEvent.Move, QEvent.Resize, QEvent.Show, QEvent.FontChange):
-            rect = self.open_link.geometry()
-            rect.moveTop(rect.bottom() + 11)
-            rect.setHeight(self.status_label.fontMetrics().height())
-            self.status_label.setGeometry(rect)
+            self._place_status()
         return super().eventFilter(watched, event)
+
+    def _place_status(self):
+        rect = self.open_link.geometry()
+        rect.setWidth(self.link_row.geometry().width())
+        rect.moveTop(rect.bottom() + 11)
+        rect.setHeight(self.status_label.fontMetrics().height())
+        self.status_label.setGeometry(rect)
 
     def _row(self, layout, icon):
         row = QWidget(self)

@@ -239,8 +239,9 @@ def test_both_windows_roads_lead_with_the_box_and_hold_the_picture_spot(which):
     win = text[text.index("### Windows (10 and 11)"):
                text.index("### macOS — four steps")]
     roads = win.split("#### ")[1:]
-    assert [r.split(" — ")[0] for r in roads] == ["The installer", "The zip"]
-    for road in roads:
+    assert [r.splitlines()[0].split(" — ")[0] for r in roads] == [
+        "The installer", "The zip", "For IT departments: the MSI"]
+    for road in roads[:2]:
         assert SMARTSCREEN in road
         comment = re.search(r"<!-- picture: (.*?) -->", road)
         assert comment and pic in comment.group(1)

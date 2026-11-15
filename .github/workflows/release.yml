@@ -175,5 +175,6 @@ jobs:
             zips/*.zip
             zips/*-setup.exe
             zips/Annotshot-*.msix
+            zips/Annotshot-*.msi
           generate_release_notes: true
           fail_on_unmatched_files: true

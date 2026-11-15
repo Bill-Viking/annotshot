@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?include Identity.wxi?>
+  <Package Name="Annotshot" Manufacturer="Stet Software" Scope="perMachine"
+           Version="$(var.ProductVersion)" ProductCode="$(var.ProductCode)"
+           UpgradeCode="{65C27F65-972B-4DC4-8E5C-3B8D62770532}" InstallerVersion="500">
+    <!-- PackageCode is deliberately omitted: WiX generates it per build.
+         Rollback stays enabled. Upgrade removal errors remain fatal. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="no"
+                  AllowSameVersionUpgrades="no"
+                  DowngradeErrorMessage="A newer version of Annotshot is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPPRODUCTICON" Value="AnnotshotIcon.exe" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="both" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Bill-Viking/annotshot" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Bill-Viking/annotshot/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/Bill-Viking/annotshot/releases" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Annotshot">
+        <Component Id="Associations" Guid="$(var.AssociationsGuid)" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Classes\.annotshot" Type="string" Value="Annotshot.Editable" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\.annotshot\OpenWithProgids" Name="Annotshot.Editable" Type="string" Value="" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\.snagup" Type="string" Value="Annotshot.Editable" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\.snagup\OpenWithProgids" Name="Annotshot.Editable" Type="string" Value="" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Annotshot.Editable" Type="string" Value="Annotshot editable file" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Annotshot.Editable\DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]Annotshot.exe&quot;,0" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Annotshot.Editable\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]Annotshot.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Applications\Annotshot.exe" Name="FriendlyAppName" Type="string" Value="Annotshot" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Applications\Annotshot.exe\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]Annotshot.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Applications\Annotshot.exe\SupportedTypes" Name=".annotshot" Type="string" Value="" />
+          <RegistryValue Root="HKLM" Key="Software\Classes\Applications\Annotshot.exe\SupportedTypes" Name=".snagup" Type="string" Value="" />
+          <!-- RegistryValue removal prunes empty keys only, including extensions. -->
+          <RemoveFile Id="DiagnosticReceipt" Name="check.txt" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AnnotshotMenu" Name="Annotshot">
+        <Component Id="StartMenuShortcut" Guid="$(var.ShortcutGuid)" Bitness="always64">
+          <Shortcut Id="AnnotshotShortcut" Name="Annotshot" Target="[INSTALLFOLDER]Annotshot.exe"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+          <RemoveFolder Id="RemoveAnnotshotMenu" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\Stet Software\Annotshot" Name="MSIShortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Complete" Title="Annotshot" Level="1">
+      <ComponentGroupRef Id="PayloadComponents" />
+      <ComponentRef Id="Associations" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

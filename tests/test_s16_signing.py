@@ -19,6 +19,7 @@ SIGNING_STEPS = (
     'Files to sign (Windows)',
     "Sign the app's files (Windows)",
     'Sign the installer (Windows)',
+    'Sign the MSI (Windows)',
     'Signatures (Windows)',
 )
 VARIABLES = (
@@ -86,8 +87,19 @@ def test_reusable_windows_contract_and_unchanged_steps(workflow):
     text, parsed = workflow
     build = _job(text, 'build_windows')
     header, steps = build.split('    steps:\n', 1)
-    assert hashlib.sha256(('    steps:\n' + steps).encode()).hexdigest() == ORIGINAL_WINDOWS_STEPS_SHA256
-    assert len(_steps(text)) == 19
+    # Reverse only the authorized MSI additions, retaining the prior byte-level
+    # guard on every existing step (including both full-suite commands).
+    legacy = '    steps:\n' + steps
+    for name in ('MSI tools (Windows)', 'MSI build (Windows)', 'Sign the MSI (Windows)',
+                 'MSI proof (Windows)', 'Exact MSI before upload (Windows)', 'MSI proof evidence (Windows)'):
+        legacy = re.sub(rf'^      - name: {re.escape(name)}\n.*?(?=^      - |\Z)', '', legacy, flags=re.M | re.S)
+    legacy = legacy.replace('          $msi = Join-Path $PWD "Annotshot-$v.msi"\n', '')
+    legacy = legacy.replace(' + @($setup) + @($msi)', ' + @($setup)')
+    legacy = re.sub(r'^          \$msiSignature = .*?(?=^          \$makers =)', '', legacy, flags=re.M | re.S)
+    legacy = legacy.replace('the installer, the MSI,', 'the installer,')
+    legacy = legacy.replace("            ${{ env.SIGN == 'true' && 'Annotshot-*.msi' || '' }}\n", '')
+    assert hashlib.sha256(legacy.encode()).hexdigest() == ORIGINAL_WINDOWS_STEPS_SHA256
+    assert len(_steps(text)) == 25
     assert re.search(r'^on:\n  workflow_call:\n    inputs:\n      sign:\n        type: boolean\n        required: true\n', text, re.M)
     assert re.findall(r'^  (\w+):$', text.split('jobs:\n', 1)[1], re.M) == ['build_windows']
     assert '    runs-on: windows-latest\n' in header
@@ -183,7 +195,7 @@ def test_release_requires_successful_signed_windows_and_handles_skipped_unsigned
 def test_all_azure_actions_are_gated_by_sign(workflow):
     text, parsed = workflow
     actions = [s for s in _steps(text) if re.search(r'^        uses: Azure/', s, re.M)]
-    assert len(actions) == 3
+    assert len(actions) == 4
     for step in actions:
         assert re.search(r"^        if: env.SIGN == 'true'$", step, re.M)
     if parsed is not None:
@@ -199,7 +211,8 @@ def test_signing_steps_keep_the_ruled_order_and_gates(workflow):
     order = (
         'Build', 'Frozen self-check', 'Licence texts and the manual in the bundle',
         *SIGNING_STEPS[:4], 'Installer build (Windows)', SIGNING_STEPS[4],
-        'Installer proof (Windows)', SIGNING_STEPS[5], 'MSIX (Windows)', 'Zip (Windows)',
+        'Installer proof (Windows)', 'MSI tools (Windows)', 'MSI build (Windows)',
+        SIGNING_STEPS[5], 'MSI proof (Windows)', SIGNING_STEPS[6], 'MSIX (Windows)', 'Zip (Windows)',
     )
     positions = [names.index(n) for n in order]
     assert positions == sorted(positions)
@@ -249,11 +262,11 @@ def test_no_signer_subject_or_hash_is_printed(workflow):
             assert not re.search(r'\$(?:subject\b|signerHash\b|signature\.(?:SignerCertificate|TimeStamperCertificate)|env:SIGNER_SUBJECT_SHA256)', output, re.I), line
 
 
-def test_release_keeps_the_three_attachment_patterns(release_workflow):
+def test_release_keeps_all_four_attachment_patterns(release_workflow):
     text, parsed = release_workflow
     release = _job(text, 'release')
     files = re.search(r'^          files: \|\n((?:            .+\n)+)', release, re.M).group(1)
-    expected = ['zips/*.zip', 'zips/*-setup.exe', 'zips/Annotshot-*.msix']
+    expected = ['zips/*.zip', 'zips/*-setup.exe', 'zips/Annotshot-*.msix', 'zips/Annotshot-*.msi']
     assert [line.strip() for line in files.splitlines()] == expected
     assert '    permissions:\n      contents: write\n' in release
     if parsed is not None:
@@ -297,7 +310,7 @@ def test_actions_use_the_ruled_inputs_and_absolute_installer_path(workflow):
     assert '        uses: Azure/login@v3\n' in login
     for key, name in zip(('client-id', 'tenant-id', 'subscription-id'), VARIABLES[:3]):
         assert f'          {key}: ${{{{ vars.{name} }}}}\n' in login
-    for name in (SIGNING_STEPS[3], SIGNING_STEPS[4]):
+    for name in (SIGNING_STEPS[3], SIGNING_STEPS[4], SIGNING_STEPS[5]):
         step = _step(text, name)
         assert '        uses: Azure/artifact-signing-action@v2\n' in step
         for key, variable in zip(('endpoint', 'signing-account-name', 'certificate-profile-name'), VARIABLES[3:]):
@@ -310,13 +323,13 @@ def test_actions_use_the_ruled_inputs_and_absolute_installer_path(workflow):
 
 def test_signature_proof_checks_status_subject_and_timestamps(workflow):
     text, _ = workflow
-    step = _step(text, SIGNING_STEPS[5])
+    step = _step(text, SIGNING_STEPS[6])
     assert "Get-ChildItem -LiteralPath 'dist/Annotshot' -Recurse -File" in step
     assert "'.exe', '.dll', '.pyd'" in step
     assert "if ($signature.Status -ne 'Valid')" in step
     assert 'SIGNED_FILES: ${{ steps.signlist.outputs.files }}' in step
     assert "$signedFiles = @($env:SIGNED_FILES -split '\\r?\\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })" in step
-    assert 'foreach ($path in (@($signedFiles) + @($setup)))' in step
+    assert 'foreach ($path in (@($signedFiles) + @($setup) + @($msi)))' in step
     assert '$null -eq $signature.SignerCertificate' in step
     assert '[string]::IsNullOrWhiteSpace($signature.SignerCertificate.Subject)' in step
     assert '$null -eq $signature.TimeStamperCertificate' in step
@@ -334,7 +347,7 @@ def test_signature_proof_checks_status_subject_and_timestamps(workflow):
     assert 'On a signed run, the files inside carry our signature.' in text
 
 
-@pytest.mark.parametrize('case', ['both_executables_wrong_signer', 'unsigned_dll_wrong_signer'])
+@pytest.mark.parametrize('case', ['both_executables_wrong_signer', 'unsigned_dll_wrong_signer', 'msi_wrong_signer'])
 def test_wrong_signer_rejection_is_inside_the_loop_over_every_selected_file(workflow, case):
     """Source checks on PowerShell, including the verdict's two regressions.
 
@@ -342,8 +355,8 @@ def test_wrong_signer_rejection_is_inside_the_loop_over_every_selected_file(work
     These are static guards, not an Authenticode execution proof.
     """
     text, _ = workflow
-    step = _step(text, SIGNING_STEPS[5])
-    loop = step.split('foreach ($path in (@($signedFiles) + @($setup))) {', 1)[1]
+    step = _step(text, SIGNING_STEPS[6])
+    loop = step.split('foreach ($path in (@($signedFiles) + @($setup) + @($msi))) {', 1)[1]
     loop = loop.split('\n          }', 1)[0]
     expected_lines = [
         '            $signature = Get-AuthenticodeSignature -LiteralPath $path',
@@ -358,6 +371,8 @@ def test_wrong_signer_rejection_is_inside_the_loop_over_every_selected_file(work
     if case == 'both_executables_wrong_signer':
         assert '$app -notin $toSign' in selection
         assert '$setup = Join-Path $PWD "Annotshot-$v-setup.exe"' in step
+    elif case == 'msi_wrong_signer':
+        assert '$msi = Join-Path $PWD "Annotshot-$v.msi"' in step
     else:
         assert "'.exe', '.dll', '.pyd'" in selection
         assert "'NotSigned' { $toSign += $file.FullName }" in selection

@@ -221,6 +221,113 @@ jobs:
           if (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable') { Write-Host 'STOP the uninstall left the .annotshot file type'; exit 1 }
           Write-Host "installer OK: installed, checked, uninstalled ($dir is gone)"
 
+      - name: MSI tools (Windows)
+        shell: pwsh
+        timeout-minutes: 5
+        env:
+          DOTNET_ROLL_FORWARD: LatestMajor
+          DOTNET_CLI_UI_LANGUAGE: en-US
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "runner image: $env:ImageOS / $env:ImageVersion"
+          Write-Host "OS architecture: $([Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
+          if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'STOP x64 Windows process required' }
+          $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop).Source
+          Write-Host "resolved dotnet: $dotnet"
+          function DotnetOutput([string[]]$Arguments) {
+            $output = @(& $dotnet @Arguments)
+            if ($LASTEXITCODE -ne 0) { throw "STOP dotnet $Arguments exit $LASTEXITCODE" }
+            $output | ForEach-Object { Write-Host $_ }
+            return $output
+          }
+          $info = DotnetOutput @('--info')
+          $sdks = DotnetOutput @('--list-sdks')
+          $runtimes = DotnetOutput @('--list-runtimes')
+          if (($info -join "`n") -notmatch '(?m)^\s*Architecture:\s+x64\s*$') { throw 'STOP resolved dotnet must be x64' }
+          $supportedSdk = @($sdks | Where-Object { $_ -match '^(\d+)\.\d+\.\d+ \[' -and [int]$Matches[1] -ge 8 })
+          if (-not $supportedSdk.Count) { throw 'STOP missing stable .NET SDK major 8 or newer' }
+          $supportedRuntime = @($runtimes | Where-Object { $_ -match '^Microsoft.NETCore.App (\d+)\.\d+\.\d+ \[' -and [int]$Matches[1] -ge 8 })
+          if (-not $supportedRuntime.Count) { throw 'STOP missing x64 Microsoft.NETCore.App runtime major 8 or newer' }
+          Write-Host 'WiX installation AND invocation policy: DOTNET_ROLL_FORWARD=LatestMajor'
+          $toolDir = Join-Path $env:RUNNER_TEMP "annotshot-wix-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $toolDir) { throw 'STOP dedicated WiX directory already exists' }
+          & $dotnet tool install wix --version 5.0.2 --tool-path $toolDir
+          if ($LASTEXITCODE -ne 0) { throw "STOP WiX 5.0.2 install exit $LASTEXITCODE" }
+          $wix = Join-Path $toolDir 'wix.exe'
+          if (-not (Test-Path -LiteralPath $wix -PathType Leaf)) { throw 'STOP no run-local wix.exe' }
+          $printed = @(& $wix --version)
+          if ($LASTEXITCODE -ne 0) { throw "STOP WiX start/version exit $LASTEXITCODE" }
+          $printed | ForEach-Object { Write-Host $_ }
+          if (($printed -join "`n").Trim() -notmatch '^5\.0\.2(?:\+[0-9A-Za-z.-]+)?$') { throw 'STOP WiX version must be 5.0.2' }
+          "WIX_EXE=$wix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: MSI build (Windows)
+        shell: pwsh
+        timeout-minutes: 5
+        env:
+          DOTNET_ROLL_FORWARD: LatestMajor
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host 'WiX invocation policy: DOTNET_ROLL_FORWARD=LatestMajor'
+          $v = '${{ steps.version.outputs.version }}'
+          python tools/make-msi.py --dist dist/Annotshot --version $v --out build/msi
+          if ($LASTEXITCODE -ne 0) { throw "STOP MSI harvest exit $LASTEXITCODE" }
+          $msi = Join-Path $PWD "Annotshot-$v.msi"
+          if (-not [IO.Path]::IsPathFullyQualified($env:WIX_EXE)) { throw 'STOP absolute run-local wix.exe required' }
+          $intermediate = Join-Path $env:RUNNER_TEMP "annotshot-wix-intermediate-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & $env:WIX_EXE build -arch x64 -i build/msi packaging/annotshot.wxs build/msi/Payload.wxs -intermediateFolder $intermediate -out $msi -pdbtype none
+          if ($LASTEXITCODE -ne 0) { throw "STOP WiX build/validation exit $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { throw "STOP missing exact MSI $msi" }
+          python tools/make-msi.py --verify-sources build/msi/manifest.json
+          if ($LASTEXITCODE -ne 0) { throw "STOP source hash recheck exit $LASTEXITCODE" }
+          $manifest = Get-Content -LiteralPath build/msi/manifest.json -Raw | ConvertFrom-Json
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $null
+          try {
+            $database = $installer.OpenDatabase($msi, 0) # Read-only; never Win32_Product.
+            foreach ($pair in @(@('ProductVersion',$manifest.product.version), @('ProductCode',$manifest.product.product_code), @('UpgradeCode',$manifest.product.upgrade_code))) {
+              $view = $null; $record = $null
+              try {
+                $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$($pair[0])'")
+                $view.Execute()
+                $record = $view.Fetch()
+                if ($null -eq $record -or $record.StringData(1) -cne $pair[1]) { throw "STOP built MSI $($pair[0]) differs from manifest" }
+                Write-Host "$($pair[0]): $($pair[1])"
+                "$($pair[0]): $($pair[1])" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              } finally {
+                if ($null -ne $record) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+                if ($null -ne $view) { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+              }
+            }
+          } finally {
+            if ($null -ne $database) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) }
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+          }
+          if ($env:SIGN -ne 'true') { Write-Host 'UNSIGNED MSI: office signing/RSA gate UNPROVEN' }
+
+      - name: Sign the MSI (Windows)
+        if: env.SIGN == 'true'
+        uses: Azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\Annotshot-${{ steps.version.outputs.version }}.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: MSI proof (Windows)
+        shell: pwsh
+        timeout-minutes: 28
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ steps.version.outputs.version }}'
+          $proof = Join-Path $env:RUNNER_TEMP "annotshot-msi-proof-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & ./tools/prove-msi.ps1 -Msi (Join-Path $PWD "Annotshot-$v.msi") -Version $v -Manifest (Join-Path $PWD 'build/msi/manifest.json') -ProofDirectory $proof
+          if (-not $? -or $LASTEXITCODE -ne 0) { throw 'STOP MSI SYSTEM proof failed' }
+
       - name: Signatures (Windows)
         if: env.SIGN == 'true'
         shell: pwsh
@@ -235,7 +342,8 @@ jobs:
           $v = '${{ steps.version.outputs.version }}'
           $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
           $signedFiles = @($env:SIGNED_FILES -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          foreach ($path in (@($signedFiles) + @($setup))) {
+          $msi = Join-Path $PWD "Annotshot-$v.msi"
+          foreach ($path in (@($signedFiles) + @($setup) + @($msi))) {
             $signature = Get-AuthenticodeSignature -LiteralPath $path
             if ($signature.Status -ne 'Valid') { Write-Host "STOP $path has signature status $($signature.Status)"; exit 1 }
             if ($null -eq $signature.SignerCertificate -or [string]::IsNullOrWhiteSpace($signature.SignerCertificate.Subject)) { Write-Host "STOP $path has no signer subject"; exit 1 }
@@ -243,9 +351,18 @@ jobs:
             $signerHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($signature.SignerCertificate.Subject))).ToLowerInvariant()
             if ($signerHash -cne $env:SIGNER_SUBJECT_SHA256) { Write-Host "STOP $path has an unexpected signer identity"; exit 1 }
           }
+          $msiSignature = Get-AuthenticodeSignature -LiteralPath $msi
+          if ($msiSignature.SignerCertificate.PublicKey.Oid.Value -ne '1.2.840.113549.1.1.1') { throw 'STOP MSI signer public key must be RSA' }
+          $rsa = $null
+          try {
+            $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($msiSignature.SignerCertificate)
+            if ($null -eq $rsa) { throw 'STOP MSI signer has no usable RSA public key' }
+            if ($rsa.KeySize -lt 2048 -or $rsa.KeySize -gt 4096) { throw 'STOP MSI RSA key size outside 2048..4096 bits' }
+            Write-Host "MSI signer public key: RSA $($rsa.KeySize) bits"
+          } finally { if ($null -ne $rsa) { $rsa.Dispose() } }
           $makers = [int]'${{ steps.signlist.outputs.makers }}'
           Write-Host 'signer OK: matches the expected identity'
-          Write-Host "signatures OK: Annotshot.exe, the installer, $($files.Count) app files; $makers files keep their makers' signatures"
+          Write-Host "signatures OK: Annotshot.exe, the installer, the MSI, $($files.Count) app files; $makers files keep their makers' signatures"
 
       # The package itself stays unsigned because the Microsoft Store signs it.
       # On a signed run, the files inside carry our signature.
@@ -281,6 +398,22 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/Annotshot -DestinationPath "Annotshot-${{ steps.version.outputs.version }}-windows.zip"
 
+      - name: Exact MSI before upload (Windows)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'Annotshot-${{ steps.version.outputs.version }}.msi' -PathType Leaf)) { throw 'STOP exact versioned MSI missing before upload' }
+
+      - name: MSI proof evidence (Windows)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/msi/manifest.json
+            ${{ runner.temp }}/annotshot-msi-proof-${{ github.run_id }}-${{ github.run_attempt }}/
+          retention-days: 14
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v4
         with:
           name: Annotshot-windows
@@ -288,5 +421,6 @@ jobs:
             Annotshot-*-windows.zip
             Annotshot-*-setup.exe
             Annotshot-*.msix
+            ${{ env.SIGN == 'true' && 'Annotshot-*.msi' || '' }}
           if-no-files-found: error
 

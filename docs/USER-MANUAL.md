@@ -1,6 +1,6 @@
 # Annotshot user manual
 
-Saturday 2026-11-14 · for Annotshot 0.4.1
+Sunday 2026-11-15 · for Annotshot 0.4.2
 
 ## What Annotshot is
 
@@ -16,12 +16,12 @@ Download the app from the repository's Releases page — the three download butt
 
 ### Windows (10 and 11)
 
-There are two roads. The installer is the usual one: it puts Annotshot in the Start menu and registers the `.annotshot` file type. The zip needs no installing: the folder runs wherever you put it.
+For your own computer, choose the installer or the zip; for central deployment, see the MSI section below. The installer is the usual one: it puts Annotshot in the Start menu and registers the `.annotshot` file type. The zip needs no installing: the folder runs wherever you put it.
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.4.1-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.4.1-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
+1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.4.2-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -30,20 +30,40 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The zip — three steps
 
-1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.4.1-windows.zip`. It appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.4.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.4.2-windows.zip`. It appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.4.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
+#### For IT departments: the MSI
+
+The Windows Installer package, `Annotshot-0.4.2.msi`, is for IT departments that install software centrally. It installs into **Program Files** for all users of the computer and registers the `.annotshot` file type for the whole machine. It is digitally signed, like the other Windows downloads.
+
+If you are installing for yourself, use `Annotshot-0.4.2-setup.exe` above.
+
+Download the MSI from the repository’s **Releases** page. The commands below install or remove Annotshot without showing an installer window. Silent installation was tested under the Windows SYSTEM account. Run each command from the folder containing the MSI.
+
+**Install:**
+
+```
+msiexec /i Annotshot-0.4.2.msi /qn
+```
+
+**Remove:**
+
+```
+msiexec /x Annotshot-0.4.2.msi /qn
+```
+
 ### macOS — four steps
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.4.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -54,8 +74,8 @@ The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.4.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -75,6 +95,7 @@ No one has run the Linux build by hand yet: the release workflow builds it and r
 
 - **Windows, the installer:** close Annotshot, download the new `Annotshot-<version>-setup.exe` and run it: it replaces the old copy in place, in the same folder, and keeps your settings.
 - **Windows, the zip:** close Annotshot, delete the old `Annotshot` folder, unzip the new download in its place, and start it once so a double-click on a saved file uses the new copy.
+- **Windows, the MSI:** upgrading from one MSI version to the next has not yet been tested. Test the upgrade before deploying it centrally.
 - **macOS:** drag the new **Annotshot.app** into **Applications** and choose **Replace**. Run the Terminal line from step 3 again (every new download is flagged again). Annotshot is not signed by Apple yet, so after every update macOS asks again before Annotshot can take pictures of your screen: click **Allow**, or switch Annotshot on under **Privacy & Security → Screen & System Audio Recording** as in step 4. Nothing is broken. If Annotshot is already switched on there and macOS still refuses: remove it with −, add it again with + from Applications, and switch it on. Annotshot then restarts by itself after keeping any changes to a picture that has a file; if the write fails, it stays open with your edits. If capture is still refused after a restart, the next **Capture** press offers **Restart Annotshot** to try again.
 - **Linux:** close Annotshot and replace the `Annotshot` folder with the one from the new zip.
 

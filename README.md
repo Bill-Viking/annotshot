@@ -7,12 +7,12 @@ Annotshot is a screenshot app for Windows, macOS and Linux with PowerPoint-style
 ## Download the app
 
 <p>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.1/Annotshot-0.4.1-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.1/Annotshot-0.4.1-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
-<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.1/Annotshot-0.4.1-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.2/Annotshot-0.4.2-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2563EB?style=for-the-badge" alt="Download for Windows"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.2/Annotshot-0.4.2-macos.zip"><img src="https://img.shields.io/badge/Download%20for-macOS-2563EB?style=for-the-badge" alt="Download for macOS"></a>
+<a href="https://github.com/Bill-Viking/annotshot/releases/download/v0.4.2/Annotshot-0.4.2-linux.zip"><img src="https://img.shields.io/badge/Download%20for-Linux-2563EB?style=for-the-badge" alt="Download for Linux"></a>
 </p>
 
-Version 0.4.1. The Windows button downloads the installer; the macOS download is for Macs with Apple silicon (M1 or newer). Each button downloads one file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
+Version 0.4.2. The Windows button downloads the installer; the macOS download is for Macs with Apple silicon (M1 or newer). Each button downloads one file into your **Downloads** folder. (The green **Code** button at the top of this page is the program's source code, not the app — you do not need it.)
 
 ![Annotshot with a text box, an arrow, a highlight and a pen stroke](docs/screenshot.png)
 
@@ -20,12 +20,12 @@ Version 0.4.1. The Windows button downloads the installer; the macOS download is
 
 ### Windows (10 and 11)
 
-There are two roads. The installer is the usual one: it puts Annotshot in the Start menu and registers the `.annotshot` file type. The zip needs no installing: the folder runs wherever you put it.
+For your own computer, choose the installer or the zip; for central deployment, see the MSI section below. The installer is the usual one: it puts Annotshot in the Start menu and registers the `.annotshot` file type. The zip needs no installing: the folder runs wherever you put it.
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** above. `Annotshot-0.4.1-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.4.1-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
+1. **Download:** click **Download for Windows** above. `Annotshot-0.4.2-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.4.2-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: docs/windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](docs/windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -34,20 +34,40 @@ There are two roads. The installer is the usual one: it puts Annotshot in the St
 
 #### The zip — three steps
 
-1. **Download:** [`Annotshot-0.4.1-windows.zip`](https://github.com/Bill-Viking/annotshot/releases/download/v0.4.1/Annotshot-0.4.1-windows.zip) appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.4.1-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.1-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** [`Annotshot-0.4.2-windows.zip`](https://github.com/Bill-Viking/annotshot/releases/download/v0.4.2/Annotshot-0.4.2-windows.zip) appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.4.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: docs/windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](docs/windows-protected.png) -->
 
 To start it from the Start menu next time: right-click **Annotshot.exe** → **Pin to Start**.
 
+#### For IT departments: the MSI
+
+`Annotshot-0.4.2.msi` is a Windows Installer package for IT departments that install software centrally. It installs into **Program Files** for all users of the computer and registers the `.annotshot` file type for the whole machine. It is digitally signed, like the other Windows downloads.
+
+If you are installing for yourself, use `Annotshot-0.4.2-setup.exe` above.
+
+Download the MSI from the repository’s **Releases** page. The commands below install or remove Annotshot without showing an installer window. Silent installation was tested under the Windows SYSTEM account. Run each command from the folder containing the MSI.
+
+**Install:**
+
+```
+msiexec /i Annotshot-0.4.2.msi /qn
+```
+
+**Remove:**
+
+```
+msiexec /x Annotshot-0.4.2.msi /qn
+```
+
 ### macOS — four steps
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** above. `Annotshot-0.4.1-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.1-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** above. `Annotshot-0.4.2-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -58,8 +78,8 @@ The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** above. `Annotshot-0.4.1-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.1-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** above. `Annotshot-0.4.2-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -79,6 +99,7 @@ No one has run the Linux build by hand yet: the release workflow builds it and r
 
 - **Windows, the installer:** close Annotshot, download the new `Annotshot-<version>-setup.exe` and run it: it replaces the old copy in place, in the same folder, and keeps your settings.
 - **Windows, the zip:** close Annotshot, delete the old `Annotshot` folder, unzip the new download in its place, and start it once so a double-click on a saved file uses the new copy.
+- **Windows, the MSI:** upgrading from one MSI version to the next has not yet been tested. Test the upgrade before deploying it centrally.
 - **macOS:** drag the new **Annotshot.app** into **Applications** and choose **Replace**. Run the Terminal line from step 3 again (every new download is flagged again). If macOS asks about screen recording again, click **Allow**.
 - **Linux:** close Annotshot and replace the `Annotshot` folder with the one from the new zip.
 
@@ -122,7 +143,8 @@ The whole app, button by button: **[User manual](docs/USER-MANUAL.md)**.
   tests and zips Windows, macOS and Linux, and builds the Windows installer
   from `packaging/annotshot.iss` (installed, checked and uninstalled again on
   the runner). Push a tag `v<version>` (matching `annotshot/__init__.py`) and
-  it attaches `Annotshot-<version>-setup.exe`, `Annotshot-<version>-windows.zip`,
+  it attaches `Annotshot-<version>-setup.exe`, `Annotshot-<version>.msi`,
+  `Annotshot-<version>-windows.zip`,
   `Annotshot-<version>-macos.zip` and `Annotshot-<version>-linux.zip` to that
   release; run it by hand from the **Actions** tab for a dry run.
 - **Tests:** `python -m pytest -q` (they run offscreen; no window opens).
