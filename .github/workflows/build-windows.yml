@@ -1,0 +1,292 @@
+# Shared Windows build; only the signed caller grants OIDC permission.
+name: build Windows
+
+on:
+  workflow_call:
+    inputs:
+      sign:
+        type: boolean
+        required: true
+
+env:
+  SIGNER_SUBJECT_SHA256: 245dc45e91f6a982cc5c39835225e6a18970f589707a56d69a2ba83201f305e0
+
+jobs:
+  build_windows:
+    name: build (windows)
+    runs-on: windows-latest
+    environment: ${{ inputs.sign && 'release' || '' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      QT_QPA_PLATFORM: offscreen
+      SIGN: ${{ inputs.sign && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6-Essentials==6.12.0" "python-docx==1.2.0" "python-pptx==1.0.2" "lxml==6.1.3" "pillow==13.0.0" "typing_extensions==4.16.0" "xlsxwriter==3.3.1" "pyinstaller==6.22.3" pytest
+
+      - name: Version
+        id: version
+        run: |
+          v=$(python -c "import annotshot; print(annotshot.__version__)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Annotshot $v"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "STOP tag $GITHUB_REF_NAME does not match annotshot.__version__ $v"
+            exit 1
+          fi
+
+      - name: Tests (offscreen)
+        run: python -m pytest -q
+
+      - name: Build
+        run: pyinstaller --noconfirm --clean packaging/annotshot.spec
+
+      - name: Frozen self-check
+        run: |
+          case "$RUNNER_OS" in
+            Windows) exe=dist/Annotshot/Annotshot.exe ;;
+            macOS)   exe=dist/Annotshot.app/Contents/MacOS/Annotshot ;;
+            *)       exe=dist/Annotshot/Annotshot ;;
+          esac
+          out=$("$exe" --check | tr -d '\r')
+          echo "$out"
+          test "$(printf '%s\n' "$out" | tail -n 1)" = "Annotshot ${{ steps.version.outputs.version }} OK"
+          rm -f "$(dirname "$exe")/check.txt"
+
+      # The LGPL lets the zips carry Qt as separate libraries only when its
+      # notice and licence text ride along: the bundle must hold both GNU
+      # texts, and the public repository's builds also its LICENSE and
+      # notices. The user manual Help shows rides beside them, and the pixel
+      # font with its SIL Open Font License. Found by search inside the folder the zip step packs
+      # (dist/Annotshot.app on macOS, dist/Annotshot elsewhere), so an
+      # incomplete bundle never passes on the strength of another build
+      # beside it.
+      - name: Licence texts and the manual in the bundle
+        env:
+          PUBLIC: ${{ github.repository == 'Bill-Viking/annotshot' }}
+        run: |
+          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt licenses/OFL-VT323.txt annotshot/fonts/VT323-Regular.ttf docs/USER-MANUAL.md"
+          if [[ "$PUBLIC" == "true" ]]; then
+            need="$need LICENSE THIRD-PARTY-NOTICES.md"
+          fi
+          bundle=dist/Annotshot
+          if [[ "$RUNNER_OS" == "macOS" ]]; then bundle=dist/Annotshot.app; fi
+          ok=""
+          while IFS= read -r hit; do
+            root=$(dirname "$(dirname "$hit")")
+            missing=""
+            for n in $need; do [[ -e "$root/$n" ]] || missing="$missing $n"; done
+            if [[ -z "$missing" ]]; then ok="$root"; break; fi
+            echo "in $root, missing:$missing"
+          done < <(find "$bundle" -path '*/licenses/LGPL-3.0.txt')
+          if [[ -z "$ok" ]]; then
+            echo "STOP the bundle $bundle does not hold all of: $need"
+            exit 1
+          fi
+          echo "licence texts OK in $ok: $need"
+
+      - name: Signing settings (Windows)
+        if: env.SIGN == 'true'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+        run: |
+          $names = @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE')
+          $missing = @($names | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing.Count) { Write-Host "STOP signing is on and these repository variables are empty: $($missing -join ', ')"; exit 1 }
+          Write-Host 'signing settings OK'
+
+      - name: Azure sign-in (Windows)
+        if: env.SIGN == 'true'
+        uses: Azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Files to sign (Windows)
+        if: env.SIGN == 'true'
+        shell: pwsh
+        id: signlist
+        run: |
+          $files = @(Get-ChildItem -LiteralPath 'dist/Annotshot' -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll', '.pyd' } | Sort-Object FullName)
+          $toSign = @()
+          $makers = 0
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            switch ($signature.Status.ToString()) {
+              'NotSigned' { $toSign += $file.FullName }
+              'Valid' { $makers++ }
+              default { Write-Host "STOP $($file.FullName) has signature status $($signature.Status)"; exit 1 }
+            }
+          }
+          $app = [IO.Path]::GetFullPath((Join-Path $PWD 'dist/Annotshot/Annotshot.exe'))
+          if ($app -notin $toSign) { Write-Host 'STOP dist/Annotshot/Annotshot.exe must be on the list of files to sign'; exit 1 }
+          Write-Host "to sign: $($toSign.Count) · signed by their makers, left alone: $makers"
+          $toSign | ForEach-Object { Write-Host $_ }
+          $delimiter = 'FILES_' + [guid]::NewGuid().ToString('N')
+          "files<<$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $toSign | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $delimiter | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "makers=$makers" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Sign the app's files (Windows)
+        if: env.SIGN == 'true'
+        uses: Azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ steps.signlist.outputs.files }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # The Windows installer, from the same proven folder: built with Inno
+      # Setup (on the windows-latest image), then proven the way the zip is.
+      # It installs silently for this user into a scratch folder, the
+      # installed Annotshot.exe --check must end with the same verdict line,
+      # and the uninstaller must take the folder and the file type away again.
+      - name: Installer build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { Write-Host "STOP Inno Setup 6 is not on this runner: no $iscc"; exit 1 }
+          & $iscc /Qp "/DAppVersion=$v" packaging/annotshot.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP iscc exit $LASTEXITCODE"; exit 1 }
+          $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
+          if (-not (Test-Path -LiteralPath $setup)) { Write-Host "STOP no $setup"; exit 1 }
+          Write-Host ("installer built: {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
+
+      - name: Sign the installer (Windows)
+        if: env.SIGN == 'true'
+        uses: Azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\Annotshot-${{ steps.version.outputs.version }}-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Installer proof (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'annot-inst'
+          $log = Join-Path $env:RUNNER_TEMP 'annot-inst.log'
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$log`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 40; Write-Host "STOP the silent install exited $($p.ExitCode)"; exit 1 }
+          $exe = Join-Path $dir 'Annotshot.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Host "STOP the install left no $exe"; exit 1 }
+          if (-not (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable\shell\open\command')) { Write-Host 'STOP the install registered no .annotshot file type for this user'; exit 1 }
+          $out = Join-Path $env:RUNNER_TEMP 'annot-inst-check.txt'
+          $c = Start-Process -FilePath $exe -ArgumentList '--check' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out
+          $lines = @(Get-Content -LiteralPath $out | Where-Object { $_.Trim() -ne '' })
+          $lines | ForEach-Object { Write-Host $_ }
+          $last = ''
+          if ($lines.Count) { $last = $lines[-1].Trim() }
+          $filed = Join-Path $dir 'check.txt'
+          if (-not $last -and (Test-Path -LiteralPath $filed)) { $last = (Get-Content -LiteralPath $filed -Raw).Trim() }
+          Remove-Item -LiteralPath $filed -ErrorAction SilentlyContinue
+          if ($c.ExitCode -ne 0 -or $last -ne "Annotshot $v OK") { Write-Host "STOP the installed Annotshot.exe --check ended '$last' (exit $($c.ExitCode)), wanted 'Annotshot $v OK'"; exit 1 }
+          Write-Host "installed copy: $last"
+          $un = Join-Path $dir 'unins000.exe'
+          if (-not (Test-Path -LiteralPath $un)) { Write-Host "STOP the install left no uninstaller $un"; exit 1 }
+          $u = Start-Process -FilePath $un -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($u.ExitCode -ne 0) { Write-Host "STOP the silent uninstall exited $($u.ExitCode)"; exit 1 }
+          # The uninstaller finishes from a copy of itself; give it a moment to remove the folder.
+          for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $dir); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host "left: $($_.FullName)" }; Write-Host "STOP the uninstall left $dir"; exit 1 }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable') { Write-Host 'STOP the uninstall left the .annotshot file type'; exit 1 }
+          Write-Host "installer OK: installed, checked, uninstalled ($dir is gone)"
+
+      - name: Signatures (Windows)
+        if: env.SIGN == 'true'
+        shell: pwsh
+        env:
+          SIGNED_FILES: ${{ steps.signlist.outputs.files }}
+        run: |
+          $files = @(Get-ChildItem -LiteralPath 'dist/Annotshot' -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll', '.pyd' } | Sort-Object FullName)
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid') { Write-Host "STOP $($file.FullName) has signature status $($signature.Status)"; exit 1 }
+          }
+          $v = '${{ steps.version.outputs.version }}'
+          $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
+          $signedFiles = @($env:SIGNED_FILES -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          foreach ($path in (@($signedFiles) + @($setup))) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.Status -ne 'Valid') { Write-Host "STOP $path has signature status $($signature.Status)"; exit 1 }
+            if ($null -eq $signature.SignerCertificate -or [string]::IsNullOrWhiteSpace($signature.SignerCertificate.Subject)) { Write-Host "STOP $path has no signer subject"; exit 1 }
+            if ($null -eq $signature.TimeStamperCertificate) { Write-Host "STOP $path has no timestamp"; exit 1 }
+            $signerHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($signature.SignerCertificate.Subject))).ToLowerInvariant()
+            if ($signerHash -cne $env:SIGNER_SUBJECT_SHA256) { Write-Host "STOP $path has an unexpected signer identity"; exit 1 }
+          }
+          $makers = [int]'${{ steps.signlist.outputs.makers }}'
+          Write-Host 'signer OK: matches the expected identity'
+          Write-Host "signatures OK: Annotshot.exe, the installer, $($files.Count) app files; $makers files keep their makers' signatures"
+
+      # The package itself stays unsigned because the Microsoft Store signs it.
+      # On a signed run, the files inside carry our signature.
+      - name: MSIX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'StetSoftware.Annotshot' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=Stet Software' }}
+          MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY || 'Stet Software' }}
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          python tools/make-msix.py --dist dist/Annotshot --version $v --out build/msix
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP MSIX layout exit $LASTEXITCODE"; exit 1 }
+          $search = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\makeappx.exe'
+          $makeappx = Get-ChildItem -Path $search -File -ErrorAction SilentlyContinue | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $makeappx) { Write-Host "STOP makeappx.exe not found: searched $search"; exit 1 }
+          # The unplated target-size icon needs a resource index to be selected.
+          $makepri = Join-Path $makeappx.Directory.FullName 'makepri.exe'
+          if (-not (Test-Path -LiteralPath $makepri)) { Write-Host "STOP makepri.exe not found: searched $makepri"; exit 1 }
+          & $makepri createconfig /cf build/msix-priconfig.xml /dq en-US /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri createconfig exit $LASTEXITCODE"; exit 1 }
+          & $makepri new /pr build/msix /cf build/msix-priconfig.xml /mn build/msix/AppxManifest.xml /of build/msix/resources.pri /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri new exit $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path -LiteralPath 'build/msix/resources.pri')) { Write-Host 'STOP makepri left no build/msix/resources.pri'; exit 1 }
+          & $makeappx.FullName pack /d build/msix /p "Annotshot-$v.msix" /o
+          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makeappx exit $LASTEXITCODE"; exit 1 }
+          $package = Get-Item -LiteralPath "Annotshot-$v.msix"
+          Write-Host ("MSIX built: {0} ({1:N0} bytes)" -f $package.Name, $package.Length)
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Annotshot -DestinationPath "Annotshot-${{ steps.version.outputs.version }}-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Annotshot-windows
+          path: |
+            Annotshot-*-windows.zip
+            Annotshot-*-setup.exe
+            Annotshot-*.msix
+          if-no-files-found: error
+

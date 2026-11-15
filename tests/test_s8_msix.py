@@ -364,11 +364,12 @@ def test_all_automatic_write_paths_are_in_profile_locations(qapp, tmp_path, monk
 
 
 def test_workflow_msix_order_and_outputs():
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    assert workflow.index("- name: Installer (Windows)") < workflow.index("- name: MSIX (Windows)")
+    workflow = (ROOT / ".github/workflows/build-windows.yml").read_text(encoding="utf-8")
+    assert workflow.index("- name: Installer proof (Windows)") < workflow.index("- name: MSIX (Windows)")
     assert workflow.index("- name: MSIX (Windows)") < workflow.index("- name: Zip (Windows)")
     assert "            Annotshot-*.msix\n" in workflow
-    assert "            zips/Annotshot-*.msix\n" in workflow
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "            zips/Annotshot-*.msix\n" in release
     assert "pack /d build/msix /p" in workflow
     assert workflow.index("$makepri createconfig") < workflow.index("$makepri new")
     assert workflow.index("$makepri new") < workflow.index("$makeappx.FullName pack")

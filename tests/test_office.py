@@ -276,11 +276,13 @@ def test_the_install_line_names_the_release_pins():
     """The versions in the plain warning are the ones the release builds."""
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
-    workflow = (root / ".github" / "workflows" / "release.yml").read_text(
+    workflow = (root / ".github" / "workflows" / "build-windows.yml").read_text(
         encoding="utf-8")
+    unix_workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     source = (root / "annotshot" / "mainwindow.py").read_text(encoding="utf-8")
     for pin in PINS.split():
         assert f'"{pin}"' in workflow
+        assert f'"{pin}"' in unix_workflow
         assert pin in source
 
 

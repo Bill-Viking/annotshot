@@ -1,29 +1,52 @@
-# Build Annotshot for Windows, macOS and Linux with PyInstaller and attach the
-# three zips and the Windows installer (Annotshot-<version>-setup.exe) to the
-# GitHub Release of a pushed v* tag.
-# Run it by hand (Actions -> release -> Run workflow) for a dry run: the
-# builds, tests and frozen self-checks run and the zips are kept as workflow
-# artifacts, but no release is made.
+# A pushed v* tag builds and tests Annotshot on Windows, macOS and Linux,
+# then attaches the downloads to its GitHub Release. A by-hand run builds
+# and tests and keeps workflow artifacts, without making a release.
+# Windows files are signed on a tag push, or when a by-hand run asks for
+# signing from a ref the release environment allows.
 name: release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign the Windows files. Works only from a ref the release environment allows.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  build_windows_signed:
+    name: build (windows, signed)
+    if: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign)) }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      sign: true
+
+  build_windows:
+    name: build (windows)
+    if: ${{ !((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign)) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      sign: false
+
   build:
     name: build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            label: windows
           - os: macos-latest
             label: macos
           - os: ubuntu-latest
@@ -117,84 +140,6 @@ jobs:
           fi
           echo "licence texts OK in $ok: $need"
 
-      # The Windows installer, from the same proven folder: built with Inno
-      # Setup (on the windows-latest image), then proven the way the zip is.
-      # It installs silently for this user into a scratch folder, the
-      # installed Annotshot.exe --check must end with the same verdict line,
-      # and the uninstaller must take the folder and the file type away again.
-      - name: Installer (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $v = '${{ steps.version.outputs.version }}'
-          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-          if (-not (Test-Path -LiteralPath $iscc)) { Write-Host "STOP Inno Setup 6 is not on this runner: no $iscc"; exit 1 }
-          & $iscc /Qp "/DAppVersion=$v" packaging/annotshot.iss
-          if ($LASTEXITCODE -ne 0) { Write-Host "STOP iscc exit $LASTEXITCODE"; exit 1 }
-          $setup = Join-Path $PWD "Annotshot-$v-setup.exe"
-          if (-not (Test-Path -LiteralPath $setup)) { Write-Host "STOP no $setup"; exit 1 }
-          Write-Host ("installer built: {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
-          $dir = Join-Path $env:RUNNER_TEMP 'annot-inst'
-          $log = Join-Path $env:RUNNER_TEMP 'annot-inst.log'
-          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$log`"") -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 40; Write-Host "STOP the silent install exited $($p.ExitCode)"; exit 1 }
-          $exe = Join-Path $dir 'Annotshot.exe'
-          if (-not (Test-Path -LiteralPath $exe)) { Write-Host "STOP the install left no $exe"; exit 1 }
-          if (-not (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable\shell\open\command')) { Write-Host 'STOP the install registered no .annotshot file type for this user'; exit 1 }
-          $out = Join-Path $env:RUNNER_TEMP 'annot-inst-check.txt'
-          $c = Start-Process -FilePath $exe -ArgumentList '--check' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out
-          $lines = @(Get-Content -LiteralPath $out | Where-Object { $_.Trim() -ne '' })
-          $lines | ForEach-Object { Write-Host $_ }
-          $last = ''
-          if ($lines.Count) { $last = $lines[-1].Trim() }
-          $filed = Join-Path $dir 'check.txt'
-          if (-not $last -and (Test-Path -LiteralPath $filed)) { $last = (Get-Content -LiteralPath $filed -Raw).Trim() }
-          Remove-Item -LiteralPath $filed -ErrorAction SilentlyContinue
-          if ($c.ExitCode -ne 0 -or $last -ne "Annotshot $v OK") { Write-Host "STOP the installed Annotshot.exe --check ended '$last' (exit $($c.ExitCode)), wanted 'Annotshot $v OK'"; exit 1 }
-          Write-Host "installed copy: $last"
-          $un = Join-Path $dir 'unins000.exe'
-          if (-not (Test-Path -LiteralPath $un)) { Write-Host "STOP the install left no uninstaller $un"; exit 1 }
-          $u = Start-Process -FilePath $un -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
-          if ($u.ExitCode -ne 0) { Write-Host "STOP the silent uninstall exited $($u.ExitCode)"; exit 1 }
-          # The uninstaller finishes from a copy of itself; give it a moment to remove the folder.
-          for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $dir); $i++) { Start-Sleep -Seconds 1 }
-          if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host "left: $($_.FullName)" }; Write-Host "STOP the uninstall left $dir"; exit 1 }
-          if (Test-Path -LiteralPath 'HKCU:\Software\Classes\Annotshot.Editable') { Write-Host 'STOP the uninstall left the .annotshot file type'; exit 1 }
-          Write-Host "installer OK: installed, checked, uninstalled ($dir is gone)"
-
-      # Unsigned by design. The Microsoft Store signs the MSIX on publication.
-      - name: MSIX (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'StetSoftware.Annotshot' }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=Stet Software' }}
-          MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY || 'Stet Software' }}
-        run: |
-          $v = '${{ steps.version.outputs.version }}'
-          python tools/make-msix.py --dist dist/Annotshot --version $v --out build/msix
-          if ($LASTEXITCODE -ne 0) { Write-Host "STOP MSIX layout exit $LASTEXITCODE"; exit 1 }
-          $search = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\makeappx.exe'
-          $makeappx = Get-ChildItem -Path $search -File -ErrorAction SilentlyContinue | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
-          if (-not $makeappx) { Write-Host "STOP makeappx.exe not found: searched $search"; exit 1 }
-          # The unplated target-size icon needs a resource index to be selected.
-          $makepri = Join-Path $makeappx.Directory.FullName 'makepri.exe'
-          if (-not (Test-Path -LiteralPath $makepri)) { Write-Host "STOP makepri.exe not found: searched $makepri"; exit 1 }
-          & $makepri createconfig /cf build/msix-priconfig.xml /dq en-US /o
-          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri createconfig exit $LASTEXITCODE"; exit 1 }
-          & $makepri new /pr build/msix /cf build/msix-priconfig.xml /mn build/msix/AppxManifest.xml /of build/msix/resources.pri /o
-          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makepri new exit $LASTEXITCODE"; exit 1 }
-          if (-not (Test-Path -LiteralPath 'build/msix/resources.pri')) { Write-Host 'STOP makepri left no build/msix/resources.pri'; exit 1 }
-          & $makeappx.FullName pack /d build/msix /p "Annotshot-$v.msix" /o
-          if ($LASTEXITCODE -ne 0) { Write-Host "STOP makeappx exit $LASTEXITCODE"; exit 1 }
-          $package = Get-Item -LiteralPath "Annotshot-$v.msix"
-          Write-Host ("MSIX built: {0} ({1:N0} bytes)" -f $package.Name, $package.Length)
-
-      - name: Zip (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Compress-Archive -Path dist/Annotshot -DestinationPath "Annotshot-${{ steps.version.outputs.version }}-windows.zip"
-
       - name: Zip (macOS)
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/Annotshot.app "Annotshot-${{ steps.version.outputs.version }}-macos.zip"
@@ -208,14 +153,12 @@ jobs:
           name: Annotshot-${{ matrix.label }}
           path: |
             Annotshot-*-${{ matrix.label }}.zip
-            Annotshot-*-setup.exe
-            Annotshot-*.msix
           if-no-files-found: error
 
   release:
     name: attach to the release
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, build_windows_signed, build_windows]
+    if: ${{ !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success' && needs.build_windows_signed.result == 'success' && needs.build_windows.result == 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -284,7 +284,7 @@ def test_about_says_what_who_where_and_the_licence(window):
     from PySide6.QtWidgets import QLabel, QPushButton
     w = about_widget()
     texts = labels_of(w)
-    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.0"
+    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.1"
     assert ABOUT_LINE in texts and PUBLISHER == "Stet Software"
     assert PUBLISHER in texts and "MIT licence" in texts
     assert PROJECT_URL == "https://github.com/Bill-Viking/annotshot"
@@ -447,9 +447,11 @@ def test_both_build_roads_carry_the_manual():
     root = Path(__file__).resolve().parent.parent
     spec = (root / "packaging" / "annotshot.spec").read_text(encoding="utf-8")
     assert 'at("docs", "USER-MANUAL.md"), "docs"' in spec
-    yml = (root / ".github" / "workflows" / "release.yml").read_text(
+    yml = (root / ".github" / "workflows" / "build-windows.yml").read_text(
         encoding="utf-8")
     assert "docs/USER-MANUAL.md" in yml
+    release = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "docs/USER-MANUAL.md" in release
     ps1 = (root / "packaging" / "build-win.ps1").read_text(encoding="utf-8")
     assert "USER-MANUAL.md" in ps1
 

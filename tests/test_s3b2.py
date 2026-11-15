@@ -8,7 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 ISS = ROOT / "packaging" / "annotshot.iss"
-WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "build-windows.yml"
 BUILD_WIN = ROOT / "packaging" / "build-win.ps1"
 
 
@@ -153,9 +153,10 @@ def _step(text: str, name: str) -> str:
 def test_the_workflow_builds_and_proves_the_installer_between_check_and_zip():
     text = WORKFLOW.read_text(encoding="utf-8")
     order = [text.index(f"- name: {n}") for n in (
-        "Frozen self-check", "Installer (Windows)", "Zip (Windows)")]
+        "Frozen self-check", "Installer build (Windows)", "Zip (Windows)")]
     assert order == sorted(order)
-    step = _step(text, "Installer (Windows)")
+    step = (_step(text, "Installer build (Windows)")
+            + _step(text, "Installer proof (Windows)"))
     assert "if: runner.os == 'Windows'" in step
     assert r"${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'" in step
     assert "STOP Inno Setup 6 is not on this runner" in step
@@ -175,7 +176,8 @@ def test_the_setup_exe_is_uploaded_and_attached_with_the_zips():
     text = WORKFLOW.read_text(encoding="utf-8")
     upload = text[text.index("actions/upload-artifact@v4"):]
     assert "Annotshot-*-setup.exe" in upload.split("release:")[0]
-    release = text[text.index("softprops/action-gh-release@v2"):]
+    release_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    release = release_text[release_text.index("softprops/action-gh-release@v2"):]
     assert "zips/*.zip" in release and "zips/*-setup.exe" in release
 
 
@@ -212,9 +214,10 @@ def test_the_manual_gives_the_installer_first_and_the_zip_second():
 
 
 # -- 2. the SmartScreen step: the words now, the picture when it exists ------
-SMARTSCREEN = ("Windows will show a blue box, **Windows protected your PC**, "
-               "because Annotshot is new and not yet signed: click **More "
-               "info**, then **Run anyway**.")
+SMARTSCREEN = ("Windows may show a blue box, **Windows protected your PC**, "
+               "because Annotshot’s publisher is new, even though the files "
+               "are digitally signed to confirm who published them: if it "
+               "appears, click **More info**, then **Run anyway**.")
 
 
 def _public_readme() -> str:
