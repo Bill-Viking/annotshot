@@ -140,6 +140,16 @@ jobs:
           fi
           echo "licence texts OK in $ok: $need"
 
+      - name: Parts list (CycloneDX SBOM)
+        run: |
+          bundle=dist/Annotshot
+          exe=dist/Annotshot/Annotshot
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            bundle=dist/Annotshot.app
+            exe=dist/Annotshot.app/Contents/MacOS/Annotshot
+          fi
+          python tools/make-sbom.py --bundle "$bundle" --exe "$exe" --label "${{ matrix.label }}" --out "Annotshot-${{ steps.version.outputs.version }}-${{ matrix.label }}.cdx.json"
+
       - name: Zip (macOS)
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/Annotshot.app "Annotshot-${{ steps.version.outputs.version }}-macos.zip"
@@ -153,6 +163,7 @@ jobs:
           name: Annotshot-${{ matrix.label }}
           path: |
             Annotshot-*-${{ matrix.label }}.zip
+            Annotshot-*-${{ matrix.label }}.cdx.json
           if-no-files-found: error
 
   release:
@@ -173,6 +184,7 @@ jobs:
         with:
           files: |
             zips/*.zip
+            zips/*.cdx.json
             zips/*-setup.exe
             zips/Annotshot-*.msix
             zips/Annotshot-*.msi

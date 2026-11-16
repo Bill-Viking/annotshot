@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <?include Identity.wxi?>
-  <Package Name="Annotshot" Manufacturer="Stet Software" Scope="perMachine"
+  <Package Name="Annotshot" Manufacturer="Bill Moldestad" Scope="perMachine"
            Version="$(var.ProductVersion)" ProductCode="$(var.ProductCode)"
            UpgradeCode="{65C27F65-972B-4DC4-8E5C-3B8D62770532}" InstallerVersion="500">
     <!-- PackageCode is deliberately omitted: WiX generates it per build.
@@ -40,7 +40,7 @@
           <Shortcut Id="AnnotshotShortcut" Name="Annotshot" Target="[INSTALLFOLDER]Annotshot.exe"
                     WorkingDirectory="INSTALLFOLDER" Advertise="no" />
           <RemoveFolder Id="RemoveAnnotshotMenu" On="uninstall" />
-          <RegistryValue Root="HKLM" Key="Software\Stet Software\Annotshot" Name="MSIShortcut" Type="integer" Value="1" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="Software\Annotshot\Installer" Name="MSIShortcut" Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>

@@ -284,8 +284,8 @@ def test_about_says_what_who_where_and_the_licence(window):
     from PySide6.QtWidgets import QLabel, QPushButton
     w = about_widget()
     texts = labels_of(w)
-    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.2"
-    assert ABOUT_LINE in texts and PUBLISHER == "Stet Software"
+    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.3"
+    assert ABOUT_LINE in texts and PUBLISHER == "Bill Moldestad"
     assert PUBLISHER in texts and "MIT licence" in texts
     assert PROJECT_URL == "https://github.com/Bill-Viking/annotshot"
     link = w.findChild(QLabel, "aboutLink")

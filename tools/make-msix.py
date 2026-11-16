@@ -13,9 +13,9 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 IDENTITY_DEFAULTS = {
-    "MSIX_IDENTITY_NAME": "StetSoftware.Annotshot",
-    "MSIX_PUBLISHER": "CN=Stet Software",
-    "MSIX_PUBLISHER_DISPLAY": "Stet Software",
+    "MSIX_IDENTITY_NAME": "Annotshot.LocalBuild",
+    "MSIX_PUBLISHER": "CN=Annotshot Local Build",
+    "MSIX_PUBLISHER_DISPLAY": "Annotshot local build",
 }
 ASSETS = {
     "Square44x44Logo.png": (44, 44),

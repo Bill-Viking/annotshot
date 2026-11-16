@@ -231,7 +231,7 @@ def test_safe_output_no_unrelated_removal(tool, tmp_path):
 
 def test_wix_machine_contract_registry_shortcut_and_upgrade():
     package = ET.parse(AUTHORING).getroot().find('w:Package', NS)
-    assert package.attrib == dict(Name='Annotshot', Manufacturer='Stet Software', Scope='perMachine', Version='$(var.ProductVersion)', ProductCode='$(var.ProductCode)', UpgradeCode=UPGRADE, InstallerVersion='500')
+    assert package.attrib == dict(Name='Annotshot', Manufacturer='Bill Moldestad', Scope='perMachine', Version='$(var.ProductVersion)', ProductCode='$(var.ProductCode)', UpgradeCode=UPGRADE, InstallerVersion='500')
     assert package.find('w:MajorUpgrade', NS).attrib == dict(Schedule='afterInstallInitialize', AllowDowngrades='no', AllowSameVersionUpgrades='no', DowngradeErrorMessage='A newer version of Annotshot is already installed.')
     assert package.find('w:MediaTemplate', NS).attrib['EmbedCab'] == 'yes'
     assert package.find('w:StandardDirectory[@Id="ProgramFiles64Folder"]/w:Directory', NS).attrib == dict(Id='INSTALLFOLDER', Name='Annotshot')
@@ -272,6 +272,22 @@ def test_wix_machine_contract_registry_shortcut_and_upgrade():
     for forbidden in ['HKCU','UserChoice','AppData','CustomAction','Launch','ServiceInstall','UIRef','ScheduledTask','ForceDeleteOnUninstall','DISABLEROLLBACK','IgnoreRemoveFailure','PackageCode="']:
         assert forbidden not in text
     assert all(c.attrib['Bitness'] == 'always64' for c in package.findall('.//w:Component', NS))
+
+
+def test_msi_marker_key_stays_outside_app_settings_tree():
+    r"""The app's settings live at Software\Annotshot\Annotshot."""
+    marker = ET.parse(AUTHORING).find('.//w:RegistryValue[@Name="MSIShortcut"]', NS)
+    key = marker.attrib['Key']
+    settings = r'Software\Annotshot\Annotshot'
+    assert key.casefold() != r'Software\Annotshot'.casefold()
+    assert key.casefold() != settings.casefold()
+    assert not key.casefold().startswith(settings.casefold() + '\\')
+    source = PROOF.read_text(encoding='utf-8')
+    owned = re.search(r'^\$ownedKeys=@\(([^\n]*)\)$', source, re.M)
+    assert owned is not None
+    keys = re.findall(r"'([^']*)'", owned[1])
+    assert key in keys
+    assert r'Software\Annotshot'.casefold() not in {k.casefold() for k in keys}
 
 
 def test_toolset_and_build_source_contract():
@@ -328,7 +344,8 @@ def test_workflow_order_signing_and_assets_source_contract():
 
 def test_system_helper_source_contract_not_runtime_simulation():
     source = PROOF.read_text(encoding='utf-8')
-    for token in ["$ErrorActionPreference = 'Stop'",'Set-StrictMode',"$identity.User.Value -eq 'S-1-5-18'",'$sessionId -eq 0','identity_sid=$identity.User.Value','session_id=$sessionId',"$env:QT_QPA_PLATFORM='offscreen'",'WindowsBuiltInRole]::Administrator','Get-Command $command',"Get-Service -Name Schedule", "-UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",'System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile -NonInteractive -File','SetAccessRuleProtection($true,$false)',"'S-1-5-32-544'",'Set-Acl -LiteralPath',"'/i ' + (Quote $Msi)","'/x ' + (Quote $productCode)",' /qn /norestart /l*v ', '@(0,3010)', '1641/1618 fail', 'reboot_required=$true', '$process.WaitForExit($Seconds * 1000)', "'install.log'))) $Timing.InstallSeconds", "'uninstall.log'))) $Timing.UninstallSeconds", "'--check' $Timing.CheckSeconds", 'New-TimeSpan -Seconds $Timing.TaskSeconds', '$started.AddSeconds($Timing.ParentSeconds)', 'Start-Sleep -Seconds 1','RegistryView]::Registry64','Get-FileHash -LiteralPath $installed -Algorithm SHA256','metadata.empty_directories','GetFolderPath([Environment+SpecialFolder]::ProgramFiles)','CommonPrograms','CreateShortcut','link.TargetPath','link.WorkingDirectory',"'WindowsInstaller' 1", "'DisplayVersion' $Version", "'Publisher' 'Stet Software'", "'DisplayName' 'Annotshot'", "'InstallLocation' ($target + '\\')", "'DisplayIcon'",'UninstallString','NoUserRegistration $user', '$lines[-1].Trim()', '$receipt.check_exit -eq 0 -and $last -ceq "Annotshot $Version OK"', "elseif (Test-Path -LiteralPath $diagnostic)", 'check.stderr.txt', 'check.receipt.txt','Remove-Item -LiteralPath $diagnostic', 'uninstall left install folder','registry differs from before install (keys, values or kinds)','uninstall left common shortcut','AtomicReceipt $receipt',"$Name + '.tmp'", 'Move-Item -LiteralPath $temporary', '$result.nonce -ceq $Nonce','$result.version -ceq $Version', '$result.product_code -ceq $productCode','$result.upgrade_code -ceq $upgradeCode', '$info.LastTaskResult -eq 0','LastWriteTimeUtc -ge $started.ToUniversalTime()', 'missing completion receipt', 'finally', 'Stop-ScheduledTask -TaskName $taskName','Unregister-ScheduledTask -TaskName $taskName -Confirm:$false', "'install-start.json')) -and -not $receipt.removal_ok)", '$receipt.error=$_.Exception.Message', '$receipt.cleanup_error=$_.Exception.Message','if ($parentError -or $cleanupErrors.Count) { exit 1 }','literal logged-off operation UNPROVEN']:
+    assert "'Publisher' 'Bill Moldestad'" in source
+    for token in ["$ErrorActionPreference = 'Stop'",'Set-StrictMode',"$identity.User.Value -eq 'S-1-5-18'",'$sessionId -eq 0','identity_sid=$identity.User.Value','session_id=$sessionId',"$env:QT_QPA_PLATFORM='offscreen'",'WindowsBuiltInRole]::Administrator','Get-Command $command',"Get-Service -Name Schedule", "-UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",'System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile -NonInteractive -File','SetAccessRuleProtection($true,$false)',"'S-1-5-32-544'",'Set-Acl -LiteralPath',"'/i ' + (Quote $Msi)","'/x ' + (Quote $productCode)",' /qn /norestart /l*v ', '@(0,3010)', '1641/1618 fail', 'reboot_required=$true', '$process.WaitForExit($Seconds * 1000)', "'install.log'))) $Timing.InstallSeconds", "'uninstall.log'))) $Timing.UninstallSeconds", "'--check' $Timing.CheckSeconds", 'New-TimeSpan -Seconds $Timing.TaskSeconds', '$started.AddSeconds($Timing.ParentSeconds)', 'Start-Sleep -Seconds 1','RegistryView]::Registry64','Get-FileHash -LiteralPath $installed -Algorithm SHA256','metadata.empty_directories','GetFolderPath([Environment+SpecialFolder]::ProgramFiles)','CommonPrograms','CreateShortcut','link.TargetPath','link.WorkingDirectory',"'WindowsInstaller' 1", "'DisplayVersion' $Version", "'DisplayName' 'Annotshot'", "'InstallLocation' ($target + '\\')", "'DisplayIcon'",'UninstallString','NoUserRegistration $user', '$lines[-1].Trim()', '$receipt.check_exit -eq 0 -and $last -ceq "Annotshot $Version OK"', "elseif (Test-Path -LiteralPath $diagnostic)", 'check.stderr.txt', 'check.receipt.txt','Remove-Item -LiteralPath $diagnostic', 'uninstall left install folder','registry differs from before install (keys, values or kinds)','uninstall left common shortcut','AtomicReceipt $receipt',"$Name + '.tmp'", 'Move-Item -LiteralPath $temporary', '$result.nonce -ceq $Nonce','$result.version -ceq $Version', '$result.product_code -ceq $productCode','$result.upgrade_code -ceq $upgradeCode', '$info.LastTaskResult -eq 0','LastWriteTimeUtc -ge $started.ToUniversalTime()', 'missing completion receipt', 'finally', 'Stop-ScheduledTask -TaskName $taskName','Unregister-ScheduledTask -TaskName $taskName -Confirm:$false', "'install-start.json')) -and -not $receipt.removal_ok)", '$receipt.error=$_.Exception.Message', '$receipt.cleanup_error=$_.Exception.Message','if ($parentError -or $cleanupErrors.Count) { exit 1 }','literal logged-off operation UNPROVEN']:
         assert token in source, token
     for key in ['.annotshot', '.snagup','OpenWithProgids','FriendlyAppName','SupportedTypes','DefaultIcon','Annotshot.Editable\\shell\\open\\command','Applications\\Annotshot.exe\\shell\\open\\command']:
         assert key in source
@@ -663,11 +680,11 @@ def test_unsigned_msi_is_proved_but_not_distributed(sign, msi_uploaded):
     upload = text.split('          name: Annotshot-windows\n', 1)[1]
     paths = upload.split('          path: |\n', 1)[1].split('          if-no-files-found:', 1)[0]
     lines = [line.strip() for line in paths.splitlines() if line.strip()]
-    assert lines == ['Annotshot-*-windows.zip', 'Annotshot-*-setup.exe', 'Annotshot-*.msix',
+    assert lines == ['Annotshot-*-windows.zip', 'Annotshot-*-windows.cdx.json', 'Annotshot-*-setup.exe', 'Annotshot-*.msix',
                      "${{ env.SIGN == 'true' && 'Annotshot-*.msi' || '' }}"]
     assert '          if-no-files-found: error\n' in upload
     # Static evaluation of the guarded path; all existing paths stay unconditional.
-    selected = lines[:3] + (['Annotshot-*.msi'] if sign == 'true' else [])
+    selected = lines[:4] + (['Annotshot-*.msi'] if sign == 'true' else [])
     assert ('Annotshot-*.msi' in selected) is msi_uploaded
     assert text.count('            Annotshot-*.msi\n') == 0
     for name in ('MSI build (Windows)', 'MSI proof (Windows)'):

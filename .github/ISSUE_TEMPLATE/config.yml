@@ -8,7 +8,7 @@
     }
   ]
 }
-# Feedback email: add this second contact link when the Stet Software mailbox exists.
-# - name: Email Stet Software
+# Feedback email: add a feedback email here when a mailbox exists
+# - name: Send feedback by email
 #   url: mailto:REPLACE_WITH_FEEDBACK_EMAIL
 #   about: Send feedback by email.

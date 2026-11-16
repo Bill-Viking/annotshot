@@ -73,7 +73,7 @@ def test_the_installer_is_per_user_and_asks_for_the_folder():
 def test_the_installer_names_its_publisher_and_icon():
     s = _setup()
     assert s["AppName"] == "Annotshot"
-    assert s["AppPublisher"] == "Stet Software"
+    assert s["AppPublisher"] == "Bill Moldestad"
     assert s["AppPublisherURL"] == "https://github.com/Bill-Viking/annotshot"
     assert s["AppSupportURL"] == "https://github.com/Bill-Viking/annotshot/issues"
     assert re.fullmatch(r"\{\{[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}\}",

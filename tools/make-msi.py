@@ -163,7 +163,7 @@ def generate(dist, version, out):
     group = element(fragment, 'ComponentGroup', Id='PayloadComponents')
     for cid in components:
         element(group, 'ComponentRef', Id=cid)
-    metadata = dict(name='Annotshot', manufacturer='Stet Software', architecture='x64',
+    metadata = dict(name='Annotshot', manufacturer='Bill Moldestad', architecture='x64',
                     version=version, product_code=guid(namespace, 'product|x64|' + version),
                     upgrade_code=upgrade_code)
     definitions = ET.Element(f'{{{NS}}}Include')

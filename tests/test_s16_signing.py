@@ -9,8 +9,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / '.github' / 'workflows' / 'build-windows.yml'
 RELEASE = ROOT / '.github' / 'workflows' / 'release.yml'
-# SHA-256 of the complete pre-move Windows steps block, including comments/order.
-ORIGINAL_WINDOWS_STEPS_SHA256 = 'a15f3a16dcdee6ea4e4228cc66caf33da4f5141ee4d8247f8b1c13898f5ad654'
+# SHA-256 of the Windows steps block before MSI/SBOM additions, with neutral MSIX defaults.
+ORIGINAL_WINDOWS_STEPS_SHA256 = '14b458da6081be65ee5895374285a532e9dbf1f57e5d4fb58fd9b833182c6aa7'
 CONDITION = "((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign))"
 SIGNER_SUBJECT_SHA256 = '245dc45e91f6a982cc5c39835225e6a18970f589707a56d69a2ba83201f305e0'
 SIGNING_STEPS = (
@@ -87,19 +87,20 @@ def test_reusable_windows_contract_and_unchanged_steps(workflow):
     text, parsed = workflow
     build = _job(text, 'build_windows')
     header, steps = build.split('    steps:\n', 1)
-    # Reverse only the authorized MSI additions, retaining the prior byte-level
+    # Reverse only the authorized MSI and SBOM additions, retaining the prior byte-level
     # guard on every existing step (including both full-suite commands).
     legacy = '    steps:\n' + steps
-    for name in ('MSI tools (Windows)', 'MSI build (Windows)', 'Sign the MSI (Windows)',
+    for name in ('Parts list (CycloneDX SBOM)', 'MSI tools (Windows)', 'MSI build (Windows)', 'Sign the MSI (Windows)',
                  'MSI proof (Windows)', 'Exact MSI before upload (Windows)', 'MSI proof evidence (Windows)'):
-        legacy = re.sub(rf'^      - name: {re.escape(name)}\n.*?(?=^      - |\Z)', '', legacy, flags=re.M | re.S)
+        legacy = re.sub(rf'^      - name: {re.escape(name)}\n.*?(?=^      (?:- |#)|\Z)', '', legacy, flags=re.M | re.S)
     legacy = legacy.replace('          $msi = Join-Path $PWD "Annotshot-$v.msi"\n', '')
     legacy = legacy.replace(' + @($setup) + @($msi)', ' + @($setup)')
     legacy = re.sub(r'^          \$msiSignature = .*?(?=^          \$makers =)', '', legacy, flags=re.M | re.S)
     legacy = legacy.replace('the installer, the MSI,', 'the installer,')
     legacy = legacy.replace("            ${{ env.SIGN == 'true' && 'Annotshot-*.msi' || '' }}\n", '')
+    legacy = legacy.replace('            Annotshot-*-windows.cdx.json\n', '')
     assert hashlib.sha256(legacy.encode()).hexdigest() == ORIGINAL_WINDOWS_STEPS_SHA256
-    assert len(_steps(text)) == 25
+    assert len(_steps(text)) == 26
     assert re.search(r'^on:\n  workflow_call:\n    inputs:\n      sign:\n        type: boolean\n        required: true\n', text, re.M)
     assert re.findall(r'^  (\w+):$', text.split('jobs:\n', 1)[1], re.M) == ['build_windows']
     assert '    runs-on: windows-latest\n' in header
@@ -210,7 +211,8 @@ def test_signing_steps_keep_the_ruled_order_and_gates(workflow):
     names = [s.splitlines()[0] for s in _steps(text)]
     order = (
         'Build', 'Frozen self-check', 'Licence texts and the manual in the bundle',
-        *SIGNING_STEPS[:4], 'Installer build (Windows)', SIGNING_STEPS[4],
+        *SIGNING_STEPS[:4], 'Parts list (CycloneDX SBOM)',
+        'Installer build (Windows)', SIGNING_STEPS[4],
         'Installer proof (Windows)', 'MSI tools (Windows)', 'MSI build (Windows)',
         SIGNING_STEPS[5], 'MSI proof (Windows)', SIGNING_STEPS[6], 'MSIX (Windows)', 'Zip (Windows)',
     )
@@ -266,7 +268,7 @@ def test_release_keeps_all_four_attachment_patterns(release_workflow):
     text, parsed = release_workflow
     release = _job(text, 'release')
     files = re.search(r'^          files: \|\n((?:            .+\n)+)', release, re.M).group(1)
-    expected = ['zips/*.zip', 'zips/*-setup.exe', 'zips/Annotshot-*.msix', 'zips/Annotshot-*.msi']
+    expected = ['zips/*.zip', 'zips/*.cdx.json', 'zips/*-setup.exe', 'zips/Annotshot-*.msix', 'zips/Annotshot-*.msi']
     assert [line.strip() for line in files.splitlines()] == expected
     assert '    permissions:\n      contents: write\n' in release
     if parsed is not None:

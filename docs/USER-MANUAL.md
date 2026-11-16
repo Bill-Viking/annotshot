@@ -1,6 +1,6 @@
 # Annotshot user manual
 
-Sunday 2026-11-15 · for Annotshot 0.4.2
+Sunday 2026-11-15 · for Annotshot 0.4.3
 
 ## What Annotshot is
 
@@ -8,7 +8,7 @@ Annotshot takes a picture of part of your screen and lets you mark it up the way
 
 This is a first version. It does one job: capture, mark up, copy or save. It has no screen recording, scrolling capture or picture library; it keeps only your last 12 captures, in the Recent captures pane.
 
-Annotshot is made by Stet Software.
+Annotshot is made by Bill Moldestad.
 
 ## Install and start
 
@@ -20,8 +20,8 @@ For your own computer, choose the installer or the zip; for central deployment, 
 
 #### The installer — five steps
 
-1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-setup.exe` appears in your Downloads folder.
-2. **Run it:** open Downloads and double-click `Annotshot-0.4.2-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
+1. **Download:** click **Download for Windows** at the top of the Annotshot page on GitHub. `Annotshot-0.4.3-setup.exe` appears in your Downloads folder.
+2. **Run it:** open Downloads and double-click `Annotshot-0.4.3-setup.exe`. Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
 3. **Next:** if it asks whether to install for you only or for all users, click **Install for me only** (no administrator is needed). Accept the licence and click **Next**.
@@ -30,8 +30,8 @@ For your own computer, choose the installer or the zip; for central deployment, 
 
 #### The zip — three steps
 
-1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.4.2-windows.zip`. It appears in your Downloads folder.
-2. **Unzip:** open Downloads, right-click `Annotshot-0.4.2-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.2-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
+1. **Download:** on the Annotshot page on GitHub open **Releases** and download `Annotshot-0.4.3-windows.zip`. It appears in your Downloads folder.
+2. **Unzip:** open Downloads, right-click `Annotshot-0.4.3-windows.zip`, choose **Extract All…**, then click **Extract**. A folder named `Annotshot-0.4.3-windows` opens, and inside it is a folder named `Annotshot`. That `Annotshot` folder is the app — keep it whole, and move it anywhere you like (for example into `C:\Program Files` or onto `D:\`).
 3. **Start it:** open the `Annotshot` folder and double-click **Annotshot.exe** (the blue A). Windows may show a blue box, **Windows protected your PC**, because Annotshot’s publisher is new, even though the files are digitally signed to confirm who published them: if it appears, click **More info**, then **Run anyway**.
 
    <!-- picture: windows-protected.png is captured on a Windows computer; when it exists, insert this line here: ![Windows protected your PC — click More info, then Run anyway](windows-protected.png) -->
@@ -40,30 +40,30 @@ To start it from the Start menu next time: right-click **Annotshot.exe** → **P
 
 #### For IT departments: the MSI
 
-The Windows Installer package, `Annotshot-0.4.2.msi`, is for IT departments that install software centrally. It installs into **Program Files** for all users of the computer and registers the `.annotshot` file type for the whole machine. It is digitally signed, like the other Windows downloads.
+The Windows Installer package, `Annotshot-0.4.3.msi`, is for IT departments that install software centrally. It installs into **Program Files** for all users of the computer and registers the `.annotshot` file type for the whole machine. It is digitally signed, like the other Windows downloads.
 
-If you are installing for yourself, use `Annotshot-0.4.2-setup.exe` above.
+If you are installing for yourself, use `Annotshot-0.4.3-setup.exe` above.
 
 Download the MSI from the repository’s **Releases** page. The commands below install or remove Annotshot without showing an installer window. Silent installation was tested under the Windows SYSTEM account. Run each command from the folder containing the MSI.
 
 **Install:**
 
 ```
-msiexec /i Annotshot-0.4.2.msi /qn
+msiexec /i Annotshot-0.4.3.msi /qn
 ```
 
 **Remove:**
 
 ```
-msiexec /x Annotshot-0.4.2.msi /qn
+msiexec /x Annotshot-0.4.3.msi /qn
 ```
 
 ### macOS — four steps
 
 The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a Mac with an Intel processor.
 
-1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-macos.zip` appears in your Downloads folder.
-2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.2-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
+1. **Download:** click **Download for macOS** at the top of the Annotshot page on GitHub. `Annotshot-0.4.3-macos.zip` appears in your Downloads folder.
+2. **Unzip and move:** open Downloads and double-click `Annotshot-0.4.3-macos.zip`. **Annotshot.app** (the blue A) appears next to it. Drag **Annotshot.app** into your **Applications** folder.
 3. **Tell macOS the app is safe:** Annotshot is not signed by Apple yet, so macOS refuses to open it until you clear its download flag. Open **Terminal** (press ⌘ Space, type `Terminal`, press Return), paste this line and press Return:
 
    ```
@@ -74,8 +74,8 @@ The macOS app is for Macs with Apple silicon (M1 or newer); it does not run on a
 
 ### Linux — three steps
 
-1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.4.2-linux.zip` appears in your Downloads folder.
-2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.2-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
+1. **Download:** click **Download for Linux** at the top of the Annotshot page on GitHub. `Annotshot-0.4.3-linux.zip` appears in your Downloads folder.
+2. **Unzip:** right-click the zip in your file manager and choose **Extract Here** (or in a terminal: `cd ~/Downloads && unzip Annotshot-0.4.3-linux.zip`). A folder named `Annotshot` appears; it is the app — keep it whole, and move it anywhere you like (for example to `~/Apps/Annotshot`).
 3. **Start it:** double-click the file named **Annotshot** inside that folder (or in a terminal: `~/Downloads/Annotshot/Annotshot`). If it says **permission denied**, run `chmod +x ~/Downloads/Annotshot/Annotshot` once, then start it again.
 
 No one has run the Linux build by hand yet: the release workflow builds it and runs its self-check on an Ubuntu runner, and that is all it has been through. Two things to know:
@@ -246,10 +246,10 @@ The **Recent captures** pane on the right of the window keeps your last 12 captu
 
 **Help** (press **F1**, or right-click the picture and choose **Help**) opens this manual inside Annotshot, with a **Keyboard shortcuts** table at the top that shows your keys as they are set now. Two buttons at the bottom open pages in your browser: **Open on GitHub** shows the newest copy of this manual, and **Report a problem** opens the page where you can tell us what went wrong. The Help window stays open beside the editor while you work.
 
-**About Annotshot…** (the last line of the right-click menu, and the **About** tab in **Settings…**) shows the version, a **Build** line with the date and time this copy was made (two copies with the same version number are told apart by it), who makes Annotshot (Stet Software), the project's page, its licence, and a **Third-party notices** button with the licence texts of the parts Annotshot is built from.
+**About Annotshot…** (the last line of the right-click menu, and the **About** tab in **Settings…**) shows the version, a **Build** line with the date and time this copy was made (two copies with the same version number are told apart by it), who makes Annotshot (Bill Moldestad), the project's page, its licence, and a **Third-party notices** button with the licence texts of the parts Annotshot is built from.
 
 **Send feedback…**, in the right-click menu and About, opens a page in your browser where you can choose **Report a bug** or **Suggest an improvement**.
-<!-- Feedback email: add the Stet Software mailbox here when it exists. -->
+<!-- Feedback email: add a feedback email here when a mailbox exists. -->
 
 ## Saving
 
@@ -365,7 +365,7 @@ With both on and the capture key, a screenshot is one key, one drag or window cl
 
 ## Licence
 
-Annotshot is made by Stet Software and is MIT-licensed. It uses Qt for Python and Qt 6 under the LGPL v3, and python-docx, python-pptx and their helpers under their own licences. Its pixel font, VT323 (by Peter Hull), is under the SIL Open Font License 1.1. The licence texts travel inside the app's folder: a `licenses` folder with the GNU texts and the font's licence, plus `LICENSE` and `THIRD-PARTY-NOTICES.md` in the public download. **About Annotshot… → Third-party notices** shows them inside the app.
+Annotshot is made by Bill Moldestad and is MIT-licensed. It uses Qt for Python and Qt 6 under the LGPL v3, and python-docx, python-pptx and their helpers under their own licences. Its pixel font, VT323 (by Peter Hull), is under the SIL Open Font License 1.1. The licence texts travel inside the app's folder: a `licenses` folder with the GNU texts and the font's licence, plus `LICENSE` and `THIRD-PARTY-NOTICES.md` in the public download. **About Annotshot… → Third-party notices** shows them inside the app.
 
 ## For developers
 

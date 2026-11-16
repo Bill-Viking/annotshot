@@ -157,6 +157,9 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Parts list (CycloneDX SBOM)
+        run: python tools/make-sbom.py --bundle dist/Annotshot --exe dist/Annotshot/Annotshot.exe --label windows --out "Annotshot-${{ steps.version.outputs.version }}-windows.cdx.json"
+
       # The Windows installer, from the same proven folder: built with Inno
       # Setup (on the windows-latest image), then proven the way the zip is.
       # It installs silently for this user into a scratch folder, the
@@ -370,9 +373,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'StetSoftware.Annotshot' }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=Stet Software' }}
-          MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY || 'Stet Software' }}
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'Annotshot.LocalBuild' }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=Annotshot Local Build' }}
+          MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY || 'Annotshot local build' }}
         run: |
           $v = '${{ steps.version.outputs.version }}'
           python tools/make-msix.py --dist dist/Annotshot --version $v --out build/msix
@@ -419,6 +422,7 @@ jobs:
           name: Annotshot-windows
           path: |
             Annotshot-*-windows.zip
+            Annotshot-*-windows.cdx.json
             Annotshot-*-setup.exe
             Annotshot-*.msix
             ${{ env.SIGN == 'true' && 'Annotshot-*.msi' || '' }}

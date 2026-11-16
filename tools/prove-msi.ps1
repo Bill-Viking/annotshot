@@ -259,7 +259,7 @@ function NoUserRegistration($Hive, [string]$Label) {
     foreach ($path in @('Software\Classes\Annotshot.Editable','Software\Classes\Applications\Annotshot.exe') + @($arp,$innoArp)) {
         Require (AbsentKey $Hive $path) "$Label product registration: $path"
     }
-    $menu=RegistryTree $Hive 'Software\Stet Software\Annotshot'
+    $menu=RegistryTree $Hive 'Software\Annotshot\Installer'
     foreach ($value in $menu.values) { throw "$Label existing Annotshot menu registration: $($menu.path) / $($value.name)" }
     foreach ($child in $menu.children) { throw "$Label existing Annotshot menu key: $($child.path)" }
 }
@@ -335,7 +335,7 @@ $shortcut=Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::C
 $arp="Software\Microsoft\Windows\CurrentVersion\Uninstall\$productCode"
 $publishedProduct='Software\Classes\Installer\Products\' + (PackedProductCode $productCode)
 $innoArp='Software\Microsoft\Windows\CurrentVersion\Uninstall\{0F17E8F7-0057-4379-9C3E-1C8E65862696}_is1'
-$ownedKeys=@('Software\Classes\.annotshot','Software\Classes\.snagup','Software\Classes\Annotshot.Editable','Software\Classes\Applications\Annotshot.exe','Software\Stet Software\Annotshot')
+$ownedKeys=@('Software\Classes\.annotshot','Software\Classes\.snagup','Software\Classes\Annotshot.Editable','Software\Classes\Applications\Annotshot.exe','Software\Annotshot\Installer')
 $registryRoots=$ownedKeys + @($arp,$innoArp)
 $msiexec=Join-Path $env:WINDIR 'System32\msiexec.exe'
 $powershell=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -440,7 +440,7 @@ if ($Worker) {
         foreach ($row in $rows) { RegistryEquals $machine ('Software\Classes\' + $row[0]) $row[1] $row[2] }
         RegistryEquals $machine $arp 'DisplayName' 'Annotshot'
         RegistryEquals $machine $arp 'DisplayVersion' $Version
-        RegistryEquals $machine $arp 'Publisher' 'Stet Software'
+        RegistryEquals $machine $arp 'Publisher' 'Bill Moldestad'
         RegistryEquals $machine $arp 'WindowsInstaller' 1
         RegistryEquals $machine $arp 'InstallLocation' ($target + '\')
         foreach ($name in @('UninstallString','ModifyPath')) {

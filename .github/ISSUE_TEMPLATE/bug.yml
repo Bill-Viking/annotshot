@@ -43,7 +43,7 @@
       "id": "version",
       "attributes": {
         "label": "Annotshot version",
-        "placeholder": "For example, 0.4.2 — find it in About Annotshot…"
+        "placeholder": "For example, 0.4.3 — find it in About Annotshot…"
       },
       "validations": {
         "required": true

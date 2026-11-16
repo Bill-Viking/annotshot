@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
 from . import __version__
 from .feedback import CHOOSER_URL
 
-PUBLISHER = "Stet Software"
+PUBLISHER = "Bill Moldestad"
 PROJECT_URL = "https://github.com/Bill-Viking/annotshot"
 ISSUES_URL = PROJECT_URL + "/issues"
 MANUAL_URL = PROJECT_URL + "/blob/main/docs/USER-MANUAL.md"

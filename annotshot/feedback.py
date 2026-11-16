@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from . import __version__
 
 CHOOSER_URL = "https://github.com/Bill-Viking/annotshot/issues/new/choose"
-EMAIL = None  # Add the Stet Software feedback email when a mailbox exists.
+EMAIL = None  # add a feedback email here when a mailbox exists
 
 
 def bug_url() -> str:
