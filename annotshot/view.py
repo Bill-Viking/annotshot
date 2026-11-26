@@ -43,7 +43,7 @@ def fade_color() -> QColor:
 
 class EditorView(QGraphicsView):
     zoomChanged = Signal(float)
-    toolDone = Signal()          # only Crop returns to Select
+    toolDone = Signal()          # successful placement (and Crop) selects
     toolChanged = Signal()
 
     def __init__(self, doc: Document, parent=None, settings=None):
@@ -63,6 +63,7 @@ class EditorView(QGraphicsView):
         self.settings = settings
         self.remember_props = self._remember_enabled()
         self.tool_defaults: dict[str, dict] = {}
+        self._once_border: dict[str, dict] = {}
         self.load_tool_defaults()
         # callable(on_item: bool) -> the menu's QActions, None = separator
         self.menu_actions = None
@@ -74,8 +75,15 @@ class EditorView(QGraphicsView):
     @staticmethod
     def factory_style(kind: str) -> dict:
         """Only style: never the previous object's text or geometry."""
-        return {k: v for k, v in ITEM_TYPES[kind]().props.items()
-                if k not in ("text", "padding")}
+        style = {k: v for k, v in ITEM_TYPES[kind]().props.items()
+                 if k not in ("text", "padding")}
+        # Starting styles change independently of historical document
+        # defaults: omitted properties in an old file must keep their ink.
+        if kind == "text":
+            style.update(font_px=32, border_color="#00E53935")
+        elif kind == "callout":
+            style.update(font_px=32, border_width=4)
+        return style
 
     def _remember_enabled(self) -> bool:
         value = self.settings.value("props/remember", True) \
@@ -109,17 +117,41 @@ class EditorView(QGraphicsView):
             return
         for kind, style in self.tool_defaults.items():
             item = ITEM_TYPES[kind]()
+            loaded = set()
             for key in style:
                 value = self.settings.value(f"props/{kind}/{key}", None)
                 if value is not None:
                     try:
                         style[key] = self._style_value(item, key, value)
+                        loaded.add(key)
                     except (ValueError, TypeError, OverflowError):
                         pass
+            if kind == "text" and "border_width" in loaded and "border_color" not in loaded:
+                # A saved width was an explicit border choice under the
+                # former red factory. A saved size alone implies no border.
+                style["border_color"] = "#E53935"
 
     def starting_style(self, kind: str) -> dict:
-        return dict(self.tool_defaults[kind] if self.remember_props
-                    else self.factory_style(kind))
+        style = dict(self.tool_defaults[kind] if self.remember_props
+                     else self.factory_style(kind))
+        style.update(self._once_border.get(kind, {}))
+        return style
+
+    def new_style_choice(self, item: BaseItem, keys) -> None:
+        """Explicit remember-off New choices last one successful placement.
+
+        The existing one-placement border store also carries width, colour
+        and the other New controls. Misses and same-tool picks retain it;
+        completion, a different tool, reset or a remember change clear it.
+        Selected-object edits never enter this path.
+        """
+        if self.remember_props:
+            return
+        style = self._once_border.setdefault(item.KIND, {})
+        for control_key in keys:
+            key = item.key_for(control_key)
+            if key in self.tool_defaults[item.KIND]:
+                style[key] = item.props[key]
 
     def defaults_item(self) -> BaseItem | None:
         """The active drawing tool's target; Select and Crop have no style."""
@@ -144,10 +176,16 @@ class EditorView(QGraphicsView):
                 style[key] = value
                 if self.settings is not None:
                     self.settings.setValue(f"props/{item.KIND}/{key}", value)
+                    if item.KIND == "text" and key == "border_width":
+                        # New width choices carry the starting colour.
+                        # Only old width-only settings use the red fallback.
+                        self.settings.setValue("props/text/border_color",
+                                               style["border_color"])
         if self.settings is not None:
             self.settings.sync()
 
     def set_remember_props(self, on: bool) -> None:
+        self._once_border.clear()
         self.remember_props = bool(on)
         if self.settings is not None:
             self.settings.setValue("props/remember", bool(on))
@@ -155,6 +193,7 @@ class EditorView(QGraphicsView):
         self.load_tool_defaults()
 
     def reset_tool_defaults(self) -> None:
+        self._once_border.clear()
         if self.settings is not None:
             for kind in ITEM_TYPES:
                 self.settings.remove(f"props/{kind}")
@@ -292,8 +331,11 @@ class EditorView(QGraphicsView):
         return super().event(event)
 
     def set_tool(self, tool: Tool) -> None:
+        """Set the mode, including automatic completion and document refresh."""
         self.doc.end_text_edit()
         self._cancel_preview()
+        if tool is not self.tool:
+            self._once_border.clear()
         self.tool = tool
         select = tool is Tool.SELECT
         self.setInteractive(select)           # create tools own the mouse
@@ -301,6 +343,17 @@ class EditorView(QGraphicsView):
                          else QGraphicsView.NoDrag)
         self.viewport().setCursor(Qt.ArrowCursor if select else Qt.CrossCursor)
         self.toolChanged.emit()
+
+    def pick_tool(self, tool: Tool) -> None:
+        """An explicit drawing pick gives the next gesture its own target.
+
+        ASSUMES: an explicit drawing pick means New, even for the same kind
+        as the selection. Select and Crop retain their existing paths.
+        """
+        self.doc.end_text_edit()
+        if tool in ITEM_FOR_TOOL:
+            self.doc.clearSelection()
+        self.set_tool(tool)
 
     def _typing_changed(self, item):
         self.setInteractive(self.tool is Tool.SELECT or item is not None)
@@ -370,7 +423,9 @@ class EditorView(QGraphicsView):
             else:
                 item.set_geom(geom)
                 self.doc.add_items([item], f"Add {item.LABEL}")
-        if tool is Tool.CROP:
+        if tool is Tool.CROP or item is not None:
+            # Switch before opening a live caret: set_tool ends typing.
+            self._once_border.clear()
             self.set_tool(Tool.SELECT)
             self.toolDone.emit()
         self.doc.select_only([item] if item is not None and tool is not Tool.PEN else [])
@@ -380,12 +435,25 @@ class EditorView(QGraphicsView):
 
     def viewportEvent(self, event):
         result = super().viewportEvent(event)
-        if (event.type() == QEvent.MouseMove and self.tool is not Tool.SELECT
-                and not self.doc.is_editing()):
-            # Qt also chooses item cursors inside viewportEvent. Apply the
-            # drawing tool's cursor after that, including over an object's body.
-            hit = self.selected_handle_at(self._scene_pos(event))
-            self.viewport().setCursor(hit[0].handle_cursor(hit[1]) if hit else Qt.CrossCursor)
+        if event.type() == QEvent.MouseMove and not self.doc.is_editing():
+            # Qt can retain the last hover cursor when a gesture changes
+            # tools or Undo changes the hovered geometry. Resolve handles
+            # against Qt's press target in Select; a selected rear handle
+            # must not promise resizing through a front object's body.
+            point = self._scene_pos(event)
+            if self.tool is Tool.SELECT:
+                body = self.item_at(event.position().toPoint())
+                handle = body.handle_at(body.mapFromScene(point)) if body is not None else None
+                hit = (body, handle) if handle is not None else None
+            else:
+                hit = self.selected_handle_at(point)
+            if hit:
+                cursor = hit[0].handle_cursor(hit[1])
+            elif self.tool is not Tool.SELECT:
+                cursor = Qt.CrossCursor
+            else:
+                cursor = Qt.SizeAllCursor if body is not None else Qt.ArrowCursor
+            self.viewport().setCursor(cursor)
         return result
 
     # -- mouse ------------------------------------------------------------

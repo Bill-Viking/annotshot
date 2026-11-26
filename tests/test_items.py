@@ -271,7 +271,7 @@ def test_no_fill_and_shapes_render(qapp, white):
     img = doc.render_image()
     assert px(img, 100, 200) == (229, 57, 53)
     assert px(img, 212, 200) == (229, 57, 53)          # the head
-    assert px(img, 212, 197) == (229, 57, 53)          # wider than the line
+    assert px(img, 211, 197) == (229, 57, 53)          # wider than the line
     assert px(img, 100, 210) == (255, 255, 255)
 
 
@@ -390,26 +390,27 @@ def test_an_arrows_head_kinds_sizes_and_both_ends(qapp, white):
     small.apply_props({"head_size": "small", "stroke_width": 4})
     big = ArrowItem()
     big.apply_props({"head_size": "large", "stroke_width": 4})
-    assert small._head_len() == 16                  # today's head
-    assert a._head_len() == pytest.approx(16 * 1.6)
-    assert big._head_len() == pytest.approx(16 * 2.4)
+    assert small._head_len() == 12                  # A: 16 × 0.75
+    assert a._head_len() == pytest.approx(16)
+    assert big._head_len() == pytest.approx(16 * 1.5)
     one = ArrowItem()
     one.apply_props({"stroke_width": 1, "head_size": "small"})
-    assert one._head_len() >= 8                     # a 1 px arrow keeps a head
+    assert one._head_len() == 3                     # 4 × width × Small
     img = doc.render_image()
     assert px(img, 495, 180)[0] > 150               # filled head at p2
     assert px(img, 103, 180)[0] > 150               # the line reaches p1
     assert px(img, 100 + 5, 180 + 10) == (255, 255, 255)
     doc.set_props([a], {"both_ends": True})
     img = doc.render_image()
-    assert near(px(img, 118, 186), (229, 57, 53), 60)   # a head at p1 too
+    assert near(px(img, 114, 184), (229, 57, 53), 60)   # a head at p1 too
     assert a.boundingRect().contains(a.p1 - QPointF(4, 12))
-    assert a.body_shape().contains(QPointF(18, 6))
+    assert a.body_shape().contains(QPointF(14, 5))
     doc.set_props([a], {"head": "open"})
     img = doc.render_image()
     # open: the head's two strokes, not a filled triangle
-    assert px(img, 480, 186) == (255, 255, 255)     # hollow inside
-    assert px(img, 480, 190)[0] > 150 and px(img, 498, 180)[0] > 150
+    assert px(img, 480, 183) == (255, 255, 255)     # hollow inside
+    assert near(px(img, 480, 187), (229, 57, 53), 60)
+    assert px(img, 498, 180)[1] < 230
     doc.set_props([a], {"head": "none"})
     assert a._heads()[2] == []
     img = doc.render_image()
@@ -492,7 +493,7 @@ def test_dashed_and_dotted_borders_have_gaps(qapp, white, width):
     doc.set_props([r], {"line_style": "dotted"})
     img = doc.render_image()
     dotted = [px(img, x, y)[1] < 150 for x in range(80, 380)]
-    assert runs(dashed) >= 300 // (max(4 * width, 6) + max(2.5 * width, 4)) - 1
+    assert runs(dashed) >= 300 // (max(4 * width, 4) + max(2 * width, 2)) - 1
     assert runs(dotted) > runs(dashed) >= 4
     assert not all(dotted) and any(dotted)
 

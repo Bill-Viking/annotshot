@@ -30,7 +30,7 @@ class TrayController(QObject):
         return self.icon is not None and QSystemTrayIcon.isSystemTrayAvailable()
 
     def refresh(self):
-        key = self.window_.capture_key_text()
+        key = self.window_.key_state()["live"]
         self.capture_action.setText(f"Capture ({key})" if key else "Capture")
 
     def _activated(self, reason):
@@ -41,7 +41,7 @@ class TrayController(QObject):
         settings = self.window_.settings
         if self.icon is None or settings.value("app/keep_running_told", False, type=bool):
             return
-        key = self.window_.capture_key_text()
+        key = self.window_.key_state()["notice_key"]
         text = f"{key} captures. Quit from this icon." if key else "Quit from this icon."
         self.icon.showMessage("Annotshot is still running", text)
         settings.setValue("app/keep_running_told", True)

@@ -246,6 +246,24 @@ def test_the_document_is_byte_identical_under_every_theme(window, qapp):
             it.apply_props({"text": "Theme-proof"})
         items.append(it)
     doc.add_items(items)
+    from annotshot.items import ArrowItem, EllipseItem, PenItem, RectItem
+    for row, style in enumerate(("long_dash", "dash_dot")):
+        for col, head in enumerate(("filled", "open", "none", "bar")):
+            arrow = ArrowItem()
+            arrow.set_geom((10 + col * 95, 105 + row * 20,
+                            90 + col * 95, 105 + row * 20))
+            arrow.apply_props(dict(line_style=style, head=head, both_ends=True,
+                                   opacity=0.5, head_size="large"))
+            doc.add_items([arrow])
+        for cls, x in ((RectItem, 240), (EllipseItem, 310)):
+            mark = cls()
+            mark.set_geom((x, 5 + row * 45, 60, 35))
+            mark.apply_props({"line_style": style})
+            doc.add_items([mark])
+        pen = PenItem()
+        pen.set_points([(10, 220 + row * 8), (60, 210 + row * 8), (110, 220 + row * 8)])
+        pen.apply_props({"line_style": style})
+        doc.add_items([pen])
     doc.select_only(items[:2])          # handles are never in the export
     shots = {}
     for name in ("light", "dark", "retro"):

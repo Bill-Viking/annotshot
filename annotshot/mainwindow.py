@@ -18,24 +18,27 @@ from pathlib import Path
 
 import shiboken6
 
-from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QProcess, QRect, QSettings,
-                            QSize, Qt, QTimer, Signal)
+from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QProcess, QRect, QRectF,
+                            QSettings, QSize, Qt, QTimer, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont,
                            QFontInfo, QFontMetrics,
-                           QGuiApplication, QIcon, QImage, QKeySequence,
+                           QGuiApplication, QIcon, QImage, QKeySequence, QPalette,
                            QPainter, QPixmap, QShortcut, QUndoGroup)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
-                               QCheckBox, QColorDialog, QComboBox, QFileDialog,
+                               QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog,
                                QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea,
                                QSizePolicy, QSlider, QSpinBox,
-                               QStackedWidget, QStyledItemDelegate, QToolBar,
+                               QStackedWidget, QStyle, QStyledItemDelegate,
+                               QStyleOptionComboBox, QStyleOptionSpinBox, QStyleOptionViewItem,
+                               QStylePainter, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import feedback, hotkey, macos
 from .capture import CaptureSession
-from .items import HighlightItem, without_alpha
+from .items import HighlightItem, arrow_ink, without_alpha
+from .keywords import key_words
 from .office import OFFICE_FORMATS, export
 from . import recent, theme, typefaces
 from .scene import Document
@@ -164,11 +167,216 @@ KIND_ICONS = {"text": "text", "callout": "callout", "rect": "rect",
               "ellipse": "ellipse",
               "arrow": "arrow", "highlight": "highlight", "pen": "pen"}
 # The arrow's pull-downs: (prop value, the name shown).
-ARROW_HEADS = (("filled", "Filled"), ("open", "Open"), ("none", "None"))
+ARROW_HEADS = (("filled", "Filled"), ("open", "Open"), ("none", "None"),
+               ("bar", "Bar"))
 HEAD_SIZE_NAMES = (("small", "Small"), ("medium", "Medium"),
                    ("large", "Large"))
 LINE_STYLE_NAMES = (("solid", "Solid"), ("dashed", "Dashed"),
-                    ("dotted", "Dotted"))
+                    ("long_dash", "Long dash"), ("dotted", "Dotted"),
+                    ("dash_dot", "Dash-dot"))
+
+
+def _paint_choice_sample(p, rect, color, kind, value):
+    """A 56 × 16 logical-pixel sample using production ink at w = 2."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.translate(rect.left() + 2, rect.top() + 8)
+    p.fillPath(arrow_ink(52, 2, value if kind == "line" else "solid",
+                         value if kind == "head" else "none"), color)
+    p.restore()
+
+
+class _MarkChoiceDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        return QSize(size.width() + 56 + 8, max(size.height(), 16 + 4))
+
+    def paint(self, p, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text = opt.text
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, p, opt.widget)
+        role = QPalette.HighlightedText if opt.state & QStyle.State_Selected \
+            else QPalette.Text
+        color = opt.palette.color(role)
+        sample = QRectF(opt.rect.left() + 6, opt.rect.center().y() - 8, 56, 16)
+        _paint_choice_sample(p, sample, color, self.parent().sample_kind,
+                             index.data(Qt.UserRole))
+        p.save()
+        p.setFont(opt.font)
+        p.setPen(color)
+        name_rect = opt.rect.adjusted(6 + 56 + 8, 0, -6, 0)
+        p.drawText(name_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+        p.restore()
+
+
+class PropertyChoice(QComboBox):
+    """Qt owns search; a real activation completes its focus transfer now."""
+    mouseCommitted = Signal()
+    popupOpened = Signal()
+    popupFinished = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._mouse_release_row = None
+        self._popup_open = False
+        self._key_accept = False
+        self._escape_cancel = False
+        self._popup_origin = None
+        self.view().installEventFilter(self)
+        self.view().viewport().installEventFilter(self)
+        self.activated.connect(self._choice_activated)
+
+    def showPopup(self):
+        self._mouse_release_row = None
+        self._key_accept = self._escape_cancel = False
+        self._popup_origin = QApplication.focusWidget()
+        self._popup_open = True
+        self.popupOpened.emit()
+        super().showPopup()
+        # Escape can close this container without calling hidePopup().
+        self.view().window().installEventFilter(self)
+
+    def hidePopup(self):
+        super().hidePopup()
+        self._popup_hidden()
+
+    def _popup_hidden(self):
+        accepting = self._mouse_release_row is not None or self._key_accept
+        if self._popup_open and not accepting:
+            origin, resume = self._popup_origin, self._escape_cancel
+            self._popup_origin = self._mouse_release_row = None
+            self._popup_open = self._key_accept = self._escape_cancel = False
+            # Escape returns to its origin in this delivery. A different
+            # destination or an outside dismissal never earns a hand-back.
+            if (resume and origin is not None and shiboken6.isValid(origin)
+                    and QApplication.focusWidget() in (None, self, self.view())):
+                origin.setFocus(Qt.PopupFocusReason)
+            self.popupFinished.emit(resume)
+
+    def event(self, event):
+        if event.type() == QEvent.KeyPress:
+            self._mouse_release_row = None
+        if (event.type() == QEvent.ShortcutOverride and not self.isEditable()
+                and not event.modifiers() & (Qt.ControlModifier
+                                             | Qt.AltModifier | Qt.MetaModifier)
+                and event.text() and event.text().isprintable()):
+            event.accept()
+            return True  # ordinary KeyPress still runs Qt's search once
+        return super().event(event)
+
+    def eventFilter(self, watched, event):
+        # Escape may hide Qt's popup container directly rather than call
+        # hidePopup(). HideToParent runs after its native focus restoration.
+        if watched is self.view().window() and event.type() == QEvent.HideToParent:
+            self._popup_hidden()
+        if watched in (self.view(), self.view().viewport()):
+            if event.type() in (QEvent.ShortcutOverride, QEvent.KeyPress,
+                                QEvent.MouseButtonPress):
+                # Qt may complete Return inside its own KeyPress filter.
+                # ShortcutOverride identifies that command; the ordinary
+                # key still goes through Qt once, with no replay/search here.
+                self._mouse_release_row = None
+                self._key_accept = (event.type() in (QEvent.ShortcutOverride, QEvent.KeyPress)
+                                    and event.key() in (Qt.Key_Return, Qt.Key_Enter))
+                self._escape_cancel = (event.type() in (QEvent.ShortcutOverride, QEvent.KeyPress)
+                                       and event.key() == Qt.Key_Escape)
+            if (event.type() == QEvent.MouseButtonRelease
+                    and event.button() == Qt.LeftButton):
+                index = self.view().indexAt(event.position().toPoint())
+                if (index.isValid() and index.flags() & Qt.ItemIsEnabled
+                        and index.flags() & Qt.ItemIsSelectable):
+                    self._mouse_release_row = index.row()
+        return super().eventFilter(watched, event)
+
+    def _choice_activated(self, row):
+        # ASSUMES: only Qt's activation of the released row confirms a
+        # mouse choice, including a re-pick. Transfer synchronously: any
+        # later focus destination wins, even inside the next activated slot.
+        mouse = row == self._mouse_release_row
+        was_open = self._popup_open
+        self._mouse_release_row = self._popup_origin = None
+        self._popup_open = self._key_accept = self._escape_cancel = False
+        if mouse:
+            self.mouseCommitted.emit()
+        elif was_open and not self.isEditable():
+            self.setFocus(Qt.PopupFocusReason)
+        if was_open:
+            self.popupFinished.emit(True)
+
+
+class MarkChoice(PropertyChoice):
+    """Stock choice data/navigation; roomy popup, original closed width."""
+    def __init__(self, kind, original, parent=None):
+        super().__init__(parent)
+        self.sample_kind = kind
+        self._original = original
+        self._closed_width = 0
+        self.setItemDelegate(_MarkChoiceDelegate(self))
+        self.currentIndexChanged.connect(self._describe_choice)
+
+    def _describe_choice(self, *_):
+        text = self.currentText()
+        title = "Line style" if self.sample_kind == "line" else "Arrow head"
+        self.setToolTip(f"{title}: {text}")
+        self.setAccessibleDescription(text)
+
+    def remeasure(self):
+        # Stock QComboBox measures the text bounds, then asks the active
+        # style for its frame/arrow allowance. Measure only the original
+        # entries; popup samples and new names get no strip space.
+        fm = self.fontMetrics()
+        contents = QSize(max(fm.boundingRect(name).width()
+                             for _, name in self._original), fm.height() + 2)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        self._closed_width = self.style().sizeFromContents(
+            QStyle.CT_ComboBox, opt, contents, self).width()
+        self.setFixedWidth(self._closed_width)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        if self._closed_width:
+            size.setWidth(self._closed_width)
+        return size
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() in (QEvent.FontChange, QEvent.StyleChange)
+                and hasattr(self, "_original")):
+            self.remeasure()
+
+    def showPopup(self):
+        opt = QStyleOptionViewItem()
+        opt.initFrom(self)
+        opt.font = self.font()
+        width = max(self.itemDelegate().sizeHint(opt, self.model().index(i, 0)).width()
+                    for i in range(self.count()))
+        self.view().setMinimumWidth(width + 12)
+        super().showPopup()
+
+    def paintEvent(self, event):
+        if self.sample_kind != "line":
+            return super().paintEvent(event)
+        p = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = ""
+        p.drawComplexControl(QStyle.CC_ComboBox, opt)
+        p.drawControl(QStyle.CE_ComboBoxLabel, opt)
+        edit = self.style().subControlRect(QStyle.CC_ComboBox, opt,
+                                          QStyle.SC_ComboBoxEditField, self)
+        p.setClipRect(edit)
+        _paint_choice_sample(p, QRectF(edit.center().x() - 28,
+                                      edit.center().y() - 8, 56, 16),
+                             opt.palette.color(QPalette.ButtonText),
+                             "line", self.currentData())
 # Friendly names for the colors the controls show; others show as #RRGGBB.
 COLOR_NAMES = {
     "#000000": "Black", "#FFFFFF": "White", "#E53935": "Red",
@@ -424,7 +632,7 @@ class _FaceDelegate(QStyledItemDelegate):
         return QSize(super().sizeHint(option, index).width(), 22)
 
 
-class FontBox(QComboBox):
+class FontBox(PropertyChoice):
     """The Font box: the fonts Annotshot carries first (the VT323 pixel
     font, "Pixel font (bundled)"), a separator, then this system's families;
     each name is shown in its own face. Speaks QFontComboBox's words
@@ -435,6 +643,8 @@ class FontBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setEditable(True)
+        # The arrow is a choice, while the entry remains a click/Tab target.
+        self.setFocusPolicy(Qt.TabFocus)
         self.setInsertPolicy(QComboBox.NoInsert)
         self.setItemDelegate(_FaceDelegate(self))
         # one row's height for all: no font is loaded to measure the list
@@ -497,7 +707,94 @@ class _ReadableRecentStore(recent.RecentStore):
             return []
 
 
+class FitBar(QToolBar):
+    """Keep every action visible by dropping labels in ordered groups."""
+
+    def __init__(self, *args, **kwargs):
+        self._levels = []
+        self._level = 0
+        self._icon_only = frozenset()
+        self._needs = None
+        self._fit_width = None
+        self._fitting = False
+        super().__init__(*args, **kwargs)
+
+    def set_levels(self, levels: list[frozenset[QAction]]) -> None:
+        self._levels = levels
+        self._needs = None
+        self._apply_level(0)
+
+    def _apply_level(self, level: int) -> None:
+        icon_only = self._levels[level]
+        for action in self._icon_only ^ icon_only:
+            button = self.widgetForAction(action)
+            compact = action in icon_only
+            button.setProperty("iconOnly", compact)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.setToolButtonStyle(
+                Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextBesideIcon)
+            button.updateGeometry()
+        self._icon_only = icon_only
+        self._level = level
+
+    def needs(self) -> tuple[int, ...]:
+        if self._needs is None:
+            current = self._level
+            updates = self.updatesEnabled()
+            self.setUpdatesEnabled(False)
+            try:
+                measured = []
+                for level in range(len(self._levels)):
+                    self._apply_level(level)
+                    self.layout().invalidate()
+                    measured.append(self.sizeHint().width())
+                self._needs = tuple(measured)
+            finally:
+                self._apply_level(current)
+                self.layout().invalidate()
+                self.setUpdatesEnabled(updates)
+        return self._needs
+
+    def compact_need(self) -> int:
+        return self.needs()[-1]
+
+    def level(self) -> int:
+        return self._level
+
+    def fit(self, width: int) -> None:
+        if self._fitting or not self._levels:
+            return
+        self._fitting = True
+        try:
+            self._fit_width = width
+            needs = self.needs()
+            level = next((i for i, need in enumerate(needs) if need <= width),
+                         len(needs) - 1)
+            if level != self._level:
+                self._apply_level(level)
+            self.layout().invalidate()
+            self.layout().activate()
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt's name
+        super().resizeEvent(event)
+        self.fit(event.size().width())
+
+    def remeasure(self) -> None:
+        self._needs = None
+        if self._fit_width is not None:
+            self.fit(self._fit_width)
+
+    def changeEvent(self, event):  # noqa: N802 - Qt's name
+        if event.type() in (QEvent.StyleChange, QEvent.FontChange):
+            self._needs = None
+        super().changeEvent(event)
+
+
 class MainWindow(QMainWindow):
+    keyStateChanged = Signal()
     def __init__(self, *, permission_restart=False):
         super().__init__()
         self.settings = QSettings("Annotshot", "Annotshot")
@@ -545,7 +842,18 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._apply_saved_shortcuts()
         self.hotkey = hotkey.GlobalHotkey(self)
-        self.hotkey.activated.connect(self.capture_from_anywhere)
+        self._key_ready = False
+        self._key_feedback = ""
+        self._key_edit_error = ""
+        self._key_edit_qualified = False
+        self._key_line = ""
+        self._key_green = False
+        self._key_epoch = 0
+        self._key_try = None
+        self._key_restoring = False
+        self.key_clock = hotkey.KeyClock()
+        self.hotkey.event_epoch = lambda: self._key_epoch
+        self.hotkey.native_event.connect(self._native_capture_key)
         self._build_toolbar()
         self._build_props_bar()
         self.view.toolChanged.connect(self.refresh_props)
@@ -646,7 +954,7 @@ class MainWindow(QMainWindow):
         self.state_name = "editor"
         area = self._screen_area()
         self.setMaximumSize(QSize(16777215, 16777215))
-        self.setMinimumSize(MIN_SIZE.boundedTo(self._cap(area)))
+        self._apply_floor(area)
         self.pages.setCurrentWidget(self.view)
         self.restoreState(self._editor_state)
         for toolbar in self.findChildren(QToolBar):
@@ -658,6 +966,11 @@ class MainWindow(QMainWindow):
         self._sync_undo()
         self.view.setFocus()
 
+    def _apply_floor(self, area: QRect) -> None:
+        floor = MIN_SIZE.boundedTo(self._cap(area))
+        need = max(bar.compact_need() for bar in (self.main_bar, self.tools_bar))
+        self.setMinimumSize(max(floor.width(), need), floor.height())
+
     # -- building ---------------------------------------------------------
     def _build_recent(self) -> None:
         """The Recent captures pane: docked on the right the first time,
@@ -667,7 +980,7 @@ class MainWindow(QMainWindow):
             lambda: default_directory() / RECENT_SUBDIR)
         self.recent = recent.RecentPane(self.recent_store, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.recent)
-        self.recent.openRequested.connect(self.open_recent)
+        self.recent.openRequested.connect(self._open_recent_request)
         self.recent.filingFailed.connect(self._filing_failed)
         self.recent.deleted.connect(self._recent_deleted)
         self.recent._filer.filed.connect(self._refresh_welcome_recent)
@@ -686,11 +999,19 @@ class MainWindow(QMainWindow):
     def keep_recent(self) -> bool:
         return self.settings.value(recent.SETTING, True, type=bool)
 
+    def _open_recent_request(self, path: str) -> None:
+        # The pane scopes this to the actual thumbnail request. A failed
+        # open, list search or programmatic refresh cannot hand off focus.
+        thumbnail = self.recent.opening_thumbnail
+        if self.open_recent(path) and thumbnail:
+            self.view.setFocus()
+
     def open_recent(self, path: str, quiet: bool = False) -> bool:
         """Open a kept capture as the current picture, with its edits: its
         `.annotshot` when there is one, else the PNG (unedited). The
         current picture's edits are kept first. A capture gone from the
         folder only drops from the pane."""
+        self.end_key_interaction()
         if self._capture is not None or self._opening:
             return False
         png, editable = recent.png_for(path), recent.editable_for(path)
@@ -789,6 +1110,11 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.ActivationChange and \
                 not self.isActiveWindow():
             self.autosave_now()         # the window lost focus: keep it now
+        if event.type() == QEvent.WindowStateChange and getattr(self, "_key_try", None):
+            if self.isMinimized():
+                self._arm_key_try()
+            elif self._key_try["phase"] == "armed" and not self._key_restoring:
+                self.end_key_try("Try cancelled")
         super().changeEvent(event)
 
     def is_recent_doc(self, doc: Document | None = None) -> bool:
@@ -833,7 +1159,7 @@ class MainWindow(QMainWindow):
         """The tooltip: what it does, then its first key."""
         keys = a.shortcuts()
         tip = a.property("tip") or a.text()
-        key = keys[0].toString(QKeySequence.NativeText) if keys else ""
+        key = key_words(keys[0]) if keys else ""
         a.setToolTip(f"{tip} ({key})" if key else tip)
 
     def _build_actions(self) -> None:
@@ -863,11 +1189,11 @@ class MainWindow(QMainWindow):
         group = QActionGroup(self)
         self.tool_actions: dict[Tool, QAction] = {}
         for tool in Tool:
-            a = self._act(tool.value, lambda _=False, t=tool: self.view.set_tool(t),
+            a = self._act(tool.value, lambda _=False, t=tool: self.view.pick_tool(t),
                           TOOL_KEYS[tool], checkable=True)
-            self.removeAction(a)
-            self.view.addAction(a)
-            a.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            # Tool picks also work from non-text Properties controls. Keep
+            # the window shortcut scope; native text fields and the view's
+            # live text caret claim ordinary typing via ShortcutOverride.
             group.addAction(a)
             self.tool_actions[tool] = a
         self.tool_actions[Tool.SELECT].setChecked(True)
@@ -921,22 +1247,22 @@ class MainWindow(QMainWindow):
         self._update_capture_hint()
 
     def capture_status(self) -> str:
-        key = self.a_capture.shortcut().toString(QKeySequence.NativeText)
+        key = key_words(self.a_capture.shortcut())
         return f"{key} to take a screenshot" if key else "Click Capture to take a screenshot"
 
     def _update_capture_hint(self) -> None:
         # ASSUMES: Capture has a key. A cleared key removes the whole bracket.
-        key = self.a_capture.shortcut().toString(QKeySequence.NativeText)
+        key = key_words(self.a_capture.shortcut())
         capture = f"Capture ({key})" if key else "Capture"
         self.view.empty_hint = ("No picture yet", f"Click {capture} to take a screenshot, or Open… a saved file")
         self.view.viewport().update()
 
     def _build_toolbar(self) -> None:
         """Capture and file actions on the left; Close picture and history
-        on the right. Tools and labelled object actions occupy row 2.
-        Undo, Redo and Settings use icons named by their tooltips."""
-        def new_bar(title: str, name: str, height: int) -> QToolBar:
-            bar = QToolBar(title, self)
+        on the right. Each row drops labels by group as it narrows, keeping
+        every action visible and named by its tooltip."""
+        def new_bar(title: str, name: str, height: int) -> FitBar:
+            bar = FitBar(title, self)
             bar.setObjectName(name)
             bar.setMovable(False)
             bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -969,9 +1295,11 @@ class MainWindow(QMainWindow):
             bar.addAction(a)
         bar.widgetForAction(self.a_capture).setObjectName("primary")
         bar.widgetForAction(self.a_settings).setObjectName("last")
+        self.main_bar = bar
+        base = frozenset(a for a in bar.actions() if a.text() in ICON_ONLY)
+        bar.set_levels([base, base | {self.a_open, self.a_save,
+                                     self.a_copy, self.a_clear}])
         self.addToolBar(bar)
-        # Labelled object actions fit the brief's 1100 px tools row;
-        # narrower windows retain Qt's normal toolbar overflow menu.
         bar = new_bar("Tools", "tools", 36)
         for a in self.tool_actions.values():
             bar.addAction(a)
@@ -980,14 +1308,12 @@ class MainWindow(QMainWindow):
             bar.addAction(a)
         bar.widgetForAction(self.tool_actions[Tool.SELECT]).setObjectName("first")
         bar.widgetForAction(self.a_delete).setObjectName("last")
+        self.tools_bar = bar
+        objects = frozenset((self.a_dup, self.a_front, self.a_back, self.a_delete))
+        bar.set_levels([frozenset(), objects,
+                        objects | frozenset(self.tool_actions.values())])
         self.addToolBarBreak()
         self.addToolBar(bar)
-        for b in (self.findChild(QToolBar, "main"), bar):
-            for a in b.actions():
-                if a.text() in ICON_ONLY:
-                    button = b.widgetForAction(a)
-                    button.setToolButtonStyle(Qt.ToolButtonIconOnly)
-                    button.setProperty("iconOnly", True)
 
     def _apply_icons(self) -> None:
         """Every icon the window shows, in the current theme's inks (built
@@ -1021,8 +1347,15 @@ class MainWindow(QMainWindow):
         """The theme changed (theme.apply calls this): the icons, the
         heading's mark, the Recent pane and the canvas are drawn again."""
         self._apply_icons()
+        for bar in (self.main_bar, self.tools_bar):
+            bar.remeasure()
+        for box in (self.cb_line, self.cb_head):
+            box.remeasure()
+        if self.state_name == "editor":
+            self._apply_floor(self._screen_area())
         if hasattr(self, "sel_mark"):
             self._show_selection(self.doc.selected())
+            self._props_reflow.start()
         self.recent.retheme()
         self.doc.update()
         self.view.viewport().update()
@@ -1048,8 +1381,9 @@ class MainWindow(QMainWindow):
         return s
 
     def _build_props_bar(self) -> None:
-        """Two constant rows; only applicable fields occupy the strip."""
+        """Two balanced rows where they fit; whole ordered rows below."""
         self._key_widgets: dict[str, list] = {}
+        self._live_format = None
         bar = QToolBar("Properties", self)
         bar.setObjectName("properties")
         bar.setMovable(False)
@@ -1083,6 +1417,15 @@ class MainWindow(QMainWindow):
             lambda f: set_({"font_family": f.family()}, "Font"))
         self.s_size = self._spin(6, 400, "Font size (pixels)",
                                  lambda v: set_({"font_px": v}, "Font size"))
+        self.s_size.setFocusPolicy(Qt.TabFocus)
+        self.s_size.lineEdit().installEventFilter(self)
+        self.f_font.lineEdit().installEventFilter(self)
+        self.s_size.installEventFilter(self)
+        self.f_font.popupOpened.connect(lambda: self._begin_live_format(self.f_font))
+        self.f_font.popupFinished.connect(
+            lambda resume: self._finish_live_format(self.f_font, resume))
+        QApplication.instance().focusChanged.connect(self._live_format_focus_changed)
+        self.view.installEventFilter(self)
         for w in (self.f_font, self.s_size, self.s_width):
             w.setMinimumHeight(28)
         self.b_bold = self._button("B", "Bold", lambda on: set_({"bold": on}, "Bold"), True)
@@ -1106,12 +1449,16 @@ class MainWindow(QMainWindow):
         # The arrow's head: its kind, its size and both ends (shown only
         # while an arrow is selected).
         self.cb_head = self._choice("Arrow head", ARROW_HEADS,
-                                    lambda v: set_({"head": v}, "Arrow head"))
+                                    lambda v: set_({"head": v}, "Arrow head"),
+                                    sample="head", original=ARROW_HEADS[:3])
         self.cb_head_size = self._choice(
             "Arrow head size", HEAD_SIZE_NAMES,
             lambda v: set_({"head_size": v}, "Arrow head size"))
         self.cb_line = self._choice("Line style", LINE_STYLE_NAMES,
-                                    lambda v: set_({"line_style": v}, "Line style"))
+                                    lambda v: set_({"line_style": v}, "Line style"),
+                                    sample="line", original=tuple(
+                                        pair for pair in LINE_STYLE_NAMES
+                                        if pair[0] in ("solid", "dashed", "dotted")))
         self.ch_both = QCheckBox("Both ends", self)
         self.ch_both.setToolTip("A head at both ends")
         self.ch_both.toggled.connect(
@@ -1157,6 +1504,8 @@ class MainWindow(QMainWindow):
             return w
 
         self.prop_row1, self.prop_row2 = row(), row()
+        self._prop_rows = [self.prop_row1, self.prop_row2]
+        self._prop_partition = None
         heading = self._group(None, self.sel_mark, self.sel_heading, gap=6)
         self.border_group = self._group("Border", self.c_border, self.b_noborder)
         self.border_label = self.border_group.findChild(QLabel, "fieldLabel")
@@ -1185,6 +1534,10 @@ class MainWindow(QMainWindow):
 
         scroll = QScrollArea(bar)
         scroll.setObjectName("stripScroll")
+        # A scroll container is not the owner of a child's non-focus click.
+        # In particular, TabFocus choices and neutral buttons keep the
+        # picture's focus instead of walking up to this StrongFocus parent.
+        scroll.setFocusPolicy(Qt.NoFocus)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1197,6 +1550,14 @@ class MainWindow(QMainWindow):
         scroll.setFixedHeight(76)
         self.prop_strip = strip
         self.prop_scroll = scroll
+        self._props_reflow = QTimer(self)
+        self._props_reflow.setSingleShot(True)
+        self._props_reflow.setInterval(0)
+        self._props_reflow.timeout.connect(self._arrange_props)
+        scroll.viewport().installEventFilter(self)
+        strip.installEventFilter(self)
+        for _key, group in self._prop_groups:
+            group.installEventFilter(self)
         bar.addWidget(scroll)
 
         self._controls = {
@@ -1227,15 +1588,19 @@ class MainWindow(QMainWindow):
             h.addWidget(w)
         return box
 
-    def _choice(self, tip: str, choices, slot) -> QComboBox:
+    def _choice(self, tip: str, choices, slot, *, sample=None, original=()) -> QComboBox:
         """A pull-down of (value, name) pairs; `slot` gets the value."""
-        box = QComboBox(self)
+        box = MarkChoice(sample, original, self) if sample else PropertyChoice(self)
         box.setToolTip(tip)
         box.setAccessibleName(tip)
         box.setMinimumHeight(28)
         for value, name in choices:
             box.addItem(name, value)
+        if sample:
+            box.remeasure()
+            box._describe_choice()
         box.currentIndexChanged.connect(lambda i: slot(box.itemData(i)))
+        box.mouseCommitted.connect(self.view.setFocus)
         return box
 
     def _shown_with(self, key: str, *widgets) -> tuple:
@@ -1302,6 +1667,9 @@ class MainWindow(QMainWindow):
     def _editing_changed(self, item) -> None:
         """Point Undo / Redo at the edited text's history, or back at the
         undo stack when no text box is being edited."""
+        context = getattr(self, "_live_format", None)
+        if context is not None and context[2] is not item:
+            self._live_format = None
         if self._typing_doc is not None:
             self._typing_doc.undoAvailable.disconnect(self._sync_undo)
             self._typing_doc.redoAvailable.disconnect(self._sync_undo)
@@ -1384,7 +1752,11 @@ class MainWindow(QMainWindow):
                     button.set_color(first(key))
             if first("border_width") is not None:
                 self.s_width.setValue(first("border_width"))
-            if first("font_family") is not None:
+            if (first("font_family") is not None
+                    and QApplication.focusWidget() not in
+                    (self.f_font, self.f_font.lineEdit())):
+                # A focused entry owns its draft, including an unfinished
+                # family name. Refreshing the strip must not replace it.
                 self.f_font.setCurrentFont(QFont(first("font_family")))
             if first("font_px") is not None:
                 self.s_size.setValue(first("font_px"))
@@ -1421,33 +1793,162 @@ class MainWindow(QMainWindow):
             row.updateGeometry()
 
     def _arrange_props(self) -> None:
-        """Partition visible fields across two rows, keeping their order.
+        """Keep the balanced pair, otherwise use the fewest ordered rows.
 
-        ASSUMES: a kind's controls fit two rows at 1100 px. If a larger
-        font or longer value falsifies that, retain two rows and allow
-        horizontal scrolling instead of shifting the picture down.
+        ASSUMES: an individual field fits the viewport. An oversized field
+        falsifies this: it can pan, with a separate scrollbar band below
+        all full-height controls, rather than clipping the second row.
         """
         groups = [g for _key, g in self._prop_groups if not g.isHidden()]
+        if not groups:
+            return
+        before = (self._prop_partition, self.prop_strip.minimumSize(),
+                  self.prop_scroll.minimumHeight(), self.prop_scroll.maximumHeight())
+        for group in groups:
+            group.ensurePolished()
+            if group.layout() is not None:
+                group.layout().activate()
         widths = [g.sizeHint().width() for g in groups]
+        margins = self.prop_strip.layout().contentsMargins()
+        available = max(1, self.prop_scroll.viewport().width()
+                        - margins.left() - margins.right())
 
         def width(a, b):
             return sum(widths[a:b]) + max(0, b - a - 1) * 8
 
         cut = min(range(1, len(groups) + 1),
                   key=lambda i: max(width(0, i), width(i, len(groups))))
-        for row in (self.prop_row1, self.prop_row2):
-            layout = row.layout()
-            while layout.count() > 1:
-                layout.takeAt(0)
-        for index, group in enumerate(groups):
-            row = self.prop_row1 if index < cut else self.prop_row2
-            row.layout().insertWidget(row.layout().count() - 1, group)
-            group.show()  # Qt hides a widget when moving it to another row.
-        for row in (self.prop_row1, self.prop_row2):
-            row.layout().invalidate()
-        self.prop_strip.layout().invalidate()
+        # Hidden toolbars have no laid-out viewport yet. Keep their
+        # balanced pair until the real viewport's show/resize event.
+        if not self.isVisible() or not self.prop_scroll.isVisibleTo(self):
+            available = max(available, width(0, cut), width(cut, len(groups)))
+        parts = [groups[:cut], groups[cut:]]
+        if max(width(0, cut), width(cut, len(groups))) > available:
+            parts, start = [], 0
+            for index in range(len(groups)):
+                if index > start and width(start, index + 1) > available:
+                    parts.append(groups[start:index])
+                    start = index
+            parts.append(groups[start:])
+            if len(parts) == 1:
+                parts.append([])
+        signature = tuple(tuple(part) for part in parts)
+        if signature != self._prop_partition:
+            for row in self._prop_rows:
+                layout = row.layout()
+                while layout.count() > 1:
+                    layout.takeAt(0)
+            while len(self._prop_rows) < len(parts):
+                row = QWidget(self.prop_strip)
+                row.setFixedHeight(36)
+                layout = QHBoxLayout(row)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(8)
+                layout.addStretch(1)
+                self.prop_strip.layout().addWidget(row)
+                self._prop_rows.append(row)
+            for index, part in enumerate(parts):
+                row = self._prop_rows[index]
+                row.show()
+                for group in part:
+                    row.layout().insertWidget(row.layout().count() - 1, group)
+                    group.show()
+                row.layout().invalidate()
+            # Remove spare rows from the layout, preserving the original
+            # two row objects for the balanced-pair geometry contract.
+            while len(self._prop_rows) > len(parts):
+                row = self._prop_rows.pop()
+                for _key, group in self._prop_groups:
+                    if group.parentWidget() is row:
+                        group.setParent(self.prop_strip)
+                        group.hide()
+                self.prop_strip.layout().removeWidget(row)
+                row.deleteLater()
+            self._prop_partition = signature
+        minimum = max((sum(g.sizeHint().width() for g in part)
+                       + max(0, len(part) - 1) * 8 for part in parts), default=0)
+        self.prop_strip.setMinimumWidth(minimum + margins.left() + margins.right())
+        height = 4 + 36 * len(parts)
+        self.prop_strip.setMinimumHeight(height)
+        band = max(self.prop_scroll.style().pixelMetric(QStyle.PM_ScrollBarExtent),
+                   self.prop_scroll.horizontalScrollBar().sizeHint().height()) \
+            if minimum > available else 0
+        self.prop_scroll.setFixedHeight(height + band)
         self.prop_strip.layout().activate()
-        self.prop_strip.updateGeometry()
+        after = (self._prop_partition, self.prop_strip.minimumSize(),
+                 self.prop_scroll.minimumHeight(), self.prop_scroll.maximumHeight())
+        # The viewport's LayoutRequest rearms our zero timer. Notify its
+        # parent only for a changed partition or size, so idle reflow ends.
+        if after != before:
+            self.prop_strip.updateGeometry()
+
+    def _begin_live_format(self, control):
+        """Capture the actual caret at gesture start, never a last-input mode."""
+        self._live_format = None
+        item = self.doc.editing_item
+        if (item is not None and QApplication.focusWidget() is self.view
+                and item.editor.hasFocus()):
+            self._live_format = (control, self.doc, item, item.editor.textCursor())
+
+    def _live_format_focus_changed(self, old, now):
+        context = self._live_format
+        if context is None or now is None:
+            return
+        control = context[0]
+        expected = (self.view, self.f_font.view()) if control is self.f_font else (self.view,)
+        if now not in expected:
+            self._live_format = None  # a newer destination owns its typing
+
+    def _finish_live_format(self, control, resume=True):
+        context, self._live_format = self._live_format, None
+        if context is None or context[0] is not control or not resume:
+            return
+        _, doc, item, cursor = context
+        if self.doc is doc and doc.editing_item is item:
+            # ASSUMES: this still-live gesture has not been superseded by
+            # another focus owner. Consume it before restoring, so no later
+            # event, refresh, or window return can repeat the hand-back.
+            self.view.setFocus(Qt.PopupFocusReason)
+            item.editor.setFocus(Qt.PopupFocusReason)
+            item.editor.setTextCursor(cursor)
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt's name
+        if (hasattr(self, "f_font") and hasattr(self, "s_size")
+                and watched in (self.f_font.lineEdit(), self.s_size.lineEdit())
+                and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton):
+            # Editable combos/spins share their entry's focus policy. Keep
+            # the arrow TabFocus, and give a deliberate text-area click its
+            # focus here, in the same press, before normal text handling.
+            self._live_format = None
+            watched.setFocus(Qt.MouseFocusReason)
+        if watched is getattr(self, "s_size", None):
+            if (event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton):
+                option = QStyleOptionSpinBox()
+                self.s_size.initStyleOption(option)
+                hit = self.s_size.style().hitTestComplexControl(
+                    QStyle.CC_SpinBox, option, event.position().toPoint(), self.s_size)
+                if hit in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
+                    self._begin_live_format(self.s_size)
+            elif (event.type() == QEvent.MouseButtonRelease
+                  and event.button() == Qt.LeftButton):
+                self._finish_live_format(self.s_size)
+        if (watched is getattr(self, "view", None)
+                and event.type() == QEvent.KeyPress
+                and event.key() in (Qt.Key_Tab, Qt.Key_Backtab)
+                and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+                and self.doc.is_editing()):
+            self.doc.end_text_edit()
+            self.focusNextPrevChild(event.key() != Qt.Key_Backtab
+                                    and not event.modifiers() & Qt.ShiftModifier)
+            return True
+        timer = getattr(self, "_props_reflow", None)
+        if timer is not None and event.type() in (
+                QEvent.Resize, QEvent.FontChange, QEvent.StyleChange,
+                QEvent.LayoutRequest):
+            timer.start()
+        return super().eventFilter(watched, event)
 
     def _show_selection(self, items) -> None:
         """Plain words for the objects or new drawing the controls affect."""
@@ -1516,6 +2017,7 @@ class MainWindow(QMainWindow):
                 if key is not None:
                     picked[key] = value(item, key) if callable(value) else value
             item.apply_props(picked)
+            self.view.new_style_choice(item, props)
         for item in items:
             self.view.remember_style(item, props)
         self.refresh_props()
@@ -1550,11 +2052,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _taken(seq: QKeySequence, owner: str) -> str:
-        return (f"{seq.toString(QKeySequence.NativeText)} is already used "
+        return (f"{key_words(seq)} is already used "
                 f"by {owner}.")
 
-    def _use_shortcuts(self, key: str, seqs: list) -> None:
+    def _use_shortcuts(self, key: str, seqs: list) -> bool:
         a = self.shortcut_actions[key]
+        changed = a.shortcuts() != seqs
         a.setShortcuts(seqs)
         if a in (self.a_undo, self.a_redo):
             self._sync_undo()
@@ -1563,8 +2066,16 @@ class MainWindow(QMainWindow):
         if key == "capture":
             previous = self.statusBar().currentMessage()
             self._update_capture_hint()
-            if not previous or previous.endswith("to take a screenshot"):
+            if changed and (not previous or previous.endswith("to take a screenshot")):
                 self.statusBar().showMessage(self.capture_status(), 8000)
+        return changed
+
+    def _reapply_hotkey_after_shortcut_change(self, changed: bool) -> None:
+        if (changed and not self.hotkey_off() and self.hotkey.available
+                and not self.hotkey.registered):
+            problem = self.apply_hotkey()
+            if not problem and self.statusBar().currentMessage().startswith(HOTKEY_NAME):
+                self.statusBar().clearMessage()
 
     def set_shortcut(self, key: str, seq: QKeySequence) -> str | None:
         """Give an action its own key (an empty one removes its key). The
@@ -1573,9 +2084,12 @@ class MainWindow(QMainWindow):
         owner = self._key_owner(seq, skip=key)
         if owner:
             return self._taken(seq, owner)
-        self._use_shortcuts(key, [] if seq.isEmpty() else [seq])
+        if not seq.isEmpty() and seq == self.shortcut_actions[key].shortcut():
+            return None
+        changed = self._use_shortcuts(key, [] if seq.isEmpty() else [seq])
         self.settings.setValue(f"shortcuts/{key}",
                                seq.toString(QKeySequence.PortableText))
+        self._reapply_hotkey_after_shortcut_change(changed)
         return None
 
     def reset_shortcut(self, key: str) -> str | None:
@@ -1585,15 +2099,20 @@ class MainWindow(QMainWindow):
             owner = self._key_owner(seq, skip=key)
             if owner:
                 return self._taken(seq, owner)
-        self._use_shortcuts(key, list(self.default_shortcuts[key]))
+        changed = self._use_shortcuts(key, list(self.default_shortcuts[key]))
         self.settings.remove(f"shortcuts/{key}")
+        self._reapply_hotkey_after_shortcut_change(changed)
         return None
 
-    def reset_all_shortcuts(self) -> None:
+    def reset_all_shortcuts(self) -> str | None:
         for key in self.shortcut_actions:
             self._use_shortcuts(key, list(self.default_shortcuts[key]))
         self.settings.remove("shortcuts")
-        self.settings.remove("hotkey/sequence")
+        self._reset_key = True
+        try:
+            return self.apply_hotkey()
+        finally:
+            self._reset_key = False
 
     def _apply_saved_shortcuts(self) -> None:
         """At start: the keys saved under shortcuts/<key>. One that clashes
@@ -1614,45 +2133,259 @@ class MainWindow(QMainWindow):
     def hotkey_off(self) -> bool:
         return self.settings.value("hotkey/off", False, type=bool)
 
-    def set_hotkey(self, seq: QKeySequence, off: bool) -> str | None:
-        """Save the capture key and whether it is off, then register it.
-        A key an action uses is refused (nothing saved); a key the system
-        refuses is kept as typed and the reason returned."""
-        seq = QKeySequence(seq)
-        if not off:
-            owner = self._key_owner(seq, skip="hotkey")
-            if owner:
-                return self._taken(seq, owner)
-        self.settings.setValue("hotkey/sequence",
-                               seq.toString(QKeySequence.PortableText))
-        self.settings.setValue("hotkey/off", bool(off))
+    def key_state(self):
+        """The single published result read by every capture-key surface."""
+        if not hasattr(self, "_key_snapshot"):
+            self._key_snapshot = self._make_key_state()
+        return self._key_snapshot
+
+    def _make_key_state(self):
+        requested = self.hotkey_sequence()
+        held = self.hotkey.sequence if self.hotkey.registered else QKeySequence()
+        off = self.hotkey_off()
+        trying = self._key_try is not None
+        confirmed = self._key_ready and not off and not held.isEmpty()
+        key = key_words(held) if confirmed else ""
+        if not self._key_ready:
+            button, line, face = "Capture key", "Setting up the capture key…", "plain"
+        elif off and not self.hotkey.registered:
+            button, line, face = "Key off", "Capture key is off.", "plain"
+        elif off:
+            button, line, face = "Choose another key", self._key_feedback, "amber"
+        elif key:
+            button, line, face = key, f"Capture from anywhere with {key}", "green" if self._key_green else "plain"
+        else:
+            button, face = "Choose another key", "amber"
+            line = (self._key_feedback if self._key_feedback and
+                    not self._key_feedback.startswith(key_words(requested) + " is taken")
+                    else f"{key_words(requested)} is unavailable.")
+        if self._key_line:
+            line = self._key_line
+        live = key if not trying else ""
+        menu = (["Retry turn off"] if off and self.hotkey.registered else
+                ["Turn on"] if off else ["Try this key", "Change key", "Turn off"])
+        outcome = self._key_feedback
+        if self._key_edit_error:
+            reasons = [self._key_edit_error]
+            if self._key_edit_qualified and (self.hotkey._retained or (off and self.hotkey.registered)):
+                failed = (self.hotkey._retained[0][1] if self.hotkey._retained else held)
+                reasons.append(hotkey.RELEASE.format(key=key_words(failed)))
+            elif self._key_edit_qualified and not off and held.isEmpty():
+                reasons.append(f"{key_words(requested)} is unavailable.")
+            outcome = "\n".join(dict.fromkeys(reasons))
+        return dict(requested=QKeySequence(requested), off=off,
+                    held=QKeySequence(held), outcome=outcome,
+                    button=button, line=line, face=face, menu=menu,
+                    live=live, notice_key=key)
+
+    def _publish_key(self):
+        self._key_snapshot = self._make_key_state()
+        self.keyStateChanged.emit()
         if hasattr(self, "welcome"):
-            self.welcome.refresh()
+            self.welcome.refresh_key()
         if self.tray is not None:
             self.tray.refresh()
-        return self.apply_hotkey()
+        if self._help_window is not None:
+            self._help_window.refresh(self.shortcut_rows())
 
-    def apply_hotkey(self) -> str | None:
-        """Register the saved capture key (main() calls this once the window
-        is up). The reason, also on the status line, when it cannot be."""
-        self.hotkey.clear()
-        if self.hotkey_off() or not self.hotkey.available:
-            return None
-        problem = self.hotkey.set_sequence(self.hotkey_sequence())
-        if problem:
-            self.statusBar().showMessage(f"{HOTKEY_NAME}: {problem}", 10000)
+    def _key_status(self, text="", error=False):
+        if text:
+            message = f"{HOTKEY_NAME}: {text}" if error else text
+            self._last_key_status = message
+            self.statusBar().showMessage(message, 10000)
+        elif (self.statusBar().currentMessage() == getattr(self, "_last_key_status", None)
+              or self.statusBar().currentMessage().startswith(HOTKEY_NAME + ":")):
+            self.statusBar().clearMessage()
+
+    def validate_capture_key(self, seq):
+        problem = hotkey.check(seq)
+        if not problem:
+            owner = self._key_owner(seq, skip="hotkey")
+            problem = self._taken(seq, owner) if owner else None
+        if not problem and ((sys.platform == "darwin" and hotkey.mac_combo(seq) is None)
+                            or (sys.platform == "win32" and hotkey.win_combo(seq) is None)):
+            problem = hotkey.UNKNOWN_KEY
         return problem
 
+    def end_key_interaction(self):
+        self.end_key_try()
+        self.welcome.cancel_recording()
+
+    def set_hotkey(self, seq: QKeySequence, off: bool, settings_edit=False) -> str | None:
+        return self._apply_key(QKeySequence(seq), off, save=True, settings_edit=settings_edit)
+
+    def _apply_key(self, seq, off, save=False, reset=False, settings_edit=False):
+        self.end_key_try()
+        was_off = self.hotkey_off()
+        # Disabling an existing choice must work even for legacy invalid keys.
+        new_choice = seq != self.hotkey_sequence()
+        problem = None
+        if not off or new_choice or reset:
+            problem = self.validate_capture_key(seq)
+        if problem and (save or reset):
+            self._key_edit_error = problem
+            self._key_edit_qualified = settings_edit or reset
+            if self._key_line != "Annotshot received your key":
+                self._key_line = ""
+            self._key_status(problem, error=True)
+            self._publish_key()
+            return problem
+        self.welcome.cancel_recording()
+        self._key_edit_error = ""
+        before = QKeySequence(self.hotkey.sequence)
+        previously_held = self.hotkey.registered
+        previous_feedback = self._key_feedback
+        self._key_line = ""
+        if not self.hotkey.available:
+            problem = self.hotkey.clear()
+        elif off:
+            problem = self.hotkey.clear()
+        elif not problem:
+            problem = self.hotkey.set_sequence(seq)
+        accepted = self.hotkey.registered and self.hotkey.sequence == seq
+        refused_swap = previously_held and not off and not accepted
+        if (refused_swap and problem and not self.hotkey.cleanup_blocked
+                and " is taken by the system or another app" in problem):
+            problem = hotkey.STILL_USING.format(new=key_words(seq), old=key_words(before))
+            if not was_off:
+                self._key_line = problem
+        if refused_swap and was_off and not self.hotkey.cleanup_blocked:
+            problem = previous_feedback
+        # Save only a successful replacement, or a requested choice when
+        # nothing was held. Off is an explicit preference even on release error.
+        can_save = not self.hotkey.cleanup_blocked and (accepted or not previously_held)
+        if off:
+            can_save = not problem
+        if (save or reset) and can_save:
+            if reset:
+                self.settings.remove("hotkey/sequence")
+            elif new_choice:
+                self.settings.setValue("hotkey/sequence", seq.toString(QKeySequence.PortableText))
+        if save and off:
+            self.settings.setValue("hotkey/off", True)
+        elif save and was_off and can_save:
+            self.settings.setValue("hotkey/off", False)
+        if before != self.hotkey.sequence:
+            self._key_green = False
+        self._key_ready = True
+        self._key_feedback = problem or ""
+        self._hotkey_problem = problem
+        self._key_status(problem or "", error=bool(problem))
+        self._publish_key()
+        return problem
+
+    def apply_hotkey(self) -> str | None:
+        reset = getattr(self, "_reset_key", False)
+        seq = QKeySequence(hotkey.DEFAULT) if reset else self.hotkey_sequence()
+        return self._apply_key(seq, self.hotkey_off(), reset=reset)
+
+    def try_capture_key(self):
+        self.end_key_interaction()
+        if self.hotkey_off():
+            return
+        state = self.key_state()
+        if not state["live"] or self.hotkey._retained:
+            if self.apply_hotkey():
+                return
+        self._key_feedback = ""
+        self._hotkey_problem = None
+        self._key_edit_error = ""
+        self._key_status()
+        self._key_epoch += 1
+        epoch = self._key_epoch
+        self._key_try = dict(epoch=epoch, phase="beat", sequence=QKeySequence(self.hotkey.sequence), timers=[])
+        self._key_green = False
+        self._key_line = f"Press {key_words(self.hotkey.sequence)} now."
+        self._key_status()
+        self._publish_key()
+        def minimize():
+            if not self._current_key_try(epoch):
+                return
+            self._key_try["phase"] = "minimizing"
+            self.showMinimized()
+            self._arm_key_try()
+            self._schedule_key_try(2000, lambda: self._key_minimize_failed(epoch))
+        self._schedule_key_try(1000, minimize)
+
+    def _schedule_key_try(self, milliseconds, callback):
+        self._key_try["timers"].append(self.key_clock.call_later(milliseconds, callback))
+
+    def _current_key_try(self, epoch):
+        return self._key_try is not None and self._key_try["epoch"] == epoch
+
+    def _arm_key_try(self):
+        if (not self._key_try or self._key_try["phase"] != "minimizing"
+                or not self.isMinimized()):
+            return
+        self._key_try["phase"] = "armed"
+        self._key_try["native_start"] = self.hotkey.try_boundary()
+        epoch = self._key_try["epoch"]
+        self._schedule_key_try(10000, lambda: self._key_try_timeout(epoch))
+
+    def _key_minimize_failed(self, epoch):
+        if self._current_key_try(epoch) and self._key_try["phase"] != "armed":
+            self.end_key_try("Annotshot could not minimize for the try.")
+            self._key_line = "Annotshot could not minimize for the try."
+            self._publish_key()
+
+    def _key_try_timeout(self, epoch):
+        if self._current_key_try(epoch):
+            self.end_key_try("No press received", restore=True)
+
+    def end_key_try(self, result="", restore=False):
+        if self._key_try is None:
+            return
+        self.hotkey.finish_try()
+        for cancel in self._key_try["timers"]:
+            if cancel is not None:
+                cancel()
+        self._key_try = None
+        self._key_epoch += 1
+        self._key_line = result if result in ("No press received", "Annotshot received your key") else ""
+        self._key_green = result == "Annotshot received your key"
+        self._key_status(result)
+        self._publish_key()
+        if restore:
+            self._key_restoring = True
+            try:
+                self.show_welcome()
+                self.showNormal()
+                self._show_again()
+                self.welcome.capture_bar.key_button.setFocus(Qt.OtherFocusReason)
+            finally:
+                self._key_restoring = False
+
+    def _native_capture_key(self, event):
+        seq, pressed, repeat, epoch = event[:4]
+        native_time = event[4] if len(event) > 4 else None
+        if (not pressed or repeat or epoch != self._key_epoch
+                or not self.hotkey.after_latest_try(native_time)):
+            return
+        if any(getattr(child, "capture_key_has_focus", lambda: False)()
+               for child in self.findChildren(QDialog)):
+            return
+        if self._key_try:
+            if (self._key_try["phase"] == "armed" and self.isMinimized()
+                    and seq == self._key_try["sequence"]
+                    and self.hotkey.after_boundary(native_time, self._key_try["native_start"])):
+                self.end_key_try("Annotshot received your key", restore=True)
+            return
+        if (getattr(self.welcome, "recording", False)
+                or any(getattr(child, "capture_key_has_focus", lambda: False)()
+                       for child in self.findChildren(QDialog))):
+            return
+        self.capture_from_anywhere()
+
     def capture_from_anywhere(self) -> None:
-        """Start a capture while preserving a hidden window's return state."""
+        """Ordinary capture, including a tray click; never a try receipt."""
+        self.end_key_interaction()
         if self._capture is None and not self._capture_pending:
             if self.isMinimized():
                 self.showNormal()
             self.capture()
 
     def capture_key_text(self):
-        seq = self.hotkey_sequence()
-        return "" if self.hotkey_off() or seq.isEmpty() else seq.toString(QKeySequence.NativeText)
+        return self.key_state()["live"]
 
     def keep_running(self):
         # ASSUMES: keep-running is on. Turning it off restores quit on close.
@@ -1686,10 +2419,13 @@ class MainWindow(QMainWindow):
                  QSystemTrayIcon.isSystemTrayAvailable()))
 
     def reopen(self):
+        self.end_key_try("Try cancelled")
         if self._capture is not None or self._capture_pending:
             return
         if not self.isVisible():
             self.show_welcome()
+        if self.isMinimized():
+            self.showNormal()
         self._show_again()
 
     def quit_app(self):
@@ -1728,8 +2464,8 @@ class MainWindow(QMainWindow):
                 for key, name in SHORTCUT_ROWS]
         rows.append(("Stop typing, then clear the selection",
                      self.a_escape.shortcuts()))
-        on = self.hotkey.available and not self.hotkey_off()
-        rows.append((HOTKEY_NAME, [self.hotkey_sequence()] if on else []))
+        state = self.key_state()
+        rows.append((HOTKEY_NAME, [state["held"]] if state["live"] else []))
         return rows
 
     def show_help(self) -> None:
@@ -1758,6 +2494,7 @@ class MainWindow(QMainWindow):
         self.open_settings(tab="Shortcuts")
 
     def open_settings(self, tab=None) -> None:
+        self.end_key_try("Try cancelled")
         from .settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
         if tab == "Shortcuts":
@@ -1980,6 +2717,7 @@ class MainWindow(QMainWindow):
         """Open…: the discard question, then the Open window. A file chosen
         in the Open window is the newest choice, so it replaces one that
         arrived from Finder meanwhile."""
+        self.end_key_interaction()
         if self._opening:
             return                      # one open at a time
 
@@ -2001,6 +2739,7 @@ class MainWindow(QMainWindow):
         running (its question on screen) the file is kept instead, and it
         opens when that open returns; False then."""
         path = os.path.abspath(path)    # never a folder relative to the cwd
+        self.end_key_interaction()
         if self._opening:
             self._kept = path           # the newest wins
             return False
@@ -2090,6 +2829,7 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def closeEvent(self, event):
+        self.end_key_interaction()
         if self._restart_save is not None:
             self._restart_save = None
             self._restart_pending = False
@@ -2173,6 +2913,7 @@ class MainWindow(QMainWindow):
 
     # -- capture ----------------------------------------------------------
     def capture(self, mode=None) -> None:
+        self.end_key_interaction()
         if self._capture is not None or self._capture_pending:
             return
         if not self._may_record_screen() or not self.maybe_discard():
@@ -2218,7 +2959,7 @@ class MainWindow(QMainWindow):
         if self.quick_copy():           # quick capture: straight out
             QApplication.clipboard().setImage(self.doc.render_image())
             self._exported()
-            self.statusBar().showMessage(f"Copied {size} — {QKeySequence(QKeySequence.Paste).toString(QKeySequence.NativeText)} to paste")
+            self.statusBar().showMessage(f"Copied {size} — {key_words(QKeySequence(QKeySequence.Paste))} to paste")
             if self.quick_minimize() and self._capture_was_visible:
                 self.showMinimized()
             return

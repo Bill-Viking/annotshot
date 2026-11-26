@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import (QDateTime, QObject, QRect, QRunnable, QSize, Qt,
+from PySide6.QtCore import (QDateTime, QEvent, QObject, QRect, QRunnable, QSize, Qt,
                             QThreadPool, QUrl, Signal)
 from PySide6.QtGui import (QDesktopServices, QFont, QIcon, QImage,
                            QImageReader, QPainter, QPixmap)
@@ -339,6 +339,15 @@ class _ThumbList(QListWidget):
     """The column of thumbnails: as wide as one thumbnail and its scroll
     bar, so the docked pane takes no more of the canvas than it needs."""
 
+    def event(self, event):
+        if (event.type() == QEvent.ShortcutOverride
+                and not event.modifiers() & (Qt.ControlModifier
+                                             | Qt.AltModifier | Qt.MetaModifier)
+                and event.text() and event.text().isprintable()):
+            event.accept()
+            return True  # QListWidget receives the ordinary search KeyPress
+        return super().event(event)
+
     def sizeHint(self) -> QSize:
         bar = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
         return QSize(self.gridSize().width() + 2 * self.frameWidth() + bar + 4,
@@ -365,6 +374,7 @@ class RecentPane(QDockWidget):
         self.store = store
         self._thumbs: dict[tuple[str, int], QPixmap] = {}
         self._last_click: tuple[str, int] | None = None
+        self.opening_thumbnail = False
         body = QWidget(self)
         box = QVBoxLayout(body)
         box.setContentsMargins(6, 6, 6, 6)
@@ -487,7 +497,14 @@ class RecentPane(QDockWidget):
     def _clicked(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.UserRole)
         self._last_click = (path, _now_ms())
-        self.openRequested.emit(path)
+        self._request_thumbnail(path)
+
+    def _request_thumbnail(self, path: str) -> None:
+        self.opening_thumbnail = True
+        try:
+            self.openRequested.emit(path)
+        finally:
+            self.opening_thumbnail = False
 
     def _double_clicked(self, item: QListWidgetItem) -> None:
         """A double-click opens too; the click just before it already asked,
@@ -498,7 +515,7 @@ class RecentPane(QDockWidget):
         if last and last[0] == path and \
                 _now_ms() - last[1] <= QApplication.doubleClickInterval():
             return
-        self.openRequested.emit(path)
+        self._request_thumbnail(path)
 
     # -- the right-click menu -----------------------------------------------------
     def menu_for(self, item: QListWidgetItem | None) -> QMenu:

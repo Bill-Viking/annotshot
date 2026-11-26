@@ -9,6 +9,8 @@ from PySide6.QtGui import QColor, QImage, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from annotshot.keywords import key_words
+
 # annotshot.__main__ is left out on purpose: importing it starts the app.
 MODULES = ["annotshot", "annotshot.app", "annotshot.items", "annotshot.commands", "annotshot.scene", "annotshot.view",
            "annotshot.tools", "annotshot.capture", "annotshot.mainwindow",
@@ -72,8 +74,7 @@ def test_tool_drag_creates_one_item_then_move_is_one_step(window):
     assert rect.geom() == (round(p0.x()), round(p0.y()),
                            round(p1.x()) - round(p0.x()), round(p1.y()) - round(p0.y()))
     assert doc.undo_stack.count() == 1 and rect.isSelected()
-    assert view.tool is Tool.RECT and window.tool_actions[Tool.RECT].isChecked()
-    window.tool_actions[Tool.SELECT].trigger()
+    assert view.tool is Tool.SELECT and window.tool_actions[Tool.SELECT].isChecked()
     g = rect.geom()
     drag(view, QPoint(180, 150), QPoint(230, 170))         # move it
     assert doc.undo_stack.count() == 2
@@ -375,7 +376,7 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
                 assert a.toolTip().startswith(
                     {"Front": "Bring to front", "Back": "Send to back"}.get(
                         a.text(), a.text())), a.toolTip()
-                assert a.toolTip().endswith("(" + a.shortcut().toString(QKeySequence.NativeText) + ")")
+                assert a.toolTip().endswith("(" + key_words(a.shortcut()) + ")")
             else:
                 assert style == Qt.ToolButtonTextBesideIcon, a.text()
     assert window.a_dup.shortcut().toString() == "Ctrl+D"
@@ -665,9 +666,9 @@ def test_the_save_actions_say_what_they_keep(window):
     assert mainwindow.OPEN_FILTER == "Annotshot editable (*.annotshot *.snagup)"
 
 
-def test_pen_tool_drag_draws_one_stroke_and_stays_pen(window):
+def test_pen_tool_drag_draws_one_stroke_then_selects(window):
     """A drag with the Pen tool makes ONE pen stroke through the drag's
-    points; the tool stays Pen; a drag under 4 px makes nothing."""
+    points; completion selects; a drag under 4 px keeps Pen armed."""
     from annotshot.items import PenItem
     from annotshot.tools import Tool
     view, doc = window.view, window.doc
@@ -688,7 +689,9 @@ def test_pen_tool_drag_draws_one_stroke_and_stays_pen(window):
     assert (round(last.x()), round(last.y())) == (round(s1.x()), round(s1.y()))
     assert doc.undo_stack.count() == 1 and not pen.isSelected()
     assert doc.undo_stack.undoText() == "Add Pen stroke"
-    assert view.tool is Tool.PEN and window.tool_actions[Tool.PEN].isChecked()
+    assert view.tool is Tool.SELECT and window.tool_actions[Tool.SELECT].isChecked()
+    assert not doc.selected()
+    window.tool_actions[Tool.PEN].trigger()
     assert window.sel_heading.text() == "New pen strokes"
     assert window.c_border.isEnabled() and window.s_width.isEnabled()
     assert window.sl_opacity.isEnabled()
@@ -758,7 +761,7 @@ def test_the_font_box_shows_the_selection_or_the_default(window):
     window.refresh_props()
     assert window.f_font.currentText() == default != "VT323"
     assert window.f_font.isEnabled() and window.s_size.isEnabled()
-    assert window.s_size.value() == TextBoxItem.DEFAULTS["font_px"]
+    assert window.s_size.value() == 32
     assert not window.b_bold.isChecked() and not window.b_italic.isChecked()
     pixel, plain = TextBoxItem(), TextBoxItem()
     pixel.set_geom((10, 10, 200, 50))

@@ -73,7 +73,7 @@ def test_a_callout_is_drawn_by_drag_and_starts_typing(window):
     c.editor.textCursor().insertText("Look here")
     window.escape()
     assert c.props["text"] == "Look here" and not c.is_editing
-    assert view.tool is Tool.CALLOUT
+    assert view.tool is Tool.SELECT
 
 
 def test_a_plain_click_places_a_ready_sized_callout(window):
@@ -284,7 +284,7 @@ def test_about_says_what_who_where_and_the_licence(window):
     from PySide6.QtWidgets import QLabel, QPushButton
     w = about_widget()
     texts = labels_of(w)
-    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.3"
+    assert f"Annotshot {__version__}" in texts and __version__ == "0.4.4"
     assert ABOUT_LINE in texts and PUBLISHER == "Bill Moldestad"
     assert PUBLISHER in texts and "MIT licence" in texts
     assert PROJECT_URL == "https://github.com/Bill-Viking/annotshot"
@@ -365,8 +365,9 @@ def test_help_shows_the_manual_with_the_live_keys_at_the_top(window, no_show):
     assert keys < text.index("What Annotshot is")      # at the top
     assert text.index("Annotshot user manual") < keys
     yours = text[keys:text.index("What Annotshot is")]
-    k = QKeySequence("Ctrl+K").toString(QKeySequence.NativeText)
     from annotshot.help import _cell, shortcuts_markdown
+    from annotshot.keywords import key_words
+    k = key_words(QKeySequence("Ctrl+K"))
     md = shortcuts_markdown(window.shortcut_rows())
     assert f"| {_cell(k)} | Copy image |" in md      # the user's key now
     assert k in yours and "Copy image" in yours
@@ -376,7 +377,7 @@ def test_help_shows_the_manual_with_the_live_keys_at_the_top(window, no_show):
     window.set_shortcut("copy", QKeySequence("Ctrl+J"))
     window.show_help()
     assert window._help_window is h
-    j = QKeySequence("Ctrl+J").toString(QKeySequence.NativeText)
+    j = key_words(QKeySequence("Ctrl+J"))
     assert j in h.browser.toPlainText()
 
 

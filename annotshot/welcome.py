@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QKeyCombination, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QPushButton,
+                               QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from . import recent, theme
+from . import hotkey, recent, theme
 from .capture import BAR_STYLE, CaptureBar, GLOW_MARGIN
+from .keywords import key_words
 
 
 class _WelcomeLinkRow(QHBoxLayout):
@@ -19,6 +20,121 @@ class _WelcomeLinkRow(QHBoxLayout):
         super().setGeometry(rect)
         # The trailing stretch can resize the row without moving either link.
         self.geometryChanged.emit()
+
+
+class KeyButton(QPushButton):
+    """A secondary menu button whose word label wraps at its own width."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setFixedWidth(166)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.label = QLabel(self)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.label.setStyleSheet("padding: 0; background: transparent; border: 0;")
+        self.face = "plain"
+
+    def sizeHint(self):
+        return QSize(166, max(34, self.height()))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def set_face(self, text, face):
+        self.setText(text)
+        self.face = face
+        width = self.width() - 32
+        lines, line = [], ""
+        visible = ("✓ " if face == "green" else "") + text
+        for word in visible.replace("+", "+ ").split():
+            addition = (" " if line and not line.endswith("+") else "") + word
+            if line and self.label.fontMetrics().horizontalAdvance(line + addition) > width:
+                lines.append(line)
+                line = word
+            else:
+                line += addition
+        lines.append(line)
+        self.label.setText("\n".join(lines))
+        self.setFixedHeight(max(34, len(lines) * self.label.fontMetrics().height() + 16))
+        color = {"plain": "white", "green": "#91efae", "amber": "#ffd283"}[face]
+        self.label.setStyleSheet(f"color: {color}; padding: 0; background: transparent; border: 0;")
+        self.label.setGeometry(6, 4, self.width() - 26, self.height() - 8)
+
+    def paintEvent(self, event):
+        from PySide6.QtWidgets import QStyle, QStyleOptionButton, QStylePainter
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""  # the child paints the wrapped label
+        painter = QStylePainter(self)
+        painter.drawControl(QStyle.CE_PushButton, option)
+
+
+class InlineRecorder(QWidget):
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.setFocusPolicy(Qt.StrongFocus)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        self.prompt = QLabel("Press the new capture key.", self)
+        self.draft = QLabel(self)
+        self.error = QLabel(self)
+        for label in (self.prompt, self.draft, self.error):
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+            layout.addWidget(label)
+        self.cancel = QPushButton("Cancel", self)
+        self.cancel.clicked.connect(page.cancel_recording)
+        layout.addWidget(self.cancel, 0, Qt.AlignLeft)
+
+    def show_error(self, text):
+        self.error.setText(text)
+        self.error.setMinimumHeight(self.error.heightForWidth(max(1, self.width())))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.error.text():
+            self.error.setMinimumHeight(self.error.heightForWidth(max(1, self.width())))
+
+    def event(self, event):
+        if event.type() == QEvent.ShortcutOverride:
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        event.accept()
+        if event.isAutoRepeat():
+            return
+        if event.key() == Qt.Key_Escape and event.modifiers() == Qt.NoModifier:
+            self.page.cancel_recording()
+            return
+        modifiers = (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
+                     Qt.Key_AltGr)
+        if event.key() in modifiers:
+            words = key_words(QKeySequence(QKeyCombination(event.modifiers(), Qt.Key_Space)))
+            self.draft.setText(words.removesuffix("+Space").removesuffix("Space"))
+            return
+        seq = QKeySequence(QKeyCombination(event.modifiers(), Qt.Key(event.key())))
+        self.draft.setText(key_words(seq))
+        w = self.page.window_
+        problem = w.validate_capture_key(seq)
+        w.set_hotkey(seq, w.hotkey_off())
+        if problem:
+            self.show_error(problem)
+
+    def keyReleaseEvent(self, event):
+        event.accept()
+        modifiers = {Qt.Key_Control: Qt.ControlModifier, Qt.Key_Shift: Qt.ShiftModifier,
+                     Qt.Key_Alt: Qt.AltModifier, Qt.Key_Meta: Qt.MetaModifier,
+                     Qt.Key_AltGr: Qt.GroupSwitchModifier}
+        if event.key() in modifiers:
+            held = event.modifiers() & ~modifiers[event.key()]
+            words = key_words(QKeySequence(QKeyCombination(held, Qt.Key_Space)))
+            self.draft.setText(words.removesuffix("+Space").removesuffix("Space"))
+
 
 
 class WelcomeCaptureBar(CaptureBar):
@@ -59,6 +175,16 @@ class WelcomeCaptureBar(CaptureBar):
         self.capture_button.setObjectName("shoot")
         self.capture_button.clicked.connect(lambda: window.capture())
         layout.addWidget(self.capture_button)
+        self.key_button = None
+        if sys.platform != "linux":
+            self.key_button = KeyButton(self)
+            self.key_button.setToolTip("Capture key")
+            self.key_menu = QMenu(self.key_button)
+            self.key_button.setMenu(self.key_menu)
+            self.key_menu.aboutToHide.connect(
+                lambda: self.key_button.setFocus(Qt.OtherFocusReason))
+            self.key_button.installEventFilter(parent)
+            layout.addWidget(self.key_button)
         self.refresh()
 
     def set_timer(self, seconds):
@@ -105,7 +231,11 @@ class WelcomeWidget(QWidget):
         self.intro.setWordWrap(True)
         left.addWidget(self.intro)
         self.key_row = self._row(left, "capture")
-        self.key_row.linkActivated.connect(lambda _: window.open_shortcut_settings())
+        self.key_row.setTextFormat(Qt.PlainText)
+        self.recording = False
+        self.recorder = InlineRecorder(self)
+        self.key_row.row_widget.layout().addWidget(self.recorder, 1)
+        self.recorder.hide()
         self.copy_row = self._row(left, "copy-image")
         self.copy_row.setText("Every capture is copied, ready to paste.")
         self.privacy_row = self._row(left, "lock")
@@ -130,11 +260,13 @@ class WelcomeWidget(QWidget):
         QWidget.setTabOrder(self.open_link, self.feedback_link)
         self.status_label = QLabel(self)
         self.status_label.setTextFormat(Qt.PlainText)
-        # Use the existing space below Open without changing the layout.
+        self.status_label.setWordWrap(True)
+        self.status_label.installEventFilter(self)
+        # Recompute wrapping when the links or theme change.
         self.link_row.geometryChanged.connect(self._place_status)
         self.open_link.installEventFilter(self)
         self.feedback_link.installEventFilter(self)
-        window.statusBar().messageChanged.connect(self.status_label.setText)
+        window.statusBar().messageChanged.connect(self.refresh_status)
         self.status_label.setText(window.statusBar().currentMessage())
         left.addStretch()
         body.addLayout(left, 1)
@@ -160,8 +292,23 @@ class WelcomeWidget(QWidget):
         bottom.addStretch()
         outer.addLayout(bottom)
         self.refresh()
+        self.recorder.cancel.installEventFilter(self)
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self, "status_label", None) and event.type() in (QEvent.Resize, QEvent.FontChange):
+            self._place_status()
+        key_button = getattr(getattr(self, "capture_bar", None), "key_button", None)
+        if watched in (key_button, self.recorder.cancel) and event.type() == QEvent.ShortcutOverride:
+            if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape):
+                event.accept()
+                return True
+        if watched is key_button and event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if not event.isAutoRepeat():
+                key_button.showMenu()
+            return True
+        if watched is self.recorder.cancel and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self.cancel_recording()
+            return True
         if watched in (self.open_link, self.feedback_link) and event.type() in (
                 QEvent.ShortcutOverride, QEvent.KeyPress):
             if not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
@@ -187,11 +334,16 @@ class WelcomeWidget(QWidget):
         return super().eventFilter(watched, event)
 
     def _place_status(self):
+        from PySide6.QtCore import QRect
+        label = self.status_label
         rect = self.open_link.geometry()
         rect.setWidth(self.link_row.geometry().width())
-        rect.moveTop(rect.bottom() + 11)
-        rect.setHeight(self.status_label.fontMetrics().height())
-        self.status_label.setGeometry(rect)
+        rect.moveTop(rect.bottom() + 1)
+        painted = label.fontMetrics().boundingRect(
+            QRect(0, 0, max(1, rect.width()), 10000),
+            Qt.TextWordWrap | Qt.AlignLeft, label.text())
+        rect.setHeight(max(painted.height(), label.heightForWidth(rect.width())))
+        label.setGeometry(rect)
 
     def _row(self, layout, icon):
         row = QWidget(self)
@@ -212,24 +364,80 @@ class WelcomeWidget(QWidget):
 
     def refresh(self):
         w = self.window_
-        # ASSUMES: the capture key is set. Clearing it offers the setup link.
-        seq = w.hotkey_sequence()
-        key = "" if w.hotkey_off() or seq.isEmpty() else seq.toString(QKeySequence.NativeText)
-        from html import escape
-        self.key_row.setText(
-            f'Capture from anywhere with {escape(key)} <a href="keys">Change keys</a>'
-            if key else '<a href="keys">Set a key to capture from anywhere</a>')
+        self.refresh_key()
         self.copy_row.row_widget.setVisible(w.quick_copy())
         where = "this Mac" if sys.platform == "darwin" else "this PC" if sys.platform == "win32" else "this computer"
         self.privacy_row.setText(
             f'Private. Your pictures stay on {where}. Annotshot sends nothing anywhere. '
             '<a href="privacy">How it stays private</a>')
-        self.running_row.setText(
-            f"Close this window and Annotshot keeps running; {escape(key)} still captures.")
-        self.running_row.row_widget.setVisible(w.can_hide_on_close() and bool(key))
+        self.running_row.setText("Close this window to keep Annotshot running.")
+        self.running_row.row_widget.setVisible(w.can_hide_on_close())
         self.capture_bar.refresh()
         self.refresh_recent()
         self.retheme()
+
+    def refresh_status(self, message=None):
+        text = self.window_.statusBar().currentMessage()
+        if text == self.window_.key_state()["line"]:
+            text = ""
+        self.status_label.setText(text)
+        self._place_status()
+
+    def refresh_key(self):
+        state = self.window_.key_state()
+        self.key_row.setText(state["line"])
+        self.key_row.row_widget.setVisible(sys.platform != "linux")
+        button = self.capture_bar.key_button if hasattr(self, "capture_bar") else None
+        if button is not None:
+            button.set_face(state["button"], state["face"])
+            button.setAccessibleName(f'Capture key: {state["button"]}')
+            previous = button.accessibleDescription()
+            button.setAccessibleDescription(state["line"])
+            if previous != state["line"]:
+                from PySide6.QtGui import QAccessible, QAccessibleEvent
+                QAccessible.updateAccessibility(QAccessibleEvent(button, QAccessible.DescriptionChanged))
+            menu = self.capture_bar.key_menu
+            menu.clear()
+            commands = {"Try this key": self.window_.try_capture_key,
+                        "Change key": self.start_recording,
+                        "Turn off": lambda: self.window_.set_hotkey(self.window_.hotkey_sequence(), True),
+                        "Turn on": lambda: self.window_.set_hotkey(self.window_.hotkey_sequence(), False),
+                        "Retry turn off": lambda: self.window_.set_hotkey(self.window_.hotkey_sequence(), True)}
+            for name in state["menu"]:
+                menu.addAction(name).triggered.connect(commands[name])
+        if hasattr(self, "status_label"):
+            self.refresh_status()
+
+    def start_recording(self):
+        self.window_.end_key_interaction()
+        self.window_._key_line = ""
+        self.window_._key_edit_error = ""
+        self.window_._key_status(self.window_._key_feedback,
+                                  error=bool(self.window_._key_feedback))
+        self.window_._publish_key()
+        self.recording = True
+        self.key_row.hide()
+        self.recorder.draft.clear()
+        self.recorder.error.clear()
+        self.recorder.error.setMinimumHeight(0)
+        self.recorder.show()
+        self.recorder.setFocus(Qt.OtherFocusReason)
+
+    def cancel_recording(self):
+        if not self.recording:
+            return
+        self.recording = False
+        self.recorder.draft.clear()
+        self.recorder.error.clear()
+        w = self.window_
+        if w._key_edit_error:
+            w._key_edit_error = ""
+            w._key_status(w._key_feedback, error=bool(w._key_feedback))
+            w._publish_key()
+        self.recorder.hide()
+        self.key_row.show()
+        if self.capture_bar.key_button:
+            self.capture_bar.key_button.setFocus(Qt.OtherFocusReason)
 
     def refresh_recent(self):
         for button in self.recent_buttons:

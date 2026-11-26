@@ -159,9 +159,9 @@ THEMES = {
 # The one stylesheet: @token is a colour, @small-px the small text's size.
 # Row 2's labelled tools pad 2 px left of the icon and none after the label
 # (Qt already pads a tool button's label with a space each side).
-# ASSUMES: the rows are sized for the widest of the three CI fonts (Linux's
-# DejaVu Sans); test_nothing_hides_behind_the_overflow_on_a_wide_font lays
-# them out at 900 px in a face 1.18 x the Mac's.
+# Each FitBar measures its levels in the current font and drops labels by
+# group to keep every action visible. The s26 guards exercise the minimum,
+# resize thresholds, theme changes and wider fonts.
 TEMPLATE = """
 QMainWindow { background: @window; }
 QToolTip { color: @tooltip-text; background: @tooltip-bg; border: 1px solid @tooltip-border;

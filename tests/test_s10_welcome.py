@@ -1,4 +1,5 @@
 """The s10 welcome contract, using offscreen Qt and isolated settings only."""
+from annotshot.keywords import key_words
 import ast
 from pathlib import Path
 from types import SimpleNamespace
@@ -356,19 +357,28 @@ def test_welcome_text_rows_follow_copy_key_and_platform(welcome_window, monkeypa
         monkeypatch.setattr(welcome.sys, "platform", platform)
         w.welcome.refresh()
         assert f"Private. Your pictures stay on {word}. Annotshot sends nothing anywhere." in w.welcome.privacy_row.text()
-    w.set_hotkey(QKeySequence("Ctrl+Alt+9"), False)
-    assert QKeySequence("Ctrl+Alt+9").toString(QKeySequence.NativeText) in w.welcome.key_row.text()
-    assert "Change keys" in w.welcome.key_row.text()
-    w.set_hotkey(QKeySequence(), False)
-    assert w.welcome.key_row.text() == '<a href="keys">Set a key to capture from anywhere</a>'
+    assert w.welcome.key_row.text() == "Setting up the capture key…"
+    assert w.set_hotkey(QKeySequence(), False)
+    assert w.welcome.key_row.text() == "Setting up the capture key…"
 
 
-def test_change_keys_selects_shortcuts_tab(welcome_window, monkeypatch):
-    from annotshot.settings_dialog import SettingsDialog
-    seen = []
-    monkeypatch.setattr(SettingsDialog, "exec", lambda dialog: seen.append(dialog.tabs.tabText(dialog.tabs.currentIndex())))
-    welcome_window.welcome.key_row.linkActivated.emit("keys")
-    assert seen == ["Shortcuts"]
+@pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
+def test_change_key_opens_inline_recorder(qapp, monkeypatch, request, platform):
+    from annotshot import welcome
+    # Select this surface before construction; Linux has no global-key menu.
+    monkeypatch.setattr(welcome, "sys", SimpleNamespace(platform=platform))
+    w = request.getfixturevalue("welcome_window")
+    if platform == "linux":
+        assert w.welcome.capture_bar.key_button is None
+        assert not hasattr(w.welcome.capture_bar, "key_menu")
+        assert not w.welcome.recording
+        return
+    w.welcome.capture_bar.key_menu.actions()[1].trigger()
+    assert w.welcome.recording
+    assert w.welcome.recorder.prompt.text() == "Press the new capture key."
+    assert w.welcome.recorder.cancel.text() == "Cancel"
+    w.welcome.cancel_recording()
+    assert not w.welcome.recording
 
 
 def test_welcome_open_link_uses_open_action(welcome_window, monkeypatch):
@@ -468,13 +478,15 @@ def test_mainwindow_capture_passes_optional_mode(welcome_window, monkeypatch):
     assert modes == [None, "area", "window", "screen"]
 
 
-def test_every_theme_renders_offscreen(welcome_window, qapp, white, rig):
+def test_every_theme_renders_offscreen(welcome_window, qapp, white, rig, tmp_path):
     """Requested visual artifacts use synthetic Recent pictures and private settings."""
     from annotshot import theme
     from PySide6.QtCore import QDateTime
     from PySide6.QtGui import QPainter
     from PySide6.QtWidgets import QWidget
-    out = Path("docs/briefs/renders-s10-welcome")
+    references = Path("docs/briefs/renders-s10-welcome")
+    stored = {p: p.read_bytes() for p in references.glob("*.png")}
+    out = tmp_path / "renders-s10-welcome"
     out.mkdir(parents=True, exist_ok=True)
     w = welcome_window
     for minute in range(4):
@@ -519,6 +531,10 @@ def test_every_theme_renders_offscreen(welcome_window, qapp, white, rig):
     bar._pulse.stop()
     bar._set_glow_factor(1.0)
     assert host.grab().save(str(out / "live-bar-auto.png"))
+    images = list(out.glob("*.png"))
+    assert len(images) == 5
+    assert all(not QImage(str(p)).isNull() for p in images)
+    assert {p: p.read_bytes() for p in references.glob("*.png")} == stored
     bar.setParent(session.overlays[0])
     host.close()
 
@@ -706,8 +722,10 @@ def test_tray_menu_three_entries_and_actions(background_window, monkeypatch):
     key = w.capture_key_text()
     w.show()
     w.hide()
+    # s29 round 3: the tray names the key only while it is registered.
+    first = f"Capture ({key})" if w.hotkey.registered else "Capture"
     assert [action.text() for action in w.tray.menu.actions()] == [
-        f"Capture ({key})", "Open Annotshot", "Quit Annotshot"]
+        first, "Open Annotshot", "Quit Annotshot"]
     calls = []
     monkeypatch.setattr(w, "capture_from_anywhere", lambda: calls.append("capture"))
     monkeypatch.setattr(w, "reopen", lambda: calls.append("open"))
@@ -727,7 +745,7 @@ def test_first_hide_message_is_shown_once(background_window):
     for _ in range(2):
         w.show()
         w.close()
-    assert w.tray.icon.messages == [("Annotshot is still running", f"{key} captures. Quit from this icon.")]
+    assert w.tray.icon.messages == [("Annotshot is still running", f"{key} captures. Quit from this icon." if key else "Quit from this icon.")]
     assert w.settings.value("app/keep_running_told", type=bool)
 
 
@@ -790,7 +808,7 @@ def test_keep_running_welcome_row_conditions(
     fake_tray.tray_available = tray_available
     w.configure_background()
     key = w.capture_key_text()
-    assert w.welcome.running_row.text() == f"Close this window and Annotshot keeps running; {key} still captures."
+    assert w.welcome.running_row.text() == "Close this window to keep Annotshot running."
     assert w.can_hide_on_close() is hides_on_close
     assert w.welcome.running_row.row_widget.isHidden() is (not hides_on_close)
     assert not w.welcome.running_row.isHidden()
@@ -799,7 +817,7 @@ def test_keep_running_welcome_row_conditions(
     w.set_keep_running(True)
     assert w.welcome.running_row.row_widget.isHidden() is (not hides_on_close)
     w.set_hotkey(QKeySequence(), True)
-    assert w.welcome.running_row.row_widget.isHidden()
+    assert w.welcome.running_row.row_widget.isHidden() is (not hides_on_close)
 
 
 def test_native_quit_event_uses_window_close_guard(welcome_window, monkeypatch, qapp):
@@ -1034,7 +1052,7 @@ def test_welcome_message_timeout_keeps_the_layout(welcome_window, qapp):
     before = [widget.geometry() for widget in widgets]
     label = page.status_label
     assert label.y() >= page.open_link.geometry().bottom()
-    assert not label.wordWrap()
+    assert label.wordWrap()
     w.statusBar().showMessage("A current message " * 20, 30)
     qapp.processEvents()
     assert label.text() == w.statusBar().currentMessage()
@@ -1109,7 +1127,7 @@ def test_freeze_transitions_and_mode_changes_stay_unselected(rig):
 def test_linux_close_quits_and_never_promises_background(background_window, monkeypatch, qapp):
     from annotshot import mainwindow
     w, fake = background_window
-    assert fake.tray_available and w.tray is None and w.can_hide_on_close() and w.capture_key_text()
+    assert fake.tray_available and w.tray is None and w.can_hide_on_close() and not w.capture_key_text()
     monkeypatch.setattr(mainwindow.sys, "platform", "linux")
     w.configure_background()
     assert not w.can_hide_on_close() and qapp.quitOnLastWindowClosed()
@@ -1247,7 +1265,7 @@ def test_real_case_size_requires_same_area_button(rig):
 def test_same_area_manual_and_help_describe_only_the_button():
     from annotshot.help import help_markdown
     root = Path(__file__).resolve().parents[1]
-    manual = (root / "docs" / "USER-MANUAL.md").read_text()
+    manual = (root / "docs" / "USER-MANUAL.md").read_text(encoding="utf-8")
     help_text = help_markdown([], manual)
     assert "**Same area**" in manual and "Hover over it to preview" in manual
     assert "No key or double-click takes the last area" in manual

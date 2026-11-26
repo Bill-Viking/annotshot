@@ -12,13 +12,14 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import QDesktopServices, QFont, QTextCursor
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                                QPlainTextEdit, QPushButton, QTextBrowser,
                                QVBoxLayout, QWidget)
 
 from . import __version__
 from .feedback import CHOOSER_URL
+from .keywords import key_words
 
 PUBLISHER = "Bill Moldestad"
 PROJECT_URL = "https://github.com/Bill-Viking/annotshot"
@@ -205,7 +206,7 @@ def _cell(text: str) -> str:
 
 
 def keys_text(seqs) -> str:
-    keys = [s.toString(QKeySequence.NativeText) for s in seqs if not s.isEmpty()]
+    keys = [key_words(s) for s in seqs if not s.isEmpty()]
     return " or ".join(keys) if keys else NO_KEY
 
 
@@ -214,6 +215,7 @@ def shortcuts_markdown(rows) -> str:
     lines = ["## Keyboard shortcuts", "",
              "Your keys as they are set now (change them in **Settings…**). "
              "The table further down lists the keys Annotshot starts with. "
+             "Default on Mac: Option+Shift+Space. Default on Windows: Alt+Shift+Space. "
              "Same area is a button on the capture bar. Hover to preview it, "
              "then click once to capture it. No key takes the last area.",
              "", "| Keys | Does |", "|---|---|"]
@@ -276,7 +278,8 @@ class HelpWindow(QDialog):
         """Show the manual again with the keys as they are now. Pictures
         the manual names that are not on this computer are left out."""
         from .__main__ import MANUAL
+        position = self.browser.verticalScrollBar().value()
         self.browser.setSearchPaths([str(_root() / MANUAL.parent)])
         self.browser.setMarkdown(help_markdown(rows, manual_text()).replace(
             "## Privacy", '<a name="privacy"></a>\n\n## Privacy'))
-        self.browser.moveCursor(QTextCursor.Start)
+        self.browser.verticalScrollBar().setValue(position)

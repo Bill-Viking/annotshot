@@ -17,7 +17,7 @@ from PySide6.QtCore import (QEvent, QObject, QPoint, QPointF, QRect, QRectF,
 from PySide6.QtGui import (QColor, QCursor, QFontMetrics, QGuiApplication,
                            QImage, QPainter, QPen, QPixmap, QScreen)
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMenu,
-                               QPushButton, QWidget)
+                               QPushButton, QWidget, QVBoxLayout)
 
 IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
@@ -331,7 +331,10 @@ class CaptureBar(QWidget):
             self._pulse.valueChanged.connect(self._set_glow_factor)
         # Explicitly override the app's theme, including its primary buttons.
         self.setStyleSheet(BAR_STYLE)
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
+        self._bar_layout = layout
+        self._controls = []
+        self._flow_signature = None
         layout.setContentsMargins(10 + GLOW_MARGIN, 6 + GLOW_MARGIN,
                                   10 + GLOW_MARGIN, 6 + GLOW_MARGIN)
         layout.setSpacing(2)
@@ -351,13 +354,13 @@ class CaptureBar(QWidget):
             self.modes.addButton(button)
             self.mode_buttons[mode] = button
             button.clicked.connect(lambda checked=False, m=mode: session.set_mode(m if checked else "auto"))
-            layout.addWidget(button)
+            self._controls.append(button)
         self.whole_screen_button = None
         if not session.freeze:
             self.whole_screen_button = self._button("Whole screen", "Capture this whole screen")
             self.whole_screen_button.clicked.connect(session.whole_screen)
-            layout.addWidget(self.whole_screen_button)
-        self.timer_button = self._button("Timer", "Delay the live shot")
+            self._controls.append(self.whole_screen_button)
+        self.timer_button = self._button("Wait after pick", "Wait after completing the pick before taking the live picture")
         menu = QMenu(self.timer_button)
         menu.setStyleSheet("QMenu { background: #141414; color: white; font-size: 13px; font-family: sans-serif; }"
                           "QMenu::item:selected { background: #505050; }")
@@ -368,28 +371,32 @@ class CaptureBar(QWidget):
             action.triggered.connect(lambda _checked=False, n=seconds: session.set_timer(n))
             self.timer_actions[seconds] = action
         self.timer_button.setMenu(menu)
-        layout.addWidget(self.timer_button)
-        self.freeze_button = self._button("Freeze", "Choose from a frozen picture")
+        self._controls.append(self.timer_button)
+        self.freeze_button = self._button("Freeze now", "Hold the screen now while you choose")
         self.freeze_button.setCheckable(True)
         self.freeze_button.clicked.connect(session.set_freeze)
-        layout.addWidget(self.freeze_button)
+        self._controls.append(self.freeze_button)
         self.capture_button = None
         if session.freeze:
             self.capture_button = self._button("Capture", "Capture now (Return)")
             self.capture_button.setObjectName("shoot")
             self.capture_button.clicked.connect(session.shoot)
-            layout.addWidget(self.capture_button)
+            self._controls.append(self.capture_button)
         self.same_area_button = self._button(
             "Same area", "Capture the same area as last time")
         self.same_area_button.clicked.connect(session.same_area)
         self.same_area_button.installEventFilter(self)
-        layout.addWidget(self.same_area_button)
+        self._controls.append(self.same_area_button)
         self.cancel_button = self._button("Cancel", "Cancel capture (Esc)")
         self.cancel_button.clicked.connect(lambda: session._finish(None))
-        layout.addWidget(self.cancel_button)
+        self._controls.append(self.cancel_button)
         self.countdown = QLabel(self)
         self.countdown.setAccessibleName("Capture countdown")
-        layout.addWidget(self.countdown)
+        self._controls.append(self.countdown)
+        self.help = QLabel(self)
+        self.help.setWordWrap(True)
+        self.help.setAlignment(Qt.AlignCenter)
+        self.help.setAccessibleName("Capture instructions")
         self.sync()
 
     def eventFilter(self, obj, event):
@@ -444,9 +451,24 @@ class CaptureBar(QWidget):
                               (mode != "window" or s.freeze or s.windows_available))
         for seconds, action in self.timer_actions.items():
             action.setChecked(s.timer == seconds)
+        delay = 'Off' if not s.timer else f'{s.timer} s'
+        self.timer_button.setText(f'Wait after pick · {delay}')
+        self.timer_button.setAccessibleName(self.timer_button.text())
         self.timer_button.setEnabled(not s.freeze and s.state == "idle")
+        self.freeze_button.setText('Go live' if s.freeze else 'Freeze now')
+        self.freeze_button.setAccessibleName(self.freeze_button.text())
         self.freeze_button.setChecked(s.freeze)
-        self.freeze_button.setEnabled(s.state == "idle" and not s._forced_freeze)
+        self.freeze_button.setEnabled(s.state == "idle" and not s._forced_freeze
+                                      and (not s.freeze or s._live_checked))
+        if s._forced_freeze:
+            tip = 'Live capture is unavailable on this display.'
+        elif s.freeze:
+            tip = (f'Resume live capture. Your {s.timer}-second wait starts after you pick.' if s.timer else
+                   'Resume live capture. Your next pick takes the picture immediately.')
+        else:
+            tip = 'Hold the screen now while you choose'
+        self.freeze_button.setToolTip(tip)
+        self.freeze_button.setAccessibleDescription(tip)
         if self.capture_button is not None:
             self.capture_button.setEnabled(s.state == "idle" and s.selected is not None
                                            and not s.selected.area.isEmpty())
@@ -457,11 +479,93 @@ class CaptureBar(QWidget):
             self.whole_screen_button.setEnabled(s.state == "idle")
         self.countdown.setText(f"{s.remaining} s" if s.state == "countdown" else "")
         self.countdown.setVisible(s.state == "countdown")
-        self.adjustSize()
+        self.help.setText(self._instructions())
+        self.help.setAccessibleDescription(self.help.text())
         self.place()
+
+    def _instructions(self):
+        s = self.session
+        if s._forced_freeze:
+            if s.mode == 'window' and not s.windows_available:
+                return ('Live capture is unavailable on this display. No window is available. '
+                        'Choose Area or Whole screen from this still, or cancel. '
+                        'The picture is already taken, so the wait is off.')
+            if s.mode in ('auto', 'area'):
+                return ('Live capture is unavailable on this display. '
+                        f'{self._frozen_area_gesture()} from this still, or cancel. '
+                        'The picture is already taken, so the wait is off.')
+            return ('Live capture is unavailable on this display. Choose from this still or cancel. '
+                    'The picture is already taken, so the wait is off.')
+        if s.state == 'countdown':
+            return 'Taking the live shot when the count ends. Esc cancels.'
+        if s.state == 'freezing':
+            return 'Holding the screen now. Esc cancels.'
+        if s.state != 'idle':
+            return 'Taking the picture. Esc cancels.'
+        if s.mode == 'window' and not s.windows_available:
+            if s.freeze:
+                return ('Screen frozen. No window is available. Choose Area or Whole screen. '
+                        'The picture is already taken, so the wait is off.')
+            return 'No window is available. Choose Area or Whole screen, or cancel.'
+        if s.mode == 'window':
+            gesture = 'Click a window'
+        elif s.mode == 'screen' and s.freeze:
+            gesture = 'Click for the whole screen, or use Capture or Return'
+        elif s.mode == 'auto' and s.windows_available:
+            gesture = 'Drag an area or click a window'
+        else:
+            gesture = 'Drag an area'
+        if s.freeze:
+            if s.mode in ('auto', 'area'):
+                gesture = self._frozen_area_gesture()
+                return f'Screen frozen. {gesture}. The picture is already taken, so the wait is off.'
+            again = f'the {s.timer}-second wait again' if s.timer else 'live capture'
+            return f'Screen frozen. {gesture} from this still. Picture already taken; Go live to use {again}.'
+        if s.timer:
+            return f'{gesture}. {s.timer} seconds after the pick, Annotshot takes the live picture.'
+        return f'{gesture} to capture now. Freeze now holds this moment while you choose.'
+
+    def _frozen_area_gesture(self):
+        if IS_WINDOWS and self.session.windows_available:
+            return ('Drag an area, click a window to capture it, or click outside '
+                    'windows for the whole screen')
+        return 'Drag an area or click for the whole screen'
 
     def place(self):
         overlay = self.parentWidget()
+        margins = self._bar_layout.contentsMargins()
+        controls = [w for w in self._controls if not w.isHidden()]
+        natural = sum(w.sizeHint().width() for w in controls) + max(0, len(controls)-1)*2
+        width = min(overlay.width(), natural + margins.left() + margins.right())
+        available = max(1, width - margins.left() - margins.right())
+        signature = (width, tuple((id(w), w.sizeHint().width()) for w in controls))
+        if signature != self._flow_signature:
+            self._flow_signature = signature
+            while self._bar_layout.count():
+                item = self._bar_layout.takeAt(0)
+                row = item.layout()
+                if row is not None:
+                    while row.count():
+                        row.takeAt(0)
+                    row.deleteLater()
+            row = None
+            used = 0
+            for control in controls:
+                span = control.sizeHint().width()
+                if row is None or used + 2 + span > available:
+                    row = QHBoxLayout()
+                    row.setSpacing(2)
+                    self._bar_layout.addLayout(row)
+                    used = 0
+                row.addWidget(control)
+                used += (2 if used else 0) + span
+            self._bar_layout.addWidget(self.help)
+        self.help.setFixedWidth(available)
+        self.help.setFixedHeight(max(self.help.fontMetrics().height() + 16,
+                                     self.help.heightForWidth(available)))
+        self.setFixedWidth(width)
+        self._bar_layout.activate()
+        self.setFixedHeight(self._bar_layout.sizeHint().height())
         self.move(max(0, (overlay.width() - self.width()) // 2),
                   max(0, overlay.height() - 80 - self.height() + GLOW_MARGIN))
 
@@ -542,8 +646,19 @@ class LiveOverlay(CaptureOverlay):
         self.update()
 
     def hint(self):
+        if self.session.state == 'countdown':
+            return 'Taking the live shot when the count ends · Esc to cancel'
+        if self.session.mode == 'window' and not self.session.windows_available:
+            return 'No window is available · Choose Area or Whole screen · Esc to cancel'
         if self.session.freeze:
-            return super().hint()
+            if self.session.mode == 'window':
+                return 'Click a window from this still · Esc to cancel'
+            if self.session.mode == 'screen':
+                return 'Click for the whole screen · Capture or Return also takes it · Esc to cancel'
+            if IS_WINDOWS and self.session.windows_available:
+                return ('Drag an area · Click a window to capture it · '
+                        'Click outside windows for the whole screen · Esc to cancel')
+            return 'Drag an area · Click for the whole screen · Esc to cancel'
         mode = self.session.mode
         if mode == "window":
             text = "Click a window to capture it"
@@ -558,6 +673,20 @@ class LiveOverlay(CaptureOverlay):
         bar = self.session.bar
         if bar is not None and bar.parentWidget() is self:
             bar.place()
+
+    def _draw_hint(self, painter):
+        font = painter.font()
+        font.setPixelSize(13)
+        metrics = QFontMetrics(font)
+        if metrics.horizontalAdvance(self.hint()) + 20 <= self.width() - 24:
+            return super()._draw_hint(painter)
+        painter.setFont(font)
+        bounds = metrics.boundingRect(QRect(0, 0, max(1, self.width()-44), 10000),
+                                      Qt.AlignCenter | Qt.TextWordWrap, self.hint())
+        box = QRectF(12, 12, self.width()-24, bounds.height()+10)
+        painter.fillRect(box, QColor(20, 20, 20, 225))
+        painter.setPen(QColor('#FFFFFF'))
+        painter.drawText(box.adjusted(10, 5, -10, -5), Qt.AlignCenter | Qt.TextWordWrap, self.hint())
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -750,6 +879,7 @@ class CaptureSession(QObject):
         self.timer = timer if timer in (0, 3, 5, 10) else 0
         self.freeze = self.settings.value("capture/freeze", False, type=bool)
         self._forced_freeze = False
+        self._live_checked = False
         self.state = "idle"
         self.remaining = 0
         # ASSUMES: a stored area may exist. It never arms a new session.
@@ -802,8 +932,7 @@ class CaptureSession(QObject):
             self._begin_settle("freezing")
         else:
             self._show_overlays(active)
-            if not all(ov.supports_translucency() for ov in self.overlays):
-                self._forced_freeze = True
+            if not self._check_live():
                 self.freeze = True
                 if self.mode == "auto":
                     self.mode = "area"
@@ -836,6 +965,17 @@ class CaptureSession(QObject):
             self.bar.place()
             self.bar.show()
             self.bar.raise_()
+
+    def _check_live(self):
+        """Unknown or lost capability never discards a usable still."""
+        try:
+            capable = bool(self.overlays) and all(ov.supports_translucency() for ov in self.overlays)
+        except Exception:
+            capable = False
+        self._live_checked = True
+        if not capable:
+            self._forced_freeze = True
+        return capable
 
     def pointer_on(self, overlay):
         if self.state != "idle" or self._done:
@@ -927,6 +1067,11 @@ class CaptureSession(QObject):
     def set_freeze(self, checked):
         if self.state != "idle" or self._done or self._forced_freeze:
             return
+        # Validate at the thaw boundary before writing a preference, clearing
+        # selection, replacing a bar or releasing any of the still's pixels.
+        if not checked and not self._check_live():
+            self._update()
+            return
         self.freeze = bool(checked)
         self.settings.setValue("capture/freeze", self.freeze)
         active = self.bar.parentWidget()
@@ -1017,6 +1162,8 @@ class CaptureSession(QObject):
             self._update()
 
     def _begin_settle(self, state):
+        if state == "freezing":
+            self._live_checked = False
         self.state = state
         self._update()
         for ov in self.overlays:
@@ -1043,6 +1190,7 @@ class CaptureSession(QObject):
                 self.state = "idle"
                 active = self._pointer_overlay()
                 self._show_overlays(active)
+                self._check_live()
                 self.pointer_on(active)
                 self._update()
                 if self._whole_screen_pending:

@@ -1,4 +1,5 @@
 """s10 interface guards. All widgets use Qt offscreen and private settings."""
+from annotshot.keywords import key_words
 import ast
 from pathlib import Path
 
@@ -122,16 +123,21 @@ def test_03_two_rows_and_view_top_constant(window, qapp, width):
     assert window.prop_scroll.horizontalScrollBar().maximum() == 0
 
 
-def test_03_oversized_control_falsifies_fit_without_third_row(window, qapp):
+def test_03_oversized_control_pans_below_full_rows(window, qapp):
     settle(window, qapp)
     window.view.set_tool(Tool.TEXT)
-    top = window.view.geometry().top()
     window.f_font.setFixedWidth(1800)
     window.refresh_props()
     qapp.processEvents()
     assert window.prop_scroll.horizontalScrollBar().maximum() > 0
-    assert window.prop_strip.layout().count() == 2
-    assert window.view.geometry().top() == top
+    viewport = window.prop_scroll.viewport()
+    for value in (0, window.prop_scroll.horizontalScrollBar().maximum()):
+        window.prop_scroll.horizontalScrollBar().setValue(value)
+        qapp.processEvents()
+        for control in window._controls:
+            if control.isVisibleTo(window):
+                top = control.mapTo(viewport, QPoint()).y()
+                assert top >= 0 and top + control.height() <= viewport.height()
 
 
 @pytest.mark.parametrize('tool', [Tool.SELECT, Tool.CROP])
@@ -229,7 +235,7 @@ def test_08_direct_colour_dialog_uses_slashed_square(window, monkeypatch):
 
 def test_09_native_current_keys_and_cleared_capture(window):
     assert window.set_shortcut('capture', QKeySequence('Alt+2')) is None
-    key = window.a_capture.shortcut().toString(QKeySequence.NativeText)
+    key = key_words(window.a_capture.shortcut())
     assert window.view.empty_hint[1] == f'Click Capture ({key}) to take a screenshot, or Open… a saved file'
     assert window.capture_status() == f'{key} to take a screenshot'
     assert window.statusBar().currentMessage() == window.capture_status()
@@ -362,7 +368,7 @@ def test_fix1_redo_default_order_and_both_keys_work(qapp, monkeypatch, is_mac):
         assert w.a_redo.shortcuts() == expected
         assert w.default_shortcuts['redo'] == expected
         assert dict(w.shortcut_rows())['Redo'] == expected
-        assert w.a_redo.toolTip().endswith(f'({expected[0].toString(QKeySequence.NativeText)})')
+        assert w.a_redo.toolTip().endswith(f'({key_words(expected[0])})')
         w.activateWindow()
         w.view.setFocus()
         for key in expected:

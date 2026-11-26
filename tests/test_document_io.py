@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtCore import QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QImage
 
-from annotshot.items import (ArrowItem, EllipseItem, HighlightItem, PenItem,
+from annotshot.items import (ArrowItem, BaseItem, EllipseItem, HighlightItem, PenItem,
                           RectItem, TextBoxItem)
 from annotshot.scene import Document
 
@@ -240,3 +240,83 @@ def test_pen_stroke_saves_reopens_and_exports(qapp, white, tmp_path):
     assert px(img, 40, 300) == (0, 0, 255)       # the stroke's first point
     assert px(img, 300, 250) == (0, 0, 255)      # its last
     assert px(img, 40, 320) == (255, 255, 255)   # beside it: the picture
+
+
+@pytest.mark.parametrize("style", ("long_dash", "dash_dot"))
+def test_s27_new_rhythms_and_bar_round_trip_clone_and_undo(qapp, white, tmp_path, style):
+    doc = Document(white)
+    arrow = add(doc, ArrowItem, (30, 100, 500, 120), head="bar", head_size="large",
+                both_ends=True, line_style=style, stroke_width=8, opacity=0.5)
+    add(doc, RectItem, (20, 20, 300, 60), line_style=style)
+    add(doc, EllipseItem, (20, 180, 300, 100), line_style=style)
+    pen = PenItem()
+    pen.set_points([(350, 200), (400, 250), (550, 200)])
+    pen.apply_props({"line_style": style})
+    doc.add_items([pen])
+    path = tmp_path / "s27.annotshot"
+    doc.save(path)
+    with zipfile.ZipFile(path) as z:
+        meta = json.loads(z.read("project.json"))
+    assert meta["version"] == 1
+    disk = meta["items"][0]
+    assert disk["head"] == "none" and disk["terminal"] == "bar"
+    assert disk["head_size"] == "large" and disk["both_ends"] is True
+    assert all(i["line_style"] == style for i in meta["items"])
+    back = Document.load(path)
+    assert [i.props for i in back.annotation_items()] == [i.props for i in doc.annotation_items()]
+    assert back.render_image() == doc.render_image()
+    (clone,) = doc.duplicate([arrow])
+    assert clone.props == arrow.props and clone.props["head"] == "bar"
+    assert clone.to_dict()["terminal"] == "bar"
+    doc.undo_stack.undo()
+    assert clone.scene() is None
+    doc.undo_stack.redo()
+    assert clone.props["head"] == "bar"
+    doc.set_props([arrow], {"head": "none"}, "Head")
+    assert arrow.to_dict()["head"] == "none" and "terminal" not in arrow.to_dict()
+    doc.save(path)
+    assert Document.load(path).annotation_items()[0].props["head"] == "none"
+    doc.undo_stack.undo()
+    assert arrow.props["head"] == "bar" and arrow.to_dict()["terminal"] == "bar"
+    doc.undo_stack.redo()
+    assert "terminal" not in arrow.to_dict()
+
+
+def test_s27_legacy_missing_keys_and_exact_terminal_pair(qapp, white, tmp_path):
+    doc = Document(white)
+    add(doc, ArrowItem, (0, 0, 200, 0))
+    path, legacy = tmp_path / "s27.annotshot", tmp_path / "legacy.annotshot"
+    doc.save(path)
+
+    def remove_new_keys(meta):
+        for key in ("head", "head_size", "both_ends", "line_style"):
+            meta["items"][0].pop(key)
+    _repack(path, legacy, remove_new_keys)
+    reopened = Document.load(legacy)
+    arrow = reopened.annotation_items()[0]
+    assert arrow.props == ArrowItem.DEFAULTS
+    for head, terminal, expected in (("none", "bar", "bar"),
+                                      ("open", "bar", "open"),
+                                      ("none", "future", "none"),
+                                      ("bad", "bar", "filled")):
+        loaded = ArrowItem.from_dict(dict(arrow.to_dict(), head=head, terminal=terminal))
+        assert loaded.props["head"] == expected
+        assert ("terminal" in loaded.to_dict()) == (expected == "bar")
+
+
+def test_s27_older_reader_neutral_fallback_is_a_plain_line(qapp):
+    class OlderArrow(ArrowItem):
+        # The pre-s27 enum validation and BaseItem loader: reads DEFAULTS
+        # only, ignores unknown fields, and falls back for unknown rhythms.
+        CHOICES = dict(ArrowItem.CHOICES, head=("filled", "open", "none"),
+                       line_style=("solid", "dashed", "dotted"))
+
+    arrow = ArrowItem()
+    arrow.apply_props(dict(head="bar", both_ends=True, head_size="large", line_style="long_dash"))
+    disk = arrow.to_dict()
+    older = BaseItem.from_dict.__func__(OlderArrow, disk)
+    assert older.props["head"] == "none"
+    assert older.props["both_ends"] is True and older.props["head_size"] == "large"
+    assert older.props["line_style"] == "solid"
+    assert older._heads()[2] == []
+    assert "terminal" not in BaseItem.to_dict(older)

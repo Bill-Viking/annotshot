@@ -3,7 +3,7 @@
 All windows remain offscreen and settings use conftest's private ini file.
 """
 import pytest
-from PySide6.QtCore import QPointF, QSettings
+from PySide6.QtCore import QCoreApplication, QEvent, QPointF, QSettings
 from PySide6.QtGui import QColor
 
 from annotshot.items import (ITEM_TYPES, ArrowItem, CalloutItem, HighlightItem,
@@ -19,6 +19,7 @@ def window(qapp):
     w = MainWindow()
     yield w
     w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def add(w, *items):
@@ -46,20 +47,22 @@ def values(settings):
     return {key: settings.value(key) for key in settings.allKeys()}
 
 
-def test_selected_arrow_picks_survive_a_fresh_window(window, monkeypatch):
+@pytest.mark.parametrize("style,head", [("dashed", "open"), ("long_dash", "bar"),
+                                        ("dash_dot", "bar")])
+def test_selected_arrow_picks_survive_a_fresh_window(window, monkeypatch, style, head):
     from annotshot.mainwindow import MainWindow
     from PySide6.QtWidgets import QColorDialog
     arrow = ArrowItem()
     add(window, arrow)
     monkeypatch.setattr(QColorDialog, "getColor", lambda *a, **k: QColor("#FF0000"))
     window.c_border.click()
-    window.cb_line.setCurrentIndex(window.cb_line.findData("dashed"))
+    window.cb_line.setCurrentIndex(window.cb_line.findData(style))
     window.s_width.setValue(6)
-    window.cb_head.setCurrentIndex(window.cb_head.findData("open"))
+    window.cb_head.setCurrentIndex(window.cb_head.findData(head))
     window.cb_head_size.setCurrentIndex(window.cb_head_size.findData("large"))
     window.ch_both.setChecked(True)
     expected = {"stroke_color": "#FF0000", "stroke_width": 6,
-                "line_style": "dashed", "head": "open", "head_size": "large",
+                "line_style": style, "head": head, "head_size": "large",
                 "both_ends": True}
     for key, value in expected.items():
         assert arrow.props[key] == value
@@ -147,7 +150,7 @@ def test_remember_off_ignores_saved_styles_and_picks_write_nothing(window):
     assert window.s_width.value() == ArrowItem.DEFAULTS["stroke_width"]
     window.s_width.setValue(12)  # a pick with nothing selected
     arrow = draw(window, Tool.ARROW)
-    assert arrow.props == ArrowItem.DEFAULTS
+    assert arrow.props == dict(ArrowItem.DEFAULTS, stroke_width=12)
     window._set({"border_color": "#FF0000"}, "Selected arrow")
     assert arrow.props["stroke_color"] == "#FF0000"  # editing still works
     assert values(window.settings) == snapshot
@@ -171,6 +174,11 @@ def test_reset_clears_every_kind_but_keeps_shortcuts_and_remember(window):
         window.settings.setValue(f"props/{kind}/opacity", 0.2)
         window.settings.setValue(f"props/{kind}/unknown", "stale")
     window.settings.setValue("shortcuts/save", "Alt+S")
+    window.settings.setValue("props/arrow/head", "bar")
+    window.settings.setValue("props/arrow/head_size", "large")
+    window.settings.setValue("props/arrow/both_ends", True)
+    for kind in ("rect", "ellipse", "arrow", "pen"):
+        window.settings.setValue(f"props/{kind}/line_style", "dash_dot")
     window.view.load_tool_defaults()
     window.view.set_tool(Tool.ARROW)
     d = SettingsDialog(window)
@@ -183,6 +191,7 @@ def test_reset_clears_every_kind_but_keeps_shortcuts_and_remember(window):
     for kind in ITEM_TYPES:
         assert window.view.tool_defaults[kind] == window.view.factory_style(kind)
     assert window.sl_opacity.value() == 100
+    assert window.view.starting_style("arrow") == ArrowItem.DEFAULTS
     d.deleteLater()
 
 
@@ -193,7 +202,8 @@ def test_reset_clears_every_kind_but_keeps_shortcuts_and_remember(window):
 def test_line_words_and_two_rows_follow_selection_and_active_tool(window, tool, label):
     for selected in (False, True):
         if selected:
-            draw(window, tool)
+            item = draw(window, tool)
+            window.doc.select_only([item])  # Pen completion deliberately selects nothing.
         else:
             window.view.set_tool(tool)
         assert window.border_label.text() == label
@@ -214,6 +224,64 @@ def test_arrow_second_row_fits_the_start_width(window):
     add(window, RectItem())
     assert window.prop_strip.layout().count() == 2
     assert window.cb_line.isEnabled() and not window.line_group.isHidden()
+
+
+@pytest.mark.parametrize("style", ("long_dash", "dash_dot"))
+def test_new_choices_on_tools_and_mixed_selected_items(window, style):
+    from annotshot.items import EllipseItem, PenItem
+    for tool in (Tool.ARROW, Tool.RECT, Tool.ELLIPSE, Tool.PEN):
+        window.doc.clearSelection()
+        window.view.set_tool(tool)
+        window.cb_line.setCurrentIndex(window.cb_line.findData(style))
+        if tool is Tool.ARROW:
+            window.cb_head.setCurrentIndex(window.cb_head.findData("bar"))
+        item = draw(window, tool)
+        assert item.props["line_style"] == style
+        if tool is Tool.ARROW:
+            assert item.props["head"] == "bar"
+    text, rect, ellipse, arrow, pen = (TextBoxItem(), RectItem(), EllipseItem(),
+                                     ArrowItem(), PenItem())
+    pen.set_points([(0, 0), (100, 30)])
+    add(window, text, rect, ellipse, arrow, pen)
+    window._set({"line_style": style, "head": "bar"}, "Mixed")
+    assert all(i.props["line_style"] == style for i in (rect, ellipse, arrow, pen))
+    assert arrow.props["head"] == "bar" and "line_style" not in text.props
+    for item in (rect, ellipse, arrow, pen):
+        assert window.settings.value(f"props/{item.KIND}/line_style") == style
+    window.undo()
+    assert all(i.props["line_style"] == "solid" for i in (rect, ellipse, arrow, pen))
+    assert arrow.props["head"] == "filled"
+    assert window.view.starting_style("arrow")["head"] == "bar"
+
+
+@pytest.mark.parametrize("name", ("light", "dark", "retro"))
+@pytest.mark.parametrize("width", (900, 1024, 1100))
+def test_new_choices_keep_two_row_layout_budgets(window, qapp, name, width):
+    window.set_theme(name)
+    window.show_editor()
+    window.resize(width, 720)
+    window.recent.hide()
+    window.show()                      # Qt offscreen; resolve real viewport geometry
+    for tool in (Tool.ARROW, Tool.RECT, Tool.ELLIPSE, Tool.PEN):
+        for selected in (False, True):
+            window.view.reset_tool_defaults()
+            window.doc.clearSelection()
+            window.view.set_tool(tool)
+            if selected:
+                item = draw(window, tool)
+                window.doc.select_only([item])
+            window.refresh_props()
+            qapp.processEvents()
+            before = window.prop_strip.sizeHint().width()
+            for style in ("long_dash", "dash_dot"):
+                window.cb_line.setCurrentIndex(window.cb_line.findData(style))
+                if tool is Tool.ARROW:
+                    window.cb_head.setCurrentIndex(window.cb_head.findData("bar"))
+                qapp.processEvents()
+                assert window.prop_strip.sizeHint().width() == before
+                assert before < width
+                assert window.prop_scroll.horizontalScrollBar().maximum() == 0
+                assert window.prop_strip.layout().count() == 2
 
 
 @pytest.mark.parametrize("key,value", [

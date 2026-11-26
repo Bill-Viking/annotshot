@@ -593,20 +593,21 @@ def drag(view, a, b):
 
 
 @pytest.mark.parametrize('tool', [Tool.ARROW, Tool.RECT, Tool.ELLIPSE, Tool.HIGHLIGHT, Tool.CALLOUT, Tool.PEN])
-def test_two_objects_keep_tool_and_button(window, tool):
+def test_two_objects_each_return_to_select(window, tool):
     v, doc = window.view, window.doc
     window.tool_actions[tool].trigger()
     done = []
     v.toolDone.connect(lambda: done.append(1))
     for i, (a, b) in enumerate([((40, 40), (160, 110)), ((240, 150), (370, 250))], 1):
+        window.tool_actions[tool].trigger()
         drag(v, a, b)
         assert len(doc.annotation_items()) == i
-        assert v.tool is tool and window.tool_actions[tool].isChecked()
+        assert v.tool is Tool.SELECT and window.tool_actions[Tool.SELECT].isChecked()
         assert doc.selected() == ([] if tool is Tool.PEN else [doc.annotation_items()[-1]])
         if tool is Tool.CALLOUT:
             assert doc.is_editing()
             window.escape()
-    assert not done
+    assert done == [1, 1]
 
 
 @pytest.mark.parametrize('tool', [Tool.TEXT, Tool.CALLOUT])
@@ -618,12 +619,15 @@ def test_text_ending_press_only_ends_typing(window, tool):
     QTest.mouseClick(v.viewport(), Qt.LeftButton, pos=v.mapFromScene(QPointF(450, 250)))
     assert len(doc.annotation_items()) == 1 and not doc.is_editing()
     assert doc.annotation_items()[0].props['text'] == 'a second note'
-    assert v.tool is tool
+    assert v.tool is Tool.SELECT
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, pos=v.mapFromScene(QPointF(450, 250)))
+    assert len(doc.annotation_items()) == 1
+    window.tool_actions[tool].trigger()
     QTest.mouseClick(v.viewport(), Qt.LeftButton, pos=v.mapFromScene(QPointF(450, 250)))
     assert len(doc.annotation_items()) == 2 and doc.is_editing()
 
 
-def test_drawing_tool_handle_resizes_one_undo_body_draws(window):
+def test_completed_shape_handle_resizes_one_undo_body_moves(window):
     v, doc = window.view, window.doc
     window.tool_actions[Tool.RECT].trigger()
     drag(v, (40, 40), (160, 110))
@@ -632,7 +636,8 @@ def test_drawing_tool_handle_resizes_one_undo_body_draws(window):
     handle = item.mapToScene(item.handle_points()[4])
     point = QPointF(v.mapFromScene(handle))
     QApplication.sendEvent(v.viewport(), QMouseEvent(
-        QEvent.MouseMove, point, point, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        QEvent.MouseMove, point, v.viewport().mapToGlobal(point.toPoint()),
+        Qt.NoButton, Qt.NoButton, Qt.NoModifier))
     assert v.viewport().cursor().shape() == Qt.SizeFDiagCursor
     drag(v, (handle.x(), handle.y()), (200, 140))
     assert len(doc.annotation_items()) == 1 and doc.undo_stack.count() == count + 1
@@ -643,10 +648,12 @@ def test_drawing_tool_handle_resizes_one_undo_body_draws(window):
     assert v.selected_handle_at(v.mapToScene(point.toPoint())) is None
     assert v._handle_drag is None
     QApplication.sendEvent(v.viewport(), QMouseEvent(
-        QEvent.MouseMove, point, point, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
-    assert v.viewport().cursor().shape() == Qt.CrossCursor
+        QEvent.MouseMove, point, v.viewport().mapToGlobal(point.toPoint()),
+        Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+    assert v.viewport().cursor().shape() == Qt.SizeAllCursor
     drag(v, (90, 70), (220, 160))
-    assert len(doc.annotation_items()) == 2
+    assert len(doc.annotation_items()) == 1
+    assert item.geom()[:2] == (170, 130)
 
 
 def test_select_crop_escape_v_and_bind_capture_keep_tool(window, monkeypatch, white):
@@ -662,6 +669,8 @@ def test_select_crop_escape_v_and_bind_capture_keep_tool(window, monkeypatch, wh
     window.escape()
     assert v.tool is Tool.ARROW
     QTest.mouseRelease(v.viewport(), Qt.LeftButton, pos=QPoint(140, 140))
+    window.tool_actions[Tool.ARROW].trigger()
+    assert v.tool is Tool.ARROW
     QTest.keyClick(v.viewport(), Qt.Key_V)
     assert v.tool is Tool.SELECT
     window.tool_actions[Tool.RECT].trigger()
@@ -876,10 +885,11 @@ def test_restart_flag_is_a_normal_launch_option(window, monkeypatch, qapp):
 
 
 def test_manual_matches_restart_and_sticky_tool_words():
-    manual = (Path(__file__).resolve().parent.parent / 'docs/USER-MANUAL.md').read_text()
+    manual = (Path(__file__).resolve().parent.parent / 'docs/USER-MANUAL.md').read_text(encoding='utf-8')
     assert manual.count('if the write fails, it stays open with your edits.') == 2
     assert manual.count('the next **Capture** press offers **Restart Annotshot** to try again.') == 2
     assert 'then quit Annotshot and start it again' not in manual
     assert 'then quit and reopen Annotshot' not in manual
-    assert 'A drawing tool stays selected until you choose another tool.' in manual
+    assert 'A drawing tool stays selected until you choose another tool.' not in manual
+    assert 'After you place a shape or finish a pen stroke, Annotshot returns to **Select**.' in manual
     assert 'Crop returns to **Select**.' in manual

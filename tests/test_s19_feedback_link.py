@@ -1,6 +1,6 @@
 """Opening-window feedback uses the existing action, entirely offscreen."""
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import QDesktopServices, QKeyEvent, QTextDocument
 from PySide6.QtTest import QSignalSpy, QTest
 
@@ -110,8 +110,11 @@ def test_status_tracks_link_row_through_window_resizes(feedback_window, qapp):
         assert status.width() == row.width()
         assert status.left() == row.left()
         assert status.right() < recent_left
-        assert status.top() == page.open_link.geometry().bottom() + 11
-        assert status.height() == page.status_label.fontMetrics().height()
+        assert status.top() == page.open_link.geometry().bottom() + 1
+        # A long message wraps and is shown whole (the key button fix of
+        # 2026-11-20), so the line is as tall as its wrapped words need.
+        assert status.height() > page.status_label.fontMetrics().height()
+        assert status.height() >= page.status_label.heightForWidth(status.width())
     assert widths[1] > widths[2] > widths[0]
     assert widths[3] == widths[1]
     assert widths[4] == widths[0]
@@ -135,7 +138,7 @@ def test_status_and_surrounding_layout_match_original_open_row(
     window_size = feedback_window.size()
     status = page.status_label.geometry()
     assert status.left() == page.open_link.x()
-    assert status.top() == page.open_link.geometry().bottom() + 11
+    assert status.top() == page.open_link.geometry().bottom() + 1
     feedback_window.statusBar().showMessage("Feedback layout check")
     qapp.processEvents()
     assert page.status_label.text() == "Feedback layout check"
@@ -153,11 +156,17 @@ def test_status_and_surrounding_layout_match_original_open_row(
     qapp.processEvents()
     # The original event filter uses the full-width Open geometry.
     expected_status = page.open_link.geometry()
-    expected_status.moveTop(expected_status.bottom() + 11)
-    expected_status.setHeight(page.status_label.fontMetrics().height())
+    expected_status.moveTop(expected_status.bottom() + 1)
+    label = page.status_label
+    painted = label.fontMetrics().boundingRect(
+        QRect(0, 0, max(1, expected_status.width()), 10000),
+        Qt.TextWordWrap | Qt.AlignLeft, label.text())
+    expected_status.setHeight(max(painted.height(), label.heightForWidth(expected_status.width())))
     page.status_label.setGeometry(expected_status)
     assert status == expected_status
     assert page.open_link.pos() == open_position
-    assert [widget.geometry() for widget in widgets] == with_feedback
+    # The status line re-places itself from the link row on every resize;
+    # that row is dismantled above, so only its neighbours are compared here.
+    assert [widget.geometry() for widget in widgets[1:]] == with_feedback[1:]
     assert feedback_window.size() == window_size
     theme.apply(qapp, "Light")

@@ -16,7 +16,7 @@ import math
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath,
                            QPainterPathStroker, QPen, QPolygonF,
-                           QTextBlockFormat, QTextCursor, QTextOption)
+                           QTextBlockFormat, QTextCursor, QTextOption, QTransform)
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsTextItem
 
 from . import theme, typefaces
@@ -88,21 +88,57 @@ def _pen(color: QColor, width: float, style: str = "solid") -> QPen:
     return pen
 
 
-LINE_STYLES = ("solid", "dashed", "dotted")
+LINE_STYLES = ("solid", "dashed", "long_dash", "dotted", "dash_dot")
+
+
+def rhythm(style: str, w: float) -> list[float]:
+    """Nominal picture-pixel ink/space lengths (candidate A)."""
+    gap, dash = max(2, 2 * w), max(4, 4 * w)
+    if style == "dashed":
+        return [dash, gap]
+    if style == "long_dash":
+        return [max(8, 8 * w), gap]
+    if style == "dotted":
+        return [w, gap]
+    if style == "dash_dot":
+        return [dash, gap, w, gap]
+    return []
+
+
+def fit_cycle(span, nominal, style):
+    """Centre primary ink at both boundaries; hold square dots at w."""
+    period = sum(nominal)
+    if not nominal or span < period:
+        return [], 0
+    count = math.floor(span / period + 0.5)
+    fixed = 0 if style == "dotted" else 2 if style == "dash_dot" else None
+    dot = nominal[fixed] if fixed is not None else 0
+    scale = (span / count - dot) / (period - dot)
+    return [v if i == fixed else v * scale for i, v in enumerate(nominal)], count
+
+
+def intervals(span, nominal, style):
+    if span <= 0:
+        return
+    cycle, count = fit_cycle(span, nominal, style)
+    if not count:
+        yield 0, span
+        return
+    x = -cycle[0] / 2
+    for _ in range(count + 1):
+        for i, length in enumerate(cycle):
+            end = x + length
+            if i % 2 == 0 and x < span and end > 0:
+                yield max(0, x), min(end, span)
+            x = end
 
 
 def styled_pen(color: QColor, width: float, style: str = "solid") -> QPen:
-    """A pen of `width` drawn solid, dashed or dotted. The dashes are sized
-    in pixels and floored, so a 1 px dotted line stays dotted and a thick
-    one keeps clear gaps (Qt reads a dash pattern in pen widths). Dashed
-    and dotted pens end flat: a square or round cap would fill the gaps."""
+    """Nominal rhythm, phase zero; Qt reads lengths in pen widths."""
     pen = QPen(color, width)
-    if style in ("dashed", "dotted") and width > 0:
-        if style == "dashed":
-            dash, gap = max(4.0 * width, 6.0), max(2.5 * width, 4.0)
-        else:
-            dash, gap = max(width, 2.0), max(1.5 * width, 3.0)
-        pen.setDashPattern([dash / width, gap / width])
+    if width > 0 and (nominal := rhythm(style, width)):
+        pen.setDashPattern([v / width for v in nominal])
+        pen.setDashOffset(0)
         pen.setCapStyle(Qt.FlatCap)
     return pen
 
@@ -281,8 +317,12 @@ class BaseItem(QGraphicsItem):
     def shape(self) -> QPainterPath:
         path = self.body_shape()
         if self.isSelected():
+            handles = QPainterPath()
+            handles.setFillRule(Qt.WindingFill)
             for r in self.handle_rects():
-                path.addRect(r)
+                handles.addRect(r)
+            # Overlap with an odd-even body must add targets, not holes.
+            path = path.united(handles)
         return path
 
     def paint_selection(self, p: QPainter) -> None:
@@ -650,12 +690,51 @@ class _ShapeItem(BaseItem):
         sw, sc = float(self.props["stroke_width"]), \
             QColor(self.props["stroke_color"])
         fill = QColor(self.props["fill_color"])
-        p.setPen(_pen(sc, sw, self.props["line_style"])
-                 if sw > 0 and sc.alpha() else Qt.NoPen)
-        p.setBrush(fill if fill.alpha() else Qt.NoBrush)
         inset = sw / 2 if sw > 0 else 0
-        self._draw(p, self.rect.adjusted(inset, inset, -inset, -inset))
+        r = self.rect.adjusted(inset, inset, -inset, -inset)
+        p.setPen(Qt.NoPen)
+        if r.isEmpty() and sw > 0 and sc.alpha():
+            p.setBrush(sc)
+            self._draw(p, self.rect)
+        else:
+            p.setBrush(fill if fill.alpha() else Qt.NoBrush)
+            self._draw(p, self.rect if r.isEmpty() else r)
+            if sw > 0 and sc.alpha():
+                self._paint_outline(p, r, sw, sc)
         self.paint_selection(p)
+
+    def _paint_outline(self, p, r, w, color):
+        style = self.props["line_style"]
+        nominal = rhythm(style, w)
+        pen = QPen(color, w, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin)
+        pen.setMiterLimit(2)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(pen)
+        if self.KIND == "rect":
+            if not nominal:
+                p.drawRect(r)
+                return
+            ink = QPainterPath()
+            ink.setFillRule(Qt.WindingFill)
+            for a, b in intervals(r.width(), nominal, style):
+                for y in (r.top(), r.bottom()):
+                    ink.addRect(QRectF(r.left() + a, y - w / 2, b - a, w))
+            for a, b in intervals(r.height(), nominal, style):
+                for x in (r.left(), r.right()):
+                    ink.addRect(QRectF(x - w / 2, r.top() + a, w, b - a))
+            for x in (r.left(), r.right()):
+                for y in (r.top(), r.bottom()):
+                    ink.addRect(QRectF(x - w / 2, y - w / 2, w, w))
+            p.fillPath(ink, color)
+        else:
+            path = QPainterPath()
+            path.addEllipse(r)
+            cycle, _ = fit_cycle(path.length(), nominal, style)
+            if cycle:
+                pen.setDashPattern([v / w for v in cycle])
+                pen.setDashOffset(cycle[0] / (2 * w))
+                p.setPen(pen)
+            p.drawPath(path)
 
 
 class RectItem(_ShapeItem):
@@ -704,14 +783,62 @@ class HighlightItem(BaseItem):
         self.paint_selection(p)
 
 
-HEAD_KINDS = ("filled", "open", "none")
-HEAD_SIZES = {"small": 1.0, "medium": 1.6, "large": 2.4}
-HEAD_FLOOR = 8.0          # a small head is never shorter than this (scene px)
+HEAD_KINDS = ("filled", "open", "none", "bar")
+HEAD_SIZES = {"small": 0.75, "medium": 1.0, "large": 1.5}
+
+
+def head_geometry(length, w, head, size="medium", both=False):
+    """A tip at the origin facing +x: (depth, shaft trim, solid ink).
+
+    All arrow consumers share this clamped construction, including the
+    open fork's inner apex and the Bar's inward face.
+    """
+    tip = QPainterPath()
+    if w <= 0 or length < 1e-6 or head == "none":
+        return 0.0, 0.0, tip
+    scale = HEAD_SIZES[size]
+    limit = length / (2 if both else 1)
+    depth = min(4 * w * scale
+                * (1.5 if head == "open" else 1), limit)
+    half_angle = math.radians(22.5)
+    half_base = depth * math.tan(half_angle)
+    trim = depth
+    if head in ("filled", "open"):
+        vertices = [(0, 0), (-depth, half_base)]
+        if head == "open":
+            thickness = min(0.75 * w, 0.70 * depth * math.sin(half_angle))
+            notch = thickness / math.sin(half_angle)
+            inside = (depth - notch) * math.tan(half_angle)
+            vertices.extend([(-depth, inside), (-notch, 0), (-depth, -inside)])
+            trim = min(depth, w / (2 * math.tan(half_angle)))
+        vertices.append((-depth, -half_base))
+        tip.addPolygon(QPolygonF([QPointF(*v) for v in vertices]))
+        tip.closeSubpath()
+    elif head == "bar":
+        depth = trim = min(w, limit)
+        span = min(4 * w * scale, 2 * limit)
+        tip.addRect(QRectF(-trim, -span / 2, trim, span))
+    return depth, trim, tip
+
+
+def arrow_ink(length, w, style, head, size="medium", both=False):
+    """Candidate A ink on the local +x axis; paint colour/alpha once."""
+    ink = QPainterPath()
+    if w <= 0 or length < 1e-6:
+        return ink
+    _, trim, tip = head_geometry(length, w, head, size, both)
+    start = trim if both else 0
+    for x1, x2 in intervals(length - trim - start, rhythm(style, w), style):
+        ink.addRect(QRectF(start + x1, -w / 2, x2 - x1, w))
+    ink = ink.united(QTransform.fromTranslate(length, 0).map(tip))
+    if both:
+        ink = ink.united(QTransform.fromScale(-1, 1).map(tip))
+    return ink
 
 
 class ArrowItem(BaseItem):
     """A line with a head at p2 (and at p1 too with both_ends); two endpoint
-    handles. The head is filled, open (two strokes) or none, in three sizes
+    handles. The head is filled, open, none or a bar, in three sizes
     scaled from the line width."""
 
     KIND = "arrow"
@@ -769,80 +896,83 @@ class ArrowItem(BaseItem):
         if math.hypot(g[2] - g[0], g[3] - g[1]) >= MIN_SIZE:
             self.set_geom(g)
 
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        if self.props["head"] == "bar":
+            d.update(head="none", terminal="bar")
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ArrowItem":
+        # Only this exact neutral pair is the v1 Bar extension. All other
+        # values follow the ordinary choice validation and legacy defaults.
+        if d.get("head") == "none" and d.get("terminal") == "bar":
+            d = dict(d, head="bar")
+        return super().from_dict(d)
+
+    def _head_geometry(self):
+        return head_geometry(QLineF(self.p1, self.p2).length(),
+                             float(self.props["stroke_width"]),
+                             self.props["head"], self.props["head_size"],
+                             bool(self.props["both_ends"]))
+
     def _head_len(self) -> float:
-        """The head's length (and width): four line widths, never under
-        HEAD_FLOOR, times the size's factor; 0 with no head."""
-        if self.props["head"] == "none":
-            return 0.0
-        base = max(4.0 * float(self.props["stroke_width"]), HEAD_FLOOR)
-        return base * HEAD_SIZES.get(self.props["head_size"], 1.6)
+        """Final depth, after size, open-wing scaling and short-span clamp."""
+        return self._head_geometry()[0]
+
+    def _axis(self) -> QTransform:
+        line = QLineF(self.p1, self.p2)
+        transform = QTransform()
+        transform.translate(self.p1.x(), self.p1.y())
+        transform.rotate(math.degrees(math.atan2(line.dy(), line.dx())))
+        return transform
+
+    def _heads(self) -> tuple[QPointF, QPointF, list[QPainterPath]]:
+        """Exposed shaft endpoints and oriented solid head paths."""
+        length = QLineF(self.p1, self.p2).length()
+        _, trim, tip = self._head_geometry()
+        if tip.isEmpty():
+            return QPointF(self.p1), QPointF(self.p2), []
+        axis = self._axis()
+        both = bool(self.props["both_ends"])
+        heads = [axis.map(QTransform.fromTranslate(length, 0).map(tip))]
+        if both:
+            heads.append(axis.map(QTransform.fromScale(-1, 1).map(tip)))
+        return (axis.map(QPointF(trim if both else 0, 0)),
+                axis.map(QPointF(length - trim, 0)), heads)
 
     def _stroke_margin(self) -> float:
-        return max(self._head_len(), float(self.props["stroke_width"]))
+        line = QRectF(self.p1, self.p2).normalized()
+        margin = max(10.0, float(self.props["stroke_width"]) + 6) / 2
+        for head in self._heads()[2]:
+            r = head.boundingRect()
+            margin = max(margin, line.left() - r.left(), r.right() - line.right(),
+                         line.top() - r.top(), r.bottom() - line.bottom())
+        return margin
 
     def boundingRect(self) -> QRectF:
         m = self._handle_size() + self._stroke_margin() + 2
         return QRectF(self.p1, self.p2).normalized().adjusted(-m, -m, m, m)
 
-    def _heads(self) -> tuple[QPointF, QPointF, list[QPolygonF]]:
-        """The line's two ends (where a filled head's base sits) and each
-        head as (side, tip, side) -- empty with no head."""
-        line = QLineF(self.p1, self.p2)
-        length = line.length()
-        if length < 1e-6 or self._head_len() <= 0:
-            return QPointF(self.p1), QPointF(self.p2), []
-        both = bool(self.props["both_ends"])
-        head = min(self._head_len(), length / 2 if both else length)
-        ux, uy = line.dx() / length, line.dy() / length
-
-        def at(tip: QPointF, sx: float, sy: float):
-            base = QPointF(tip.x() - sx * head, tip.y() - sy * head)
-            px, py = -sy * head / 2, sx * head / 2
-            return base, QPolygonF([QPointF(base.x() + px, base.y() + py),
-                                    QPointF(tip),
-                                    QPointF(base.x() - px, base.y() - py)])
-
-        end2, tri2 = at(self.p2, ux, uy)
-        heads, end1 = [tri2], QPointF(self.p1)
-        if both:
-            end1, tri1 = at(self.p1, -ux, -uy)
-            heads.append(tri1)
-        if self.props["head"] == "open":          # the line runs to the tips
-            return QPointF(self.p1), QPointF(self.p2), heads
-        return end1, end2, heads
-
     def body_shape(self) -> QPainterPath:
+        # Keep the generous continuous shaft target, even across dash gaps.
         path = QPainterPath(self.p1)
         path.lineTo(self.p2)
         stroker = QPainterPathStroker()
         stroker.setWidth(max(10.0, float(self.props["stroke_width"]) + 6))
         out = stroker.createStroke(path)
-        for tri in self._heads()[2]:
-            out.addPolygon(tri)
-        return out.simplified()
+        for head in self._heads()[2]:
+            out = out.united(head)
+        return out
 
     def paint(self, p: QPainter, option, widget=None):
         color = QColor(self.props["stroke_color"])
-        width = float(self.props["stroke_width"])
-        a, b, heads = self._heads()
-        if width > 0:
-            pen = styled_pen(color, width, self.props["line_style"])
-            pen.setCapStyle(Qt.FlatCap)
-            p.setPen(pen)
-            p.drawLine(QLineF(a, b))
-            if self.props["head"] == "open":
-                head_pen = QPen(color, width)
-                head_pen.setCapStyle(Qt.RoundCap)
-                head_pen.setJoinStyle(Qt.MiterJoin)
-                p.setPen(head_pen)
-                p.setBrush(Qt.NoBrush)
-                for tri in heads:
-                    p.drawPolyline(tri)
-            else:
-                p.setPen(Qt.NoPen)
-                p.setBrush(color)
-                for tri in heads:
-                    p.drawPolygon(tri)
+        if color.alpha():
+            ink = arrow_ink(QLineF(self.p1, self.p2).length(),
+                            float(self.props["stroke_width"]),
+                            self.props["line_style"], self.props["head"],
+                            self.props["head_size"], bool(self.props["both_ends"]))
+            p.fillPath(self._axis().map(ink), color)
         self.paint_selection(p)
 
 

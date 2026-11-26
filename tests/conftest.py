@@ -44,6 +44,30 @@ def qapp():
 
 
 @pytest.fixture(autouse=True)
+def released_test_mouse_buttons():
+    """Retire synthetic presses even when their original widget was closed.
+
+    QTest keeps mouse buttons on the shared application, beyond the lifetime
+    of a viewport. A cancelled drag may intentionally leave its last press
+    down during the assertion; it must not carry that press into another test.
+    """
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QWidget
+    app = QApplication.instance()
+    if app is not None and app.mouseButtons() != Qt.NoButton:
+        sink = QWidget()
+        held = app.mouseButtons()
+        for button in Qt.MouseButton:
+            if held & button:
+                QTest.mouseRelease(sink, button)
+        assert app.mouseButtons() == Qt.NoButton
+        sink.deleteLater()
+        QCoreApplication.sendPostedEvents(sink, QEvent.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
 def no_failed_write_box(monkeypatch, request):
     """A test must answer the failed-write seam explicitly to ask it."""
     from annotshot.mainwindow import MainWindow

@@ -2,6 +2,7 @@
 permission road, the hint), Clear and the empty hint, the right-click menu,
 the shortcuts the user sets with the capture hotkey, and quick capture.
 Everything runs offscreen; no real dialog or menu is ever shown."""
+from annotshot.keywords import key_words
 import importlib
 import sys
 
@@ -342,7 +343,7 @@ def test_saved_shortcuts_apply_at_start(qapp, private_settings):
     s.sync()
     w = MainWindow()
     assert w.a_copy.shortcut() == QKeySequence("Ctrl+K")
-    assert w.a_copy.toolTip().endswith("(" + QKeySequence("Ctrl+K").toString(QKeySequence.NativeText) + ")")
+    assert w.a_copy.toolTip().endswith("(" + key_words(QKeySequence("Ctrl+K")) + ")")
     from annotshot.tools import Tool
     assert w.tool_actions[Tool.RECT].shortcut() == QKeySequence("R")
     assert w.a_delete.shortcut() == QKeySequence("Delete")
@@ -371,7 +372,7 @@ def test_ctrl_s_follows_the_saves_own_key(window):
 
 def test_the_capture_key_round_trips(window, fake_hotkey, private_settings):
     from annotshot.mainwindow import MainWindow
-    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+2")
+    assert window.hotkey_sequence() == QKeySequence("Shift+Alt+Space")
     assert not window.hotkey_off()
     assert window.set_hotkey(QKeySequence("Ctrl+Alt+P"), off=False) is None
     assert fake_hotkey.registered[-1] == "Ctrl+Alt+P"
@@ -385,12 +386,42 @@ def test_the_capture_key_round_trips(window, fake_hotkey, private_settings):
 
 
 def test_the_capture_key_may_not_be_an_actions_key(window, fake_hotkey):
+    from annotshot import hotkey
     problem = window.set_hotkey(QKeySequence("Ctrl+N"), off=False)
     assert problem and "Capture" in problem
-    assert window.hotkey_sequence() == QKeySequence("Ctrl+Shift+2")
+    assert window.hotkey_sequence() == QKeySequence("Shift+Alt+Space")
     # and an action may not take the capture key
-    problem = window.set_shortcut("copy", QKeySequence("Ctrl+Shift+2"))
+    problem = window.set_shortcut("copy", QKeySequence(hotkey.DEFAULT))
     assert problem and "Capture from anywhere" in problem
+
+
+def test_a_saved_action_keeps_the_default_capture_key_at_start(qapp,
+                                                             private_settings,
+                                                             fake_hotkey):
+    from annotshot import hotkey
+    from annotshot.mainwindow import HOTKEY_NAME, MainWindow
+    s = QSettings(private_settings, QSettings.IniFormat)
+    s.setValue("shortcuts/copy", hotkey.DEFAULT)
+    s.sync()
+    assert not s.contains("hotkey/sequence")
+
+    w = MainWindow()                             # the same private file
+    w.hotkey = hotkey.GlobalHotkey(w, backend=fake_hotkey)
+    seq = QKeySequence(hotkey.DEFAULT)
+    assert w.a_copy.shortcut() == seq
+    assert w._key_owner(seq, skip="hotkey") == "Copy image"
+    before = {key: w.settings.value(key) for key in w.settings.allKeys()}
+
+    problem = w.apply_hotkey()
+    assert problem == w._taken(seq, "Copy image")
+    assert w.statusBar().currentMessage() == f"{HOTKEY_NAME}: {problem}"
+    assert fake_hotkey.registered == []
+    w.settings.sync()
+    s.sync()
+    assert s.value("shortcuts/copy") == hotkey.DEFAULT
+    assert not s.contains("hotkey/sequence")
+    assert {key: w.settings.value(key) for key in w.settings.allKeys()} == before
+    w.deleteLater()
 
 
 def test_a_key_the_system_refuses_says_so_and_stays_as_typed(window,
@@ -469,7 +500,8 @@ def test_the_settings_page_lists_every_action(window, fake_hotkey):
     d = SettingsDialog(window)
     assert [d.tabs.tabText(i) for i in range(d.tabs.count())] == [
         "Shortcuts", "Capture", "Look", "About"]      # Look: s3b3
-    assert list(d.edits) == [k for k, _ in SHORTCUT_ROWS]
+    common = ['capture', 'copy', 'save']
+    assert list(d.edits) == common + [k for k, _ in SHORTCUT_ROWS if k not in common]
     assert len(SHORTCUT_ROWS) == 27
     d.edits["copy"].setKeySequence(QKeySequence("Ctrl+D"))
     problem = d.commit("copy")
@@ -517,7 +549,7 @@ def test_quick_capture_copies_then_minimizes(window, monkeypatch):
     assert len(board.images) == 1 and board.images[0].width() == 1280
     assert window.isMinimized()
     assert window.statusBar().currentMessage() == \
-        f"Copied 1280 × 720 — {QKeySequence(QKeySequence.Paste).toString(QKeySequence.NativeText)} to paste"
+        f"Copied 1280 × 720 — {key_words(QKeySequence(QKeySequence.Paste))} to paste"
     assert not window.doc.undo_stack.needs_save()    # counts as exported
     window.showNormal()
     assert window.statusBar().currentMessage().startswith("Copied 1280")

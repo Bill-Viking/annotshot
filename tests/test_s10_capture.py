@@ -253,7 +253,7 @@ def test_stored_freeze_drag_captures_immediately_from_still(rig):
     assert all(not s.calls for s in rig.screens)
     settle(session)
     ov = session.overlays[0]
-    assert ov.hint() == rig.cap.HINT_OTHER
+    assert ov.hint() == "Drag an area · Click for the whole screen · Esc to cancel"
     drag(ov)
     assert len(results) == 1 and results[0].image.size().toTuple() == (400, 200)
     assert all(s.calls == [0] for s in rig.screens)
@@ -455,9 +455,9 @@ class NativeFunction:
         return self.callback(*args)
 
 
-def test_new_default_digit_is_registered_by_both_native_backends(qapp, monkeypatch):
+def test_new_default_space_is_registered_by_both_native_backends(qapp, monkeypatch):
     from annotshot import hotkey
-    assert hotkey.DEFAULT == "Ctrl+Shift+2"
+    assert hotkey.DEFAULT == "Shift+Alt+Space"
     seq = QKeySequence(hotkey.DEFAULT)
     user = SimpleNamespace(RegisterHotKey=NativeFunction(lambda *args: 1),
                            UnregisterHotKey=NativeFunction(lambda *args: 1))
@@ -465,7 +465,7 @@ def test_new_default_digit_is_registered_by_both_native_backends(qapp, monkeypat
     win = hotkey.WinBackend(lambda: None)
     assert win.register(seq) is None
     assert user.RegisterHotKey.calls == [(None, hotkey.HOTKEY_ID,
-        hotkey.MOD_NOREPEAT | hotkey.MOD_CONTROL | hotkey.MOD_SHIFT, 0x32)]
+        hotkey.MOD_NOREPEAT | hotkey.MOD_ALT | hotkey.MOD_SHIFT, 0x20)]
     win.unregister()
     qapp.removeNativeEventFilter(win._filter)
     carbon = SimpleNamespace(
@@ -476,7 +476,7 @@ def test_new_default_digit_is_registered_by_both_native_backends(qapp, monkeypat
     monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: carbon)
     mac = hotkey.MacBackend(lambda: None)
     assert mac.register(seq) is None
-    assert carbon.RegisterEventHotKey.calls[0][:2] == (19, hotkey.CMD_KEY | hotkey.SHIFT_KEY)
+    assert carbon.RegisterEventHotKey.calls[0][:2] == (49, hotkey.OPTION_KEY | hotkey.SHIFT_KEY)
     mac.unregister()
 
 
@@ -685,9 +685,9 @@ def test_release_with_timer_starts_countdown_and_overlay_mouse_input_is_ignored(
 @pytest.mark.parametrize("mode,marked,freeze,expected", [
     ("area", False, False, "Drag to capture an area · Esc to cancel"),
     ("area", True, False, "Drag to capture an area · Esc to cancel"),
-    ("window", False, False, "Click a window to capture it · Esc to cancel"),
+    ("window", False, False, "No window is available · Choose Area or Whole screen · Esc to cancel"),
     (None, False, False, "Drag to capture an area · Esc to cancel"),
-    ("area", False, True, "Drag to capture an area · click for the whole screen · Esc to cancel"),
+    ("area", False, True, "Drag an area · Click for the whole screen · Esc to cancel"),
 ])
 def test_live_hints_and_unchanged_frozen_hint(rig, mode, marked, freeze, expected):
     session, _ = rig.start(mode=mode, freeze=freeze)
