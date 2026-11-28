@@ -78,6 +78,8 @@ class NativeCalls:
             if (current.st_dev, current.st_ino) != (admitted.info.st_dev, admitted.info.st_ino):
                 raise OSError('model directory handle no longer has its path')
         self.hook('open', path)
+        if create:
+            self.hook('create', path)
         path = self.spelling(path)
         if create and directory:
             path.mkdir()
@@ -374,6 +376,138 @@ def test_windows_uncertain_or_busy_never_authorizes_expiry(w, win, fault):
     assert old.read_bytes() == before and new.exists()
     if fault == 'read-only':
         old.chmod(0o600)
+
+
+def test_windows_denied_expiry_leaves_no_placeholder(w, win, monkeypatch):
+    # Run the real Windows failure through the native-call model on the Mac.
+    from test_s54_stage3_count import test_prune_uncertain_inventory_or_denied_unlink_preserves
+    test_prune_uncertain_inventory_or_denied_unlink_preserves(w, monkeypatch, 'unlink')
+
+
+@pytest.mark.parametrize('outcome', ['success', 'denied', 'exception', 'info-exception', 'body-exception',
+                                    'inventory-exception', 'mark-denied', 'not-needed'])
+def test_windows_expiry_placeholder_lifetime(w, win, monkeypatch, outcome):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    store.file(picture(), when(2021), keep=100)
+    companion = old.with_suffix('.annotshot')
+    if outcome == 'denied':
+        def deny(event, path):
+            if event == 'delete' and path.name == 'expired':
+                raise PermissionError('picture removal denied')
+        win.hook = deny
+        with pytest.warns(RuntimeWarning, match='kept'):
+            assert store.prune(keep=1) == []
+    elif outcome == 'success':
+        assert store.prune(keep=1) == [old]
+    elif outcome in ('body-exception', 'inventory-exception', 'mark-denied'):
+        marks = []
+        def fail(event, path):
+            if outcome == 'body-exception' and event == 'rename' and path.name == 'expired':
+                raise OSError('expiry body failed')
+            if (outcome == 'inventory-exception' and event == 'names'
+                    and path == store.folder and companion.exists()):
+                raise OSError('expiry inventory failed')
+            if outcome == 'mark-denied' and event == 'delete' and path == companion:
+                marks.append(path)
+                if len(marks) == 1:
+                    raise PermissionError('first placeholder mark denied')
+        win.hook = fail
+        with pytest.warns(RuntimeWarning):
+            assert store.prune(keep=1) == []
+        if outcome == 'mark-denied':
+            assert len(marks) == 2, 'finally must retry on the creating handle'
+    else:
+        # Even a setup failure before the guard yields must retire our entry.
+        if outcome in ('exception', 'info-exception'):
+            if outcome == 'exception':
+                def fail_seal(handle, mode):
+                    raise OSError('placeholder setup failed')
+                monkeypatch.setattr(win, 'seal', fail_seal)
+            else:
+                info, failed = win.info, []
+                def fail_first_info(handle):
+                    if win.handles[handle].path == companion and not failed:
+                        failed.append(handle)
+                        raise OSError('placeholder setup failed')
+                    return info(handle)
+                monkeypatch.setattr(win, 'info', fail_first_info)
+            with recent._Root(store.folder) as root:
+                with pytest.raises(OSError, match='setup failed'):
+                    with recent._expiry_guard(root, old):
+                        pytest.fail('setup should have failed')
+        else:
+            with recent._Root(store.folder) as root:
+                with recent._expiry_guard(root, old):
+                    assert companion.exists()
+                    # The caller returns without expiring this capture.
+                    pass
+    assert not companion.exists()
+    assert old.exists() is (outcome != 'success')
+
+
+@pytest.mark.parametrize('change', ['bytes', 'identity'])
+def test_windows_placeholder_cleanup_preserves_changed_entry(w, win, monkeypatch, change):
+    old = w.recent_store.file(picture(), when(2020), keep=100)
+    companion = old.with_suffix('.annotshot')
+    def change_setup(handle, mode):
+        # Deliberately bypass model sharing to exercise the last safety gate.
+        # A real independent writer cannot acquire this exclusive handle.
+        if change == 'identity':
+            companion.rename(companion.with_suffix('.displaced'))
+        companion.write_bytes(b'work' if change == 'bytes' else b'')
+        info = companion.stat()
+        win.births[(info.st_dev, info.st_ino)] = info.st_ctime_ns
+    monkeypatch.setattr(win, 'seal', change_setup)
+    with recent._Root(old.parent) as root:
+        with pytest.raises(OSError, match='placeholder changed'):
+            with recent._expiry_guard(root, old):
+                pytest.fail('changed placeholder admitted')
+    assert companion.read_bytes() == (b'work' if change == 'bytes' else b'')
+    assert old.exists()
+
+
+def test_windows_zero_byte_companion_is_not_an_edit_or_removed(w, win):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    newer = store.file(picture(), when(2021), keep=100)
+    empty = old.with_suffix('.annotshot')
+    empty.write_bytes(b'')
+    identity = empty.stat().st_dev, empty.stat().st_ino
+    assert not (store.folder / recent._claim_name(old)).exists()
+    assert store.prune(keep=1) == [old]
+    assert newer.exists() and empty.read_bytes() == b''
+    assert (empty.stat().st_dev, empty.stat().st_ino) == identity
+
+
+@pytest.mark.parametrize('protection', ['claim', 'nonempty', 'unrecorded', 'late-write'])
+def test_windows_empty_companion_does_not_bypass_protection(w, win, protection):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    newer = store.file(picture(), when(2021), keep=100)
+    companion = old.with_suffix('.annotshot')
+    companion.write_bytes(b'work' if protection == 'nonempty' else b'')
+    if protection == 'unrecorded':
+        (store.folder / recent._receipt_name(old)).unlink()
+    with recent._Root(store.folder) as root:
+        claim = recent._claim(root, old) if protection == 'claim' else None
+        if protection == 'late-write':
+            # A writer wins just before the final exclusive create/pin.
+            def late_write(event, path):
+                if event == 'create' and path == companion:
+                    companion.write_bytes(b'late work')
+            win.hook = late_write
+        try:
+            if protection == 'late-write':
+                with pytest.warns(RuntimeWarning):
+                    assert store.prune(keep=1) == []
+                assert companion.read_bytes() == b'late work'
+            else:
+                assert store.prune(keep=1) == []
+        finally:
+            if claim is not None:
+                claim.release(root)
+    assert old.exists() and newer.exists() and companion.exists()
 
 
 def test_windows_rechecks_reservation_root_and_rejects_reparse(w, win, tmp_path, monkeypatch):
@@ -819,6 +953,22 @@ def test_windows_native_boundary_empty_unicode_hidden_create_and_attribute_updat
 
 
 native_windows = pytest.mark.skipif(os.name != 'nt', reason='requires real Windows NT handles; Mac native-call models are not native proof')
+
+
+@native_windows
+def test_native_windows_denied_expiry_leaves_no_placeholder(w, monkeypatch):
+    test_windows_denied_expiry_leaves_no_placeholder(w, None, monkeypatch)
+
+
+@native_windows
+@pytest.mark.parametrize('outcome', ['success', 'exception', 'not-needed'])
+def test_native_windows_expiry_placeholder_lifetime(w, monkeypatch, outcome):
+    test_windows_expiry_placeholder_lifetime(w, recent._windows_native(), monkeypatch, outcome)
+
+
+@native_windows
+def test_native_windows_zero_byte_companion_is_not_an_edit_or_removed(w):
+    test_windows_zero_byte_companion_is_not_an_edit_or_removed(w, None)
 
 
 @native_windows

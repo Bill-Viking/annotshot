@@ -1032,6 +1032,68 @@ class _WindowsRoot(_Root):
         with self.temporary(name, data) as handle:
             return _identity(_fd_info(handle))
 
+    def expiry_entries(self, entries, *, claimed=False):
+        """An idle empty companion cannot be an archive or prove a filing.
+
+        Only expiry uses this view. Keep the actual entry on disk, including
+        when its PNG expires; ambiguity, links, busy handles and claims keep
+        their usual protection. The candidate check owns its stem claim.
+        """
+        pngs = [p for p in entries if p.suffix.lower() == '.png']
+        edits = [p for p in entries if p.suffix.lower() == EDITABLE]
+        if len(pngs) != 1 or len(edits) != 1:
+            return entries
+        if not claimed and _claim_name(pngs[0]) in self.names():
+            return entries
+        info = self.stat(edits[0].name)
+        if (info.st_size or not stat.S_ISREG(info.st_mode)
+                or info.st_file_attributes & 0x400):
+            return entries
+        with self.pin(edits[0].name) as (data, _, _):
+            return entries if data else [p for p in entries if p != edits[0]]
+
+    @contextmanager
+    def expiry_companion(self, name):
+        """Pin an empty companion; delete only the one this attempt creates."""
+        with ExitStack() as stack:
+            try:
+                handle = stack.enter_context(self._lease(name, create=True, write=True))
+                created = True
+            except FileExistsError:
+                data, _, handle = stack.enter_context(self.pin(name))
+                if data:
+                    raise FileExistsError(str(self.folder / name))
+                created = False
+            identity, marked = None, False
+            try:
+                identity = _identity(_fd_info(handle))
+                if created:
+                    self.api.seal(handle.raw, 0o600)
+                    info = _fd_info(handle)
+                    if (_identity(info) != identity or info.st_size
+                            or not stat.S_ISREG(info.st_mode)
+                            or info.st_file_attributes & 0x400):
+                        raise OSError('Recent expiry placeholder changed')
+                    # Mark while exclusive, so even process death retires our
+                    # placeholder. The creating handle is the deletion target.
+                    self.api.delete(handle.raw)
+                    marked = True
+                yield
+            finally:
+                if created and not marked:
+                    # Setup/marking may have raised before the usual mark.
+                    # Never reopen by path or remove an entry with any bytes.
+                    info = _fd_info(handle)
+                    if identity is None:
+                        # The first metadata query failed. FILE_CREATE's still
+                        # exclusive handle remains our ownership proof; obtain
+                        # its ID here, without opening the pathname again.
+                        identity = _identity(info)
+                    if (_identity(info) == identity and info.st_size == 0
+                            and stat.S_ISREG(info.st_mode)
+                            and not info.st_file_attributes & 0x400):
+                        self.api.delete(handle.raw)
+
     def unlink(self, name, identity=None):
         with self._lease(name) as handle:
             info = _fd_info(handle)
@@ -1141,9 +1203,10 @@ def _expiry_guard(root, path):
     """Hold companion absence through Windows expiry, not just its scan.
 
     ASSUMES: a peer can create an editable after the inventory. FILE_CREATE
-    either observes it (keep the PNG) or owns an empty, delete-pending entry
-    that denies competing writes/deletes until expiry finishes. The handle
-    removes only its own placeholder on close, including process death.
+    either observes it (pin only if empty) or owns an empty, delete-pending
+    entry that denies competing writes/deletes until expiry finishes. The
+    handle removes only its own placeholder on close, including process death.
+    A pre-existing empty companion is pinned but never removed here.
     Case-sensitive directories cannot exclude every companion spelling this
     way, so they keep the original. Only explicitly unsupported case queries
     imply ordinary Windows names; other query failures keep the original.
@@ -1155,10 +1218,7 @@ def _expiry_guard(root, path):
         raise OSError(f'Recent cannot prove companion absence in this case-sensitive folder; file kept at {path}')
     name = editable_for(path).name
     try:
-        with root.temporary(name, b'') as handle:
-            # Mark deletion while still holding the exclusive handle. No
-            # check-by-path cleanup, and no crash-left fake editable.
-            root.unlink(name, _identity(_fd_info(handle)))
+        with root.expiry_companion(name):
             names = root.names()
             companions = [n for n in names if Path(n).stem.casefold() == path.stem.casefold()
                           and Path(n).suffix.lower() in ('.png', EDITABLE)
@@ -1460,6 +1520,8 @@ class RecentStore:
                         raise OSError("unreadable Recent filing record") from error
             ordered = []
             for entries in groups.values():
+                if _HOST_WINDOWS:
+                    entries = root.expiry_entries(entries)
                 modes = [root.stat(p.name).st_mode for p in entries]
                 regular = [p for p, mode in zip(entries, modes) if stat.S_ISREG(mode)]
                 pngs = [p for p in regular if p.suffix.lower() == '.png']
@@ -1474,6 +1536,8 @@ class RecentStore:
     def _expiry_candidate(self, root, old, expected):
         """Final check under the stem claim. Caller holds it through unlink."""
         entries = self._inventory().get(old.stem.casefold(), [])
+        if _HOST_WINDOWS:
+            entries = root.expiry_entries(entries, claimed=True)
         if entries != [old] or not stat.S_ISREG(root.stat(old.name).st_mode):
             return False
         if _version(root.stat(old.name)) != _version(expected) or not self._proven(root, old):

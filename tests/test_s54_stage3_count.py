@@ -451,7 +451,7 @@ def test_r14_accepted_count_failed_png_and_pending_edit_outcomes(w, qapp, monkey
 
 @pytest.mark.parametrize('fault', ['listing', 'unlink'])
 def test_prune_uncertain_inventory_or_denied_unlink_preserves(w, monkeypatch, fault):
-    seed(w.recent_store, 5)
+    paths = seed(w.recent_store, 5)
     before = disk(w.recent_store)
     w.recent_store.keep = 1
     with monkeypatch.context() as m:
@@ -462,7 +462,17 @@ def test_prune_uncertain_inventory_or_denied_unlink_preserves(w, monkeypatch, fa
                 m.setattr(Path, 'iterdir', lambda p: (_ for _ in ()).throw(PermissionError('denied')))
         else:
             if recent._HOST_WINDOWS:
-                m.setattr(recent._windows_native(), 'delete', lambda *a, **k: (_ for _ in ()).throw(PermissionError('denied')))
+                native = recent._windows_native()
+                with recent._Root(w.recent_store.folder) as root:
+                    pictures = {recent._identity(root.stat(p.name)) for p in paths}
+                delete = native.delete
+                def deny_picture(handle):
+                    # Deny the picture, even after its move to staging, but
+                    # allow claim/placeholder cleanup on their own handles.
+                    if recent._identity(native.info(handle)) in pictures:
+                        raise PermissionError('denied')
+                    return delete(handle)
+                m.setattr(native, 'delete', deny_picture)
             else:
                 m.setattr(recent.os, 'unlink', lambda *a, **k: (_ for _ in ()).throw(PermissionError('denied')))
         assert w.recent_store.prune() == []
