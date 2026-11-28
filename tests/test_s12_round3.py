@@ -227,10 +227,11 @@ def test_permission_words_end_with_the_matching_recovery_text():
 def test_manual_repeats_the_way_back_and_quotes_the_waiting_status_once():
     manual = (Path(__file__).resolve().parent.parent / 'docs' / 'USER-MANUAL.md').read_text(
         encoding='utf-8')
-    assert manual.count(mw.PERMISSION_WAY_BACK) == 2
-    assert manual.count(mw.PERMISSION_STATUS) == 1
-    step = next(line for line in manual.splitlines() if line.startswith('4. **Start it:**'))
-    assert f'"{mw.PERMISSION_STATUS}"' in step
+    assert manual.count('If Annotshot is already on the list and capture is still blocked, remove it from the list, add **Annotshot** again from **Applications**, and switch it on.') == 1
+    assert manual.count('If Annotshot is already enabled in the screen recording list, remove it, add it again from **Applications**, and switch it on.') == 1
+    assert manual.count('click **Open System Settings** and turn on screen recording for Annotshot.') == 1
+    step = next(line for line in manual.splitlines() if line.startswith('3. Open **Annotshot** from **Applications**'))
+    assert 'If Annotshot asks for screen recording permission, click **Open System Settings** and turn on screen recording for Annotshot.' in step
 
 
 def test_watch_single_flight_deadline_and_quit(window, processes, monkeypatch):
@@ -886,8 +887,8 @@ def test_restart_flag_is_a_normal_launch_option(window, monkeypatch, qapp):
 
 def test_manual_matches_restart_and_sticky_tool_words():
     manual = (Path(__file__).resolve().parent.parent / 'docs/USER-MANUAL.md').read_text(encoding='utf-8')
-    assert manual.count('if the write fails, it stays open with your edits.') == 2
-    assert manual.count('the next **Capture** press offers **Restart Annotshot** to try again.') == 2
+    assert manual.count('If Annotshot says it could not keep your changes, use **Save…** and choose **Annotshot editable** in another folder.') == 1
+    assert manual.count('If capture is still blocked, click **Capture** and choose **Restart Annotshot** when offered.') == 1
     assert 'then quit Annotshot and start it again' not in manual
     assert 'then quit and reopen Annotshot' not in manual
     assert 'A drawing tool stays selected until you choose another tool.' not in manual

@@ -179,9 +179,9 @@ def test_front_page_line(window):
     assert window.capture_key_text() == ""
     window.apply_hotkey()
     text = window.welcome.key_row.text()
-    assert "Capture from anywhere with Option+Shift+Space" in text
+    assert "Capture from anywhere with Control+Command+Space" in text
     no_key_glyphs(text)
-    assert window.capture_key_text() == "Option+Shift+Space"
+    assert window.capture_key_text() == "Control+Command+Space"
 
 
 @MAC_ONLY
@@ -211,7 +211,7 @@ def test_help_shortcuts(window):
     window.apply_hotkey()
     text = shortcuts_markdown(window.shortcut_rows())
     assert "| Command+C | Copy image |" in text
-    assert "| Option+Shift+Space | Capture from anywhere |" in text
+    assert "| Control+Command+Space | Capture from anywhere |" in text
     assert "Forward Delete" in text and "Escape" in text
     no_key_glyphs(text)
 
@@ -222,10 +222,14 @@ def test_assembled_help_includes_manual_in_words(window):
     manual = (Path(__file__).resolve().parents[1] / "docs" / "USER-MANUAL.md").read_text()
     text = help_markdown(window.shortcut_rows(), manual)
     assert not any(ch in text for ch in "⌃⌥⇧⌘↩⌫⎋⇥")
-    assert "press Command+Space" in text
+    assert "**Command+S**" in text
     assert "(Command+N on a Mac)" in text
-    assert "Default on Mac: Option+Shift+Space. Default on Windows: Alt+Shift+Space." in text
+    assert "The default capture key is Control+Command+Space on Mac and Ctrl+Alt+Space on Windows." in text
     assert "(on a Mac: Control, Option, Shift or Command)" in text
+    assert "Updates keep your saved key. Click Reset beside Capture from anywhere to use the current default." in text
+    assert "On Mac, Control+Command+Space can also open Emoji & Symbols." in text
+    assert "choose Change key or Turn off from the key button beside Capture." in text
+    assert "| Control+Command+Space on Mac, Ctrl+Alt+Space on Windows | Capture from anywhere |" in manual
     punctuation = dict(PUNCTUATION)
     for source in (manual, text):
         shortcuts = list(re.finditer(r"Ctrl\+([,\]\[=\-])", source))

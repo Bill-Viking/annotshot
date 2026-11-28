@@ -50,6 +50,8 @@ def test_feedback_keyboard_triggers_once_without_capturing(
     spy = QSignalSpy(feedback_window.a_feedback.triggered)
     page.open_link.setFocus(Qt.TabFocusReason)
     QTest.keyClick(page.open_link, Qt.Key_Tab)
+    assert page.manual_link.hasFocus()
+    QTest.keyClick(page.manual_link, Qt.Key_Tab)
     assert page.feedback_link.hasFocus(), page.focusWidget()
     QTest.keyClick(page.feedback_link, key)
     assert spy.count() == 1
@@ -75,8 +77,12 @@ def test_feedback_follows_open_in_both_tab_directions(feedback_window):
     page.open_link.setFocus(Qt.TabFocusReason)
     assert page.open_link.hasFocus()
     QTest.keyClick(page.open_link, Qt.Key_Tab)
+    assert page.manual_link.hasFocus()
+    QTest.keyClick(page.manual_link, Qt.Key_Tab)
     assert page.feedback_link.hasFocus(), page.focusWidget()
     QTest.keyClick(page.feedback_link, Qt.Key_Backtab)
+    assert page.manual_link.hasFocus()
+    QTest.keyClick(page.manual_link, Qt.Key_Backtab)
     assert page.open_link.hasFocus()
 
 
@@ -84,7 +90,7 @@ def test_feedback_sits_right_of_open_on_the_same_line(feedback_window):
     page = feedback_window.welcome
     opened = page.open_link.geometry()
     feedback = page.feedback_link.geometry()
-    assert feedback.left() - opened.right() - 1 == 16
+    assert feedback.left() - page.manual_link.geometry().right() - 1 == 16
     assert feedback.top() == opened.top()
     assert feedback.height() == opened.height()
     assert page.rect().contains(feedback)
@@ -144,29 +150,109 @@ def test_status_and_surrounding_layout_match_original_open_row(
     assert page.status_label.text() == "Feedback layout check"
     assert [widget.geometry() for widget in widgets] == with_feedback
 
-    # Reconstruct the original single-widget layout as a geometry reference.
-    row = page.link_row
-    left = row.parent()
-    index = next(i for i in range(left.count()) if left.itemAt(i).layout() is row)
-    row.removeWidget(page.open_link)
-    page.feedback_link.hide()
-    left.removeItem(row)
-    left.insertWidget(index, page.open_link)
-    left.activate()
-    qapp.processEvents()
-    # The original event filter uses the full-width Open geometry.
-    expected_status = page.open_link.geometry()
-    expected_status.moveTop(expected_status.bottom() + 1)
-    label = page.status_label
-    painted = label.fontMetrics().boundingRect(
-        QRect(0, 0, max(1, expected_status.width()), 10000),
-        Qt.TextWordWrap | Qt.AlignLeft, label.text())
-    expected_status.setHeight(max(painted.height(), label.heightForWidth(expected_status.width())))
-    page.status_label.setGeometry(expected_status)
-    assert status == expected_status
+    links = (page.open_link, page.manual_link, page.feedback_link)
+    for link in links:
+        assert page.rect().contains(link.geometry())
+        assert link.geometry().bottom() < status.top()
+    for first, second in zip(links, links[1:]):
+        assert not first.geometry().intersects(second.geometry())
     assert page.open_link.pos() == open_position
-    # The status line re-places itself from the link row on every resize;
-    # that row is dismantled above, so only its neighbours are compared here.
-    assert [widget.geometry() for widget in widgets[1:]] == with_feedback[1:]
     assert feedback_window.size() == window_size
     theme.apply(qapp, "Light")
+
+
+@pytest.mark.parametrize("key", [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space])
+@pytest.mark.parametrize("name", ["privacy_row", "open_link", "manual_link", "feedback_link"])
+def test_s50_each_focused_link_owns_its_keys(feedback_window, monkeypatch, key, name):
+    w = feedback_window
+    page = w.welcome
+    calls = []
+    monkeypatch.setattr(w, "capture", lambda: calls.append("capture"))
+    # The action slots are replaced only here; all four routes are observed.
+    for action, destination in ((w.a_open, "open_link"), (w.a_help, "manual_link"),
+                                (w.a_feedback, "feedback_link")):
+        if action is not w.a_feedback:
+            action.triggered.disconnect()
+        action.triggered.connect(lambda _=False, d=destination: calls.append(d))
+    page._link_destinations[page.privacy_row] = lambda: calls.append("privacy_row")
+    link = getattr(page, name)
+    link.setFocus(Qt.TabFocusReason)
+    QTest.keyClick(link, key)
+    assert calls == [name]
+    QCoreApplication.sendEvent(link, QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier, "", True, 1))
+    assert calls == [name]
+    QTest.keyClick(link, Qt.Key_Tab)
+    assert calls == [name]
+
+
+def test_s50_manual_mouse_and_open_cancel_use_existing_actions(feedback_window, monkeypatch, qapp):
+    from PySide6.QtWidgets import QFileDialog
+    from test_s10_welcome import click_label_anchor
+    w = feedback_window
+    picks = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: picks.append(True) or ("", ""))
+    click_label_anchor(w.welcome.open_link, "open", qapp)
+    assert picks == [True] and w.state_name == "welcome"
+    click_label_anchor(w.welcome.manual_link, "manual", qapp)
+    assert w._help_window is not None and w._privacy_window is None
+    assert "Keyboard shortcuts" in w._help_window.browser.toPlainText()
+    w._help_window.close()
+
+
+@pytest.mark.parametrize("theme_name", ["Light", "Dark", "Retro"])
+def test_s50_wrapped_links_and_status_stay_in_visible_order(feedback_window, qapp, theme_name, white):
+    from annotshot import theme
+    page = feedback_window.welcome
+    for _ in range(4):
+        feedback_window.recent_store.file(white)
+    theme.apply(qapp, theme_name)
+    page.refresh()
+    feedback_window.statusBar().showMessage("A capture could not be completed. Try another window. " * 3)
+    qapp.processEvents()
+    assert len(page.recent_buttons) == 4
+    links = (page.open_link, page.manual_link, page.feedback_link)
+    assert page.status_label.geometry().top() > max(link.geometry().bottom() for link in links)
+    assert not page.status_label.geometry().intersects(page.capture_bar.geometry())
+    assert page.rect().contains(page.status_label.geometry())
+    recent_left = page.recent_heading.mapTo(page, QPoint()).x()
+    assert page.status_label.geometry().right() < recent_left
+    for link in links:
+        assert link.geometry().right() < recent_left
+    # Exercise the narrower-column path directly: whole links wrap in order.
+    page.link_row.setGeometry(QRect(20, 200, 200, page.link_row.heightForWidth(200)))
+    for first, second in zip(links, links[1:]):
+        assert not first.geometry().intersects(second.geometry())
+        assert (second.y(), second.x()) > (first.y(), first.x())
+    assert page.status_label.y() > links[-1].geometry().bottom()
+
+
+def test_s50_feedback_visible_link_requests_exact_chooser_once(welcome_window, monkeypatch, qapp):
+    from annotshot.feedback import CHOOSER_URL
+    from test_s10_welcome import click_label_anchor
+    calls = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: calls.append(url.toString()) or True)
+    monkeypatch.setattr(welcome_window, "capture", lambda: pytest.fail("capture"))
+    welcome_window.show()
+    qapp.processEvents()
+    click_label_anchor(welcome_window.welcome.feedback_link, "feedback", qapp)
+    assert calls == [CHOOSER_URL]
+    assert welcome_window._help_window is None and welcome_window._privacy_window is None
+
+
+@pytest.mark.parametrize("key", [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space])
+def test_s50_privacy_keyboard_opens_only_local_reader(welcome_window, monkeypatch, qapp, key):
+    from annotshot import help
+    monkeypatch.setattr(help, "open_url", lambda _: pytest.fail("URL"))
+    monkeypatch.setattr(welcome_window, "capture", lambda: pytest.fail("capture"))
+    welcome_window.show()
+    welcome_window.activateWindow()
+    qapp.processEvents()
+    link = welcome_window.welcome.privacy_row
+    link.setFocus(Qt.TabFocusReason)
+    QTest.keyClick(link, key)
+    reader = welcome_window._privacy_window
+    assert reader is not None and welcome_window._help_window is None
+    assert "Where pictures are kept" in reader.browser.toPlainText()
+    reader.close()
+    qapp.processEvents()
+    assert link.hasFocus()

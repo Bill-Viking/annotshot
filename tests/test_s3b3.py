@@ -172,8 +172,26 @@ def _hex(c) -> str:
 def test_light_is_the_look_before_themes_exactly(qapp):
     from PySide6.QtGui import QPalette
     from annotshot import app, theme
-    assert theme.style_sheet("light") == BASELINE_STYLE_SHEET
-    assert app.STYLE_SHEET == BASELINE_STYLE_SHEET
+    # s54 Look A changes only the bars; every other style stays pinned.
+    expected = BASELINE_STYLE_SHEET.replace("margin-left: 8px", "margin-left: 0px").replace(
+        "margin-right: 8px", "margin-right: 0px").replace(
+        "color: #086DBE; background: #E8F4FF; border-color: #B5D9F7; }",
+        "color: #086DBE; background: #E8F4FF; border-color: #B5D9F7; }\n"
+        "QToolBar#tools QToolButton:checked:pressed { background: #E4ECF4; }").replace(
+        "color: #FFFFFF; background: #0878D5; border-color: #0870C6;",
+        "color: #293846; background: transparent; border-left: 2px solid #0866AC;").replace(
+        "#primary:hover { background: #0A6DC0; }", "#primary:hover { background: #F1F5FA; }").replace(
+        "#primary:pressed { background: #075FA8; }", "#primary:pressed { background: #E4ECF4; }").replace(
+        "color: #0866AC; background: #F6FBFF; border-color: #78B6E8;",
+        "color: #0866AC; background: transparent; border: 2px solid #0866AC;").replace(
+        "QToolBar#main QToolButton#outline:hover { background: #E9F4FE; }",
+        "QToolBar#main QToolButton#outline:hover { background: #F1F5FA; }\n"
+        "QToolBar#main QToolButton#outline:pressed { background: #E4ECF4; }\n"
+        "QToolBar#main QToolButton#closePicture { border: 1px solid #334454; }\n"
+        "QToolBar#main QFrame#barDivider { background: #D7DDE4; }\n"
+        "/* _BarButton paints a separate inset dotted focus and a 12 x 2 checked mark. */")
+    assert theme.style_sheet("light") == expected
+    assert app.STYLE_SHEET == expected
     pal = theme.palette("light")
     for role, value in BASELINE_PALETTE.items():
         assert _hex(pal.color(getattr(QPalette, role))) == value, role
@@ -182,6 +200,7 @@ def test_light_is_the_look_before_themes_exactly(qapp):
             == BASELINE_DISABLED_TEXT
     t = theme.tokens("light")
     for token, value in BASELINE_OTHER.items():
+        value = {"capture-icon": "#0866AC", "capture-icon-disabled": "#A7B1BB"}.get(token, value)
         assert t[token] == value, token
     f = theme.font("light")
     assert (f.family(), f.pixelSize()) == (typefaces.interface_family(), BASELINE_FONT[1])

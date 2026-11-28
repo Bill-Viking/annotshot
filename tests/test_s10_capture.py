@@ -2,6 +2,7 @@
 import ctypes
 import importlib
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -455,19 +456,34 @@ class NativeFunction:
         return self.callback(*args)
 
 
-def test_new_default_space_is_registered_by_both_native_backends(qapp, monkeypatch):
+@pytest.mark.parametrize("platform, expected", [
+    ("win32", "Ctrl+Alt+Space"),
+    ("darwin", "Meta+Ctrl+Space"),
+    ("linux", "Shift+Alt+Space"),
+    ("freebsd", "Shift+Alt+Space"),
+])
+def test_default_for_platform_is_pure(platform, expected):
     from annotshot import hotkey
-    assert hotkey.DEFAULT == "Shift+Alt+Space"
-    seq = QKeySequence(hotkey.DEFAULT)
+    assert hotkey.default_for_platform(platform) == expected
+    assert hotkey.DEFAULT == hotkey.default_for_platform(sys.platform)
+
+
+def test_windows_default_space_native_registration(qapp, monkeypatch):
+    from annotshot import hotkey
+    seq = QKeySequence(hotkey.default_for_platform("win32"))
     user = SimpleNamespace(RegisterHotKey=NativeFunction(lambda *args: 1),
                            UnregisterHotKey=NativeFunction(lambda *args: 1))
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: user, raising=False)
     win = hotkey.WinBackend(lambda: None)
     assert win.register(seq) is None
-    assert user.RegisterHotKey.calls == [(None, hotkey.HOTKEY_ID,
-        hotkey.MOD_NOREPEAT | hotkey.MOD_ALT | hotkey.MOD_SHIFT, 0x20)]
+    assert user.RegisterHotKey.calls == [(None, win._id, 0x4003, 0x20)]
     win.unregister()
-    qapp.removeNativeEventFilter(win._filter)
+    assert user.UnregisterHotKey.calls == [(None, win._id)]
+
+
+def test_mac_default_space_native_registration(qapp, monkeypatch):
+    from annotshot import hotkey
+    seq = QKeySequence(hotkey.default_for_platform("darwin"))
     carbon = SimpleNamespace(
         GetApplicationEventTarget=NativeFunction(lambda: 1),
         InstallEventHandler=NativeFunction(lambda *a: 0),
@@ -476,8 +492,31 @@ def test_new_default_space_is_registered_by_both_native_backends(qapp, monkeypat
     monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: carbon)
     mac = hotkey.MacBackend(lambda: None)
     assert mac.register(seq) is None
-    assert carbon.RegisterEventHotKey.calls[0][:2] == (49, hotkey.OPTION_KEY | hotkey.SHIFT_KEY)
+    call, = carbon.RegisterEventHotKey.calls
+    assert call[:2] == (49, 0x1100)
+    assert call[2].id == mac._id and call[2].signature == hotkey.fourcc("ANSH")
     mac.unregister()
+
+
+def test_linux_default_remains_unavailable(qapp, monkeypatch):
+    from annotshot import hotkey, mainwindow, settings_dialog
+    monkeypatch.setattr(hotkey.sys, "platform", "linux")
+    monkeypatch.setattr(hotkey, "DEFAULT", hotkey.default_for_platform("linux"))
+    monkeypatch.setattr(hotkey, "backend_class", lambda: hotkey.NoBackend)
+    calls = []
+    monkeypatch.setattr(hotkey.NoBackend, "register", lambda *args: calls.append(args))
+    w = mainwindow.MainWindow()
+    try:
+        assert w.hotkey_sequence() == QKeySequence("Shift+Alt+Space")
+        w.apply_hotkey()
+        assert not calls and not w.hotkey.available and not w.hotkey.registered
+        page = settings_dialog.SettingsDialog(w)
+        assert not page.hotkey_edit.isEnabled()
+        assert w.welcome.capture_bar.key_button is None
+        assert not w.settings.contains("hotkey/sequence")
+        page.deleteLater()
+    finally:
+        w.deleteLater()
 
 
 def test_previously_stored_hotkey_is_not_replaced(qapp):

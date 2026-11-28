@@ -18,9 +18,9 @@ from pathlib import Path
 
 import shiboken6
 
-from PySide6.QtCore import (QByteArray, QDateTime, QEvent, QProcess, QRect, QRectF,
+from PySide6.QtCore import (QBuffer, QByteArray, QDateTime, QEvent, QIODevice, QProcess, QRect, QRectF,
                             QSettings, QSize, Qt, QTimer, Signal)
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont,
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QPen,
                            QFontInfo, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QKeySequence, QPalette,
                            QPainter, QPixmap, QShortcut, QUndoGroup)
@@ -32,14 +32,14 @@ from PySide6.QtWidgets import (QAbstractSlider, QApplication, QButtonGroup,
                                QSizePolicy, QSlider, QSpinBox,
                                QStackedWidget, QStyle, QStyledItemDelegate,
                                QStyleOptionComboBox, QStyleOptionSpinBox, QStyleOptionViewItem,
-                               QStylePainter, QToolBar,
+                               QStyleOptionToolButton, QStylePainter, QToolBar,
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import feedback, hotkey, macos
 from .capture import CaptureSession
 from .items import HighlightItem, arrow_ink, without_alpha
 from .keywords import key_words
-from .office import OFFICE_FORMATS, export
+from .office import OFFICE_FORMATS, _write_safely, export
 from . import recent, theme, typefaces
 from .scene import Document
 from .packaged import app_data_directory, is_packaged
@@ -707,8 +707,51 @@ class _ReadableRecentStore(recent.RecentStore):
             return []
 
 
+class _BarButton(QToolButton):
+    """A tool's persistent mark and keyboard focus are separate cues."""
+
+    def paintEvent(self, event):
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.state &= ~QStyle.State_HasFocus
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.CC_ToolButton, option)
+        if self.isChecked():
+            painter.fillRect((self.width() - 12) // 2, self.height() - 5,
+                             12, 2, theme.color("checked-text"))
+        if self.hasFocus():
+            # Separate inset dotted focus, inside every measured button.
+            ink = "checked-text" if self.isChecked() else "button-text"
+            painter.setPen(QPen(theme.color(ink), 1, Qt.DotLine))
+            painter.drawRect(self.rect().adjusted(3, 3, -4, -4))
+
+
+class _BarContents(QWidget):
+    def __init__(self, bar):
+        super().__init__(bar)
+        self.bar = bar
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def sizeHint(self):
+        # QMainWindow must allocate the screen's width, never a single-line
+        # action sum as a minimum. FitBar owns the measured height instead.
+        return QSize(1, 1)
+
+    def minimumSizeHint(self):
+        return QSize(1, 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.bar.fit(event.size().width())
+
+
 class FitBar(QToolBar):
-    """Keep every action visible by dropping labels in ordered groups."""
+    """Ordered action buttons: shed labels, collapse the gap, then wrap.
+
+    A single toolbar widget owns the complete flow. Qt's native toolbar
+    layout therefore never moves an action into an overflow menu. Actions
+    remain shared with the window, shortcuts and menus.
+    """
 
     def __init__(self, *args, **kwargs):
         self._levels = []
@@ -717,7 +760,55 @@ class FitBar(QToolBar):
         self._needs = None
         self._fit_width = None
         self._fitting = False
+        self._entries = {}
+        self._line_height = 1
+        self._bar_height = 1
         super().__init__(*args, **kwargs)
+        self._contents = _BarContents(self)
+        super().addWidget(self._contents)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def addAction(self, action):  # noqa: N802 - QToolBar's public surface
+        button = _BarButton(self._contents)
+        button.setDefaultAction(action)
+        button.setIconSize(self.iconSize())
+        button.setToolButtonStyle(self.toolButtonStyle())
+        button.setFocusPolicy(Qt.StrongFocus)
+        button.setAccessibleName(action.text())
+        # Toolbar clicks keep a live caret until the chosen action handles it.
+        # Tab still takes keyboard focus (and draws its own dotted perimeter).
+        button.setFocusPolicy(Qt.TabFocus)
+        self._entries[action] = button
+        button.show()
+
+    def addWidget(self, widget):  # noqa: N802
+        action = QAction(self)
+        widget.setParent(self._contents)
+        self._entries[action] = widget
+        return action
+
+    def addSeparator(self):  # noqa: N802
+        action = QAction(self)
+        action.setSeparator(True)
+        line = QFrame(self._contents)
+        line.setObjectName("barDivider")
+        self._entries[action] = line
+        return action
+
+    def actions(self):
+        return list(self._entries)
+
+    def widgetForAction(self, action):  # noqa: N802
+        return self._entries.get(action)
+
+    def sizeHint(self):  # noqa: N802
+        if not self._levels:
+            return super().sizeHint()
+        width = min(self.needs()[self._level], self._fit_width or self.needs()[0])
+        return QSize(width, self._bar_height)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(1, self._bar_height)
 
     def set_levels(self, levels: list[frozenset[QAction]]) -> None:
         self._levels = levels
@@ -747,8 +838,8 @@ class FitBar(QToolBar):
                 measured = []
                 for level in range(len(self._levels)):
                     self._apply_level(level)
-                    self.layout().invalidate()
-                    measured.append(self.sizeHint().width())
+                    sizes = self._sizes()
+                    measured.append(self._single_need(sizes))
                 self._needs = tuple(measured)
             finally:
                 self._apply_level(current)
@@ -762,6 +853,87 @@ class FitBar(QToolBar):
     def level(self) -> int:
         return self._level
 
+    def _spacing(self):
+        return 4 if self.objectName() == "main" else 2
+
+    def _single_need(self, sizes):
+        return (16 + sum(s.width() for s in sizes.values())
+                + self._spacing() * max(0, len(sizes) - 1)
+                + (9 if any(a.isSeparator() for a in self._entries) else 0))
+
+    def _sizes(self):
+        # ASSUMES: disabled controls have the same geometry as enabled ones.
+        # Reserve the enabled style option without changing action state,
+        # emitting signals or temporarily authorizing a shortcut.
+        sizes = {}
+        for action, widget in self._entries.items():
+            if not action.text():
+                continue
+            option = QStyleOptionToolButton()
+            widget.initStyleOption(option)
+            option.state |= QStyle.State_Enabled
+            size = widget.sizeHint()
+            enabled = widget.style().sizeFromContents(QStyle.CT_ToolButton,
+                                                       option, QSize(), widget)
+            sizes[action] = size.expandedTo(enabled)
+        return sizes
+
+    def _flow(self, width):
+        sizes = self._sizes()
+        gap = self._spacing()
+        available = max(1, width - 16)
+        lines, line, used = [], [], 0
+        for action, size in sizes.items():
+            need = size.width() + (gap if line else 0)
+            if line and used + need > available:
+                lines.append(line)
+                line, used = [], 0
+            line.append(action)
+            used += size.width() + (gap if len(line) > 1 else 0)
+        if line:
+            lines.append(line)
+        row_height = max(self._line_height, max(s.height() for s in sizes.values()) + 8)
+        # Stretch only on a single line. On wrapped bars the spacer and
+        # divider collapse together, preserving strict action reading order.
+        single = len(lines) == 1
+        spread = single and self._single_need(sizes) <= width
+        spacer = next((a for a, w in self._entries.items()
+                       if w.objectName() == "spacer"), None)
+        before_gap = list(self._entries).index(spacer) if spacer is not None else -1
+        stretch = max(0, width - self._single_need(sizes)) if spread else 0
+        divider = next((w for a, w in self._entries.items() if a.isSeparator()), None)
+        if divider is not None:
+            divider.hide()
+        passed_gap = False
+        for row, actions in enumerate(lines):
+            x = 8
+            for action in actions:
+                if spread and not passed_gap and list(self._entries).index(action) > before_gap:
+                    passed_gap = True
+                    x += stretch
+                    stretch = 0
+                    if divider is not None:
+                        divider.setGeometry(x + 4, 11, 1, max(1, row_height - 22))
+                        divider.show()
+                        x += 9
+                widget, size = self._entries[action], sizes[action]
+                widget.setGeometry(x, row * row_height + (row_height - size.height()) // 2,
+                                   size.width(), size.height())
+                widget.setVisible(action.isVisible())
+                x += size.width() + gap
+        for action, widget in self._entries.items():
+            if not action.text() and not action.isSeparator():
+                # Retain the toolbar's named spacer as a visible, empty
+                # widget for callers inspecting the action list. Its gap
+                # is laid out above and collapses entirely on wrapped rows.
+                widget.setGeometry(8, 0, 1, 1)
+                widget.show()
+        height = max(1, len(lines)) * row_height + 1
+        self._bar_height = height
+        if self.height() != height:
+            self.setFixedHeight(height)
+            self.updateGeometry()
+
     def fit(self, width: int) -> None:
         if self._fitting or not self._levels:
             return
@@ -773,8 +945,15 @@ class FitBar(QToolBar):
                          len(needs) - 1)
             if level != self._level:
                 self._apply_level(level)
-            self.layout().invalidate()
-            self.layout().activate()
+            # Polishing a newly shown control can settle its font after
+            # the first measure. Never use an earlier sum to place it.
+            if self._single_need(self._sizes()) != needs[level]:
+                self._needs = None
+                needs = self.needs()
+                level = next((i for i, need in enumerate(needs) if need <= width),
+                             len(needs) - 1)
+                self._apply_level(level)
+            self._flow(width)
         finally:
             self._fitting = False
 
@@ -790,14 +969,24 @@ class FitBar(QToolBar):
     def changeEvent(self, event):  # noqa: N802 - Qt's name
         if event.type() in (QEvent.StyleChange, QEvent.FontChange):
             self._needs = None
+            if hasattr(self, "_contents"):
+                QTimer.singleShot(0, self.remeasure)
         super().changeEvent(event)
 
 
 class MainWindow(QMainWindow):
     keyStateChanged = Signal()
+    captureCountChanged = Signal()
     def __init__(self, *, permission_restart=False):
         super().__init__()
         self.settings = QSettings("Annotshot", "Annotshot")
+        # Read before _bind/configure_background and the controls write any
+        # defaults. Existing settings or entries mean ordinary Welcome.
+        self._first_welcome_eligible = recent.fresh_profile(
+            self.settings, default_directory() / RECENT_SUBDIR)
+        self._first_welcome_visible = False
+        self._pending_edits = {}
+        self._edit_jobs = {}
         self.undo_group = QUndoGroup(self)
         self.doc = Document()
         self._bound: Document | None = None
@@ -919,6 +1108,7 @@ class MainWindow(QMainWindow):
                        self.a_zoom100, self.a_zoom200, self.a_zoom_in,
                        self.a_zoom_out, *self.tool_actions.values()):
             action.setEnabled(enabled)
+        self._selection_actions()
         if not enabled:
             self.a_undo.setEnabled(False)
             self.a_redo.setEnabled(False)
@@ -951,6 +1141,7 @@ class MainWindow(QMainWindow):
     def show_editor(self):
         if self.state_name == "editor":
             return
+        self._leave_first_welcome()
         self.state_name = "editor"
         area = self._screen_area()
         self.setMaximumSize(QSize(16777215, 16777215))
@@ -968,8 +1159,7 @@ class MainWindow(QMainWindow):
 
     def _apply_floor(self, area: QRect) -> None:
         floor = MIN_SIZE.boundedTo(self._cap(area))
-        need = max(bar.compact_need() for bar in (self.main_bar, self.tools_bar))
-        self.setMinimumSize(max(floor.width(), need), floor.height())
+        self.setMinimumSize(floor)
 
     # -- building ---------------------------------------------------------
     def _build_recent(self) -> None:
@@ -977,10 +1167,12 @@ class MainWindow(QMainWindow):
         then where the user left it (docked left or right, floating, or
         closed), restored from the saved window state."""
         self.recent_store = _ReadableRecentStore(
-            lambda: default_directory() / RECENT_SUBDIR)
+            lambda: default_directory() / RECENT_SUBDIR,
+            keep=self.capture_count() or 0)
         self.recent = recent.RecentPane(self.recent_store, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.recent)
         self.recent.openRequested.connect(self._open_recent_request)
+        self.recent.saveRequested.connect(self.save_recent)
         self.recent.filingFailed.connect(self._filing_failed)
         self.recent.deleted.connect(self._recent_deleted)
         self.recent._filer.filed.connect(self._refresh_welcome_recent)
@@ -997,7 +1189,29 @@ class MainWindow(QMainWindow):
             self.welcome.refresh_recent()
 
     def keep_recent(self) -> bool:
-        return self.settings.value(recent.SETTING, True, type=bool)
+        return bool(self.capture_count())
+
+    def capture_count(self):
+        return recent.read_count(self.settings)
+
+    def set_capture_count(self, number):
+        recent.write_count(self.settings, number)
+        for window in QApplication.topLevelWidgets():
+            if (isinstance(window, MainWindow)
+                    and window.settings.fileName() == self.settings.fileName()):
+                window.recent_store.keep = number
+                window.captureCountChanged.emit()
+
+    def _commit_capture_counts(self):
+        for control in self.findChildren(recent.CaptureCountControl):
+            control.commit()
+
+    def _leave_first_welcome(self):
+        if self._first_welcome_eligible and self._first_welcome_visible:
+            self.settings.setValue(recent.FIRST_WELCOME, True)
+            self.settings.sync()
+            self._first_welcome_eligible = False
+            self.welcome.count_control.hide()
 
     def _open_recent_request(self, path: str) -> None:
         # The pane scopes this to the actual thumbnail request. A failed
@@ -1014,32 +1228,26 @@ class MainWindow(QMainWindow):
         self.end_key_interaction()
         if self._capture is not None or self._opening:
             return False
-        png, editable = recent.png_for(path), recent.editable_for(path)
-        if not png.is_file() and not editable.is_file():
+        try:
+            png, editable = self.recent_store.companions(path)
+            if not png.is_file() and not editable.is_file():
+                raise FileNotFoundError('That capture is no longer in the Recent folder')
+        except OSError as error:
+            message = ('That capture is no longer in the Recent folder'
+                       if isinstance(error, FileNotFoundError) else str(error))
+            self.statusBar().showMessage(message, 6000)
             self.recent.refresh()
-            self.statusBar().showMessage(
-                "That capture is no longer in the Recent folder", 6000)
             return False
         if not self.maybe_discard():
             return False
         recent.writer().waitForDone()   # its own last edit, on its way
-        doc = None
-        if editable.is_file():
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    doc = Document.load(editable)
-            except Exception:           # noqa: BLE001 - fall back to the PNG
-                doc = None
-        if doc is None:
-            img = QImage(str(png))
-            if img.isNull():
-                self.recent.refresh()
-                self.statusBar().showMessage(
-                    "That capture could not be read", 6000)
-                return False
-            doc = Document(img)
-        doc.path = str(editable)
+        try:
+            doc = recent.load_edit(path)
+        except OSError as error:
+            self.statusBar().showMessage(str(error), 6000)
+            self.recent.refresh()
+            return False
+        png = recent.png_for(path)
         self._bind(doc)
         if not quiet:
             self.statusBar().showMessage(
@@ -1051,8 +1259,42 @@ class MainWindow(QMainWindow):
     def _schedule_autosave(self, *_) -> None:
         """An edit: write the editable about AUTOSAVE_MS after the last
         one (a document without a file has nowhere to keep itself)."""
+        if not self.doc.path and getattr(self.doc, '_recent_retry_path', None):
+            # A failed initial claim detached the scene. A later edit may
+            # retry only against the exact surviving source, under a claim.
+            self._protect_recent_edit(self.doc)
         if self.doc.path:
+            if self.is_recent_doc() and not self._protect_recent_edit(self.doc):
+                return
             self._autosave_timer.start()
+
+    def _protect_recent_edit(self, doc):
+        if doc in self._pending_edits:
+            return True
+        path = doc.path or getattr(doc, '_recent_retry_path', None)
+        try:
+            if not hasattr(doc, '_recent_source'):
+                doc._recent_source = recent.edit_source(path)
+            hold = recent.pending_edit(path, doc._recent_source)
+        except OSError as error:
+            if isinstance(error, recent.RecentConflict):
+                self._detach_recent_conflict(doc, path, str(error))
+                return False
+            # Keep the scene and its undo history. It cannot safely autosave
+            # against a path expiry owns, removed, or could not protect.
+            doc._recent_retry_path = path
+            doc.path = None
+            self._autosave_timer.stop()
+            self.statusBar().showMessage(AUTOSAVE_FAILED.format(why=str(error)), 10000)
+            self.update_title()
+            return False
+        doc.path = str(path)
+        doc._recent_retry_path = None
+        self._pending_edits[doc] = [hold]
+        if hold.marker is None:
+            self.statusBar().showMessage(AUTOSAVE_FAILED.format(
+                why="the pending marker could not be written; the original remains protected"), 10000)
+        return True
 
     def autosave_now(self, doc: Document | None = None, end_edit: bool = False,
                      from_timer: bool = False) -> bool:
@@ -1073,9 +1315,13 @@ class MainWindow(QMainWindow):
             self._autosave_timer.stop()
         if not doc.needs_write():
             return False
+        if self.is_recent_doc(doc) and not self._protect_recent_edit(doc):
+            return False
+        markers = self._pending_edits.pop(doc, [])
         meta, base = doc.snapshot()
         gen = doc.written = doc.changes
-        outcome = doc.last_write = recent.WriteOutcome()
+        outcome = doc.last_write = recent.WriteOutcome(markers=tuple(markers))
+        self._edit_jobs[(doc, gen, doc.path)] = markers
         self._save_jobs.add((doc, gen, doc.path))
         recent.writer().start(recent._SaveJob(
             doc, gen, doc.path, meta, base, self._saver, outcome))
@@ -1086,7 +1332,9 @@ class MainWindow(QMainWindow):
         and its thumbnail shows the edit."""
         key = (doc, gen, path)
         self._save_jobs.discard(key)
-        if shiboken6.isValid(doc) and doc.changes == gen:
+        self._edit_jobs.pop(key, None)
+        if (shiboken6.isValid(doc) and doc.path == path and doc.changes == gen
+                and not getattr(getattr(doc, '_recent_source', None), 'conflicted', False)):
             doc.undo_stack.setClean()
         if self.recent_store.owns(path):
             self.recent.refresh_one(path)
@@ -1098,6 +1346,21 @@ class MainWindow(QMainWindow):
         """One sentence; the next change (or switch) tries again."""
         key = (doc, gen, path)
         self._save_jobs.discard(key)
+        markers = self._edit_jobs.pop(key, [])
+        if shiboken6.isValid(doc) and doc.path is not None and doc.path != path:
+            # A separate Save As superseded this queued outcome. It must not
+            # detach or dirty the newly saved document or reuse Recent holds.
+            try:
+                recent.finish_edits(path, markers, abandon=True)
+            except OSError:
+                pass
+            return
+        conflict = (any(h.state.conflicted for h in markers)
+                    or getattr(getattr(doc, '_recent_source', None), 'conflicted', False))
+        if conflict and shiboken6.isValid(doc):
+            self._detach_recent_conflict(doc, path, why)
+        elif markers:
+            self._pending_edits.setdefault(doc, []).extend(markers)
         if shiboken6.isValid(doc) and doc.written == gen:
             doc.written = -1
         self.statusBar().showMessage(AUTOSAVE_FAILED.format(why=why), 10000)
@@ -1105,6 +1368,26 @@ class MainWindow(QMainWindow):
             self._restart_pending = False
             self._restart_save = None
             self.statusBar().showMessage(RESTART_SAVE_FAILED.format(why=why))
+
+    def _detach_recent_conflict(self, doc, path, why):
+        state = getattr(doc, '_recent_source', None)
+        if state is not None:
+            state.conflicted = True
+        holds = self._pending_edits.pop(doc, [])
+        if state is not None and state.hold is not None:
+            holds.append(state.hold)
+        try:
+            recent.finish_edits(path, holds, abandon=True)
+        except OSError:
+            pass  # keep another entry's protection; never clean through a link
+        doc._recent_retry_path = None
+        doc.path = None
+        doc.written = -1
+        doc.undo_stack.resetClean()
+        if doc is self.doc:
+            self._autosave_timer.stop()
+            self.update_title()
+        self.statusBar().showMessage(AUTOSAVE_FAILED.format(why=why), 10000)
 
     def changeEvent(self, event):       # noqa: N802 - Qt's name
         if event.type() == QEvent.ActivationChange and \
@@ -1157,6 +1440,9 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _retip(a: QAction) -> None:
         """The tooltip: what it does, then its first key."""
+        if a.property("selectionAction") and not a.isEnabled():
+            a.setToolTip("Select an object first")
+            return
         keys = a.shortcuts()
         tip = a.property("tip") or a.text()
         key = key_words(keys[0]) if keys else ""
@@ -1203,6 +1489,9 @@ class MainWindow(QMainWindow):
         self.a_back = self._act("Back", self.send_to_back, "Ctrl+[",
                                 "Send to back")
         self.a_delete = self._act("Delete", self.delete_selected, "Delete")
+        for action in (self.a_dup, self.a_front, self.a_back, self.a_delete):
+            action.setProperty("selectionAction", True)
+        self.view.object_actions = (self.a_dup, self.a_front, self.a_back, self.a_delete)
         self.a_escape = self._act("Deselect", self.escape, "Esc")
         self.a_fit = self._act("Fit", self.view.zoom_to_fit_or_100, "Ctrl+0")
         self.a_zoom100 = self._act("100 %", lambda: self.view.set_zoom(1), "Ctrl+1")
@@ -1218,6 +1507,8 @@ class MainWindow(QMainWindow):
                                 "Help — the user manual and your keys")
         self.a_help.setMenuRole(QAction.NoRole)
         self._help_window = None
+        self._privacy_window = None
+        self._privacy_focus = None
         self.a_feedback = self._act(
             "Send feedback…", self.send_feedback,
             tip="Report a bug or suggest an improvement — opens the feedback "
@@ -1268,6 +1559,7 @@ class MainWindow(QMainWindow):
             bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             bar.setIconSize(QSize(ICON_PX, ICON_PX))
             bar.setMinimumHeight(height)
+            bar._line_height = height
             return bar
 
         def spacer(bar: QToolBar) -> None:
@@ -1294,11 +1586,13 @@ class MainWindow(QMainWindow):
         for a in (self.a_clear, self.a_undo, self.a_redo, self.a_settings):
             bar.addAction(a)
         bar.widgetForAction(self.a_capture).setObjectName("primary")
+        bar.widgetForAction(self.a_copy).setObjectName("outline")
+        bar.widgetForAction(self.a_clear).setObjectName("closePicture")
         bar.widgetForAction(self.a_settings).setObjectName("last")
         self.main_bar = bar
         base = frozenset(a for a in bar.actions() if a.text() in ICON_ONLY)
-        bar.set_levels([base, base | {self.a_open, self.a_save,
-                                     self.a_copy, self.a_clear}])
+        bar.set_levels([base, base | {self.a_open, self.a_save},
+                        base | {self.a_open, self.a_save, self.a_capture}])
         self.addToolBar(bar)
         bar = new_bar("Tools", "tools", 36)
         for a in self.tool_actions.values():
@@ -1363,6 +1657,8 @@ class MainWindow(QMainWindow):
             self.welcome.retheme()
         if self._help_window is not None:
             self._help_window.update()
+        if self._privacy_window is not None:
+            self._privacy_window.update()
 
     def _button(self, text: str, tip: str, slot, checkable=False) -> QToolButton:
         b = QToolButton(self)
@@ -1714,6 +2010,7 @@ class MainWindow(QMainWindow):
 
     def refresh_props(self) -> None:
         """Show the selection's style, or the active tool's starting style."""
+        self._selection_actions()
         items = self.doc.selected()
         self._show_selection(items)
         default = self.view.defaults_item()
@@ -2021,6 +2318,12 @@ class MainWindow(QMainWindow):
         for item in items:
             self.view.remember_style(item, props)
         self.refresh_props()
+
+    def _selection_actions(self):
+        enabled = self.state_name == "editor" and bool(self.doc.selected())
+        for action in (self.a_dup, self.a_front, self.a_back, self.a_delete):
+            action.setEnabled(enabled)
+            self._retip(action)
 
     def menu_actions(self, on_item: bool) -> list:
         """The right-click menu, top to bottom (None = a separator): the
@@ -2474,6 +2777,7 @@ class MainWindow(QMainWindow):
         from .help import HelpWindow
         if self._help_window is None:
             self._help_window = HelpWindow(self.shortcut_rows(), self)
+            self._help_window.privacyRequested.connect(self.show_privacy)
             self._help_window.finished.connect(self._help_closed)
         else:
             self._help_window.refresh(self.shortcut_rows())
@@ -2487,8 +2791,34 @@ class MainWindow(QMainWindow):
             self._help_window = None
 
     def show_privacy(self) -> None:
-        self.show_help()
-        self._help_window.browser.scrollToAnchor("privacy")
+        from .help import PrivacyWindow
+        from PySide6.QtWidgets import QApplication
+        focus = QApplication.focusWidget()
+        if focus is not None and (self._privacy_window is None or
+                                  focus.window() is not self._privacy_window):
+            self._privacy_focus = focus
+        if self._privacy_window is None:
+            if self._privacy_focus is None:
+                self._privacy_focus = self.welcome.privacy_row
+            self._privacy_window = PrivacyWindow(self)
+            self._privacy_window.finished.connect(self._privacy_closed)
+        self._privacy_window.show()
+        self._privacy_window.raise_()
+        self._privacy_window.activateWindow()
+
+    def _privacy_closed(self, *_):
+        if self._privacy_window is not None:
+            self._privacy_window.deleteLater()
+            self._privacy_window = None
+        import shiboken6
+        target = self._privacy_focus
+        if target is not None and shiboken6.isValid(target) and target.isVisible():
+            target.window().activateWindow()
+            target.setFocus(Qt.OtherFocusReason)
+        else:
+            self.activateWindow()
+            self.pages.currentWidget().setFocus(Qt.OtherFocusReason)
+        self._privacy_focus = None
 
     def open_shortcut_settings(self) -> None:
         self.open_settings(tab="Shortcuts")
@@ -2574,6 +2904,28 @@ class MainWindow(QMainWindow):
 
     # -- files ------------------------------------------------------------
     def _folder(self, kind: str) -> Path:
+        if kind == "save":
+            # ASSUMES: a remembered directory remains accessible. Never
+            # recreate it: only the built-in default may be created here.
+            remembered = self.settings.value("last_dir/save", "", type=str)
+            usable = lambda p: p.is_dir() and os.access(
+                p, os.R_OK | os.W_OK | os.X_OK)
+            if remembered and usable(Path(remembered)):
+                return Path(remembered)
+            folder = default_directory()
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                if usable(folder):
+                    return folder
+            except OSError:
+                pass
+            home = Path.home()
+            # Home is a browsing fallback: the person can choose a writable
+            # child from it even when home itself permits no new files.
+            if home.is_dir() and os.access(home, os.R_OK | os.X_OK):
+                return home
+            raise OSError("Neither the default save folder nor your home "
+                          "folder can be opened")
         folder = Path(self.settings.value(f"last_dir/{kind}", "", type=str)
                       or default_directory())
         if not folder.is_dir():
@@ -2610,29 +2962,151 @@ class MainWindow(QMainWindow):
         the .annotshot type saves the editable file. The chosen type wins over a
         typed extension; the last type chosen is preselected next time."""
         self.doc.end_text_edit()
+        return self._save_dialog(self.doc)
+
+    @staticmethod
+    def _same_file(first, second) -> bool:
+        """Resolve directory/file symlinks, case and existing hard links."""
+        try:
+            if os.path.samefile(first, second):
+                return True
+        except OSError:
+            pass
+        return os.path.normcase(os.path.realpath(first)) == \
+            os.path.normcase(os.path.realpath(second))
+
+    def _kept_destination(self, path: str) -> bool:
+        # ASSUMES: spelling a path differently does not grant ownership of
+        # a kept source. Read actual entries, including their suffix case.
+        candidates = self.recent_store.source_entries()
+        for reserved in recent._RESERVED:
+            candidates.extend((recent.png_for(reserved), recent.editable_for(reserved)))
+        if self.doc.path:
+            # The shown document may live outside Recent. Protect its own
+            # spelling, resolved identity, and both PNG/editable companions.
+            for bound in (self.doc.path, os.path.realpath(self.doc.path)):
+                candidates.extend((Path(bound), recent.png_for(bound),
+                                   recent.editable_for(bound)))
+        return any(self._same_file(path, candidate) for candidate in candidates)
+
+    def save_recent(self, path: str) -> bool:
+        """Export a detached full-size revision, without binding/opening it.
+
+        The shown capture is snapshotted immediately after finishing typing.
+        Another capture's serial writes must settle before its file is read.
+        Thumbnail's raw-PNG fallback is deliberately not used here.
+        """
+        png, editable = recent.png_for(path), recent.editable_for(path)
+        doc = None
+        try:
+            try:
+                self.recent_store.source_entries()  # refuse a linked/unreadable root
+            except (OSError, RuntimeError) as error:
+                # Do not read this source. Let the picker name the refused
+                # destination in R22's warning and re-offer the same proposal.
+                return self._save_dialog(self.doc, source=Path(path),
+                                         source_error=error)
+            if not png.exists() and not editable.exists() and \
+                    str(png) not in recent._RESERVED:
+                raise OSError(f"{png.name}: the capture is no longer in Recent")
+            if self.doc.path and self._same_file(self.doc.path, editable):
+                self.doc.end_text_edit()
+                doc = Document(QImage(self.doc.base))
+                for item in self.doc.annotation_items():
+                    doc.addItem(item.clone())
+                doc.path = str(editable)
+            else:
+                pending = [d for d, _g, p in self._save_jobs
+                           if self._same_file(p, editable)]
+                if not recent.writer().waitForDone(5000):
+                    raise OSError(f"{editable.name}: the pending write "
+                                  "has not finished")
+                for waiting in pending:
+                    outcome = waiting.last_write
+                    if outcome is not None and outcome.error:
+                        raise OSError(f"{editable.name}: {outcome.error}")
+                if editable.exists():
+                    try:
+                        # A skipped object/newer format is also a lossy
+                        # read. An export promising edits must refuse it.
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error")
+                            doc = Document.load(editable)
+                    except Exception as e:
+                        raise OSError(
+                            f"{editable.name}: Could not read this capture’s "
+                            f"edits. {e}") from e
+                else:
+                    reader = QImage(str(png))
+                    if reader.isNull():
+                        raise OSError(f"{png.name}: the capture is missing "
+                                      "or its picture cannot be read")
+                    doc = Document(reader)
+                    doc.path = str(editable)
+            return self._save_dialog(doc, source=Path(path))
+        except OSError as e:
+            self._warn(str(e))
+            return False
+        finally:
+            if doc is not None:
+                doc.deleteLater()
+
+    def _save_dialog(self, doc: Document, source: Path | None = None,
+                     source_error: Exception | None = None) -> bool:
+        """Both Save entry points use the same filters, folder and writers."""
         types = {t[0]: t for t in SAVE_TYPES}
         last = self.settings.value("last_filter/save", "", type=str)
         preset = types.get(last, SAVE_TYPES[0])
-        if self.doc.path:
-            p = Path(self.doc.path)
-            start = str(p.with_suffix("." + preset[1][0]))
-        else:
-            start = self._default_path("save", preset[1][0])
-        path, chosen = QFileDialog.getSaveFileName(
-            self, "Save", start, SAVE_FILTERS, preset[0])
-        if not path:
+        try:
+            name = source or (Path(doc.path) if doc.path else None)
+            start = (str(self._folder("save") /
+                         name.with_suffix("." + preset[1][0]).name)
+                     if name else self._default_path("save", preset[1][0]))
+        except OSError as e:
+            self._warn(f"Could not open a Save folder: {e}")
             return False
-        name_filter, exts, fmt = types.get(chosen, preset)
-        typed, path = path, typed_path_for(path, exts)
-        if (os.path.normcase(path) != os.path.normcase(typed)
-                and os.path.exists(path) and not self._ask_replace(path)):
+        while True:
+            if source is None:
+                path, chosen = QFileDialog.getSaveFileName(
+                    self, "Save", start, SAVE_FILTERS, preset[0])
+            else:
+                # Only the FINAL name may ask to replace. In particular a
+                # mismatched typed suffix must not prompt for two files.
+                path, chosen = QFileDialog.getSaveFileName(
+                    self, "Save", start, SAVE_FILTERS, preset[0],
+                    options=QFileDialog.DontConfirmOverwrite)
+            if not path:
+                return False
+            name_filter, exts, fmt = types.get(chosen, preset)
+            typed, path = path, typed_path_for(path, exts)
+            problem = None
+            try:
+                if source_error is not None:
+                    raise source_error
+                self.recent_store.source_entries()  # also guard editor Save As
+                if self.recent_store.contains_destination(path):
+                    problem = ("Recent is where Annotshot keeps captures, and it "
+                               "removes older ones. Choose another folder for this copy.")
+                elif source is not None and self._kept_destination(path):
+                    problem = "That file belongs to Recent. Choose another name or folder."
+            except (OSError, RuntimeError) as e:
+                problem = f"Could not write {path}: {e}"
+            if problem is None:
+                break
+            self._warn(problem)
+            # Keep the rejected proposal for correction in the native Save
+            # picker; no export or settings write has happened.
+            start, preset = typed, types.get(chosen, preset)
+        if ((source is not None or os.path.normcase(path) != os.path.normcase(typed)
+             or (os.path.islink(path) and not os.path.exists(path)))
+                and os.path.lexists(path) and not self._ask_replace(path)):
             return False
         if fmt == PROJECT_FORMAT:
-            ok = self._save_editable(path)
+            ok = self._save_editable(path, doc)
         elif fmt in OFFICE_FORMATS:
-            ok = self._save_office(path, fmt)
+            ok = self._save_office(path, fmt, doc)
         else:
-            ok = self._save_picture(path, fmt)
+            ok = self._save_picture(path, fmt, doc)
         if ok:
             self._remember("save", path, name_filter)
         return ok
@@ -2649,23 +3123,36 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return answer == QMessageBox.Yes
 
-    def _save_picture(self, path: str, fmt: str) -> bool:
+    def _save_picture(self, path: str, fmt: str,
+                      doc: Document | None = None) -> bool:
         """The rendered picture with every edit (white under JPEG / BMP)."""
-        img = self.doc.render_image()
+        doc = self.doc if doc is None else doc
+        img = doc.render_image()
         if fmt in NO_ALPHA_FORMATS:
             img = flatten_on_white(img)
         quality = JPEG_QUALITY if fmt == "JPEG" else -1
-        if not img.save(path, fmt, quality):
-            self._warn(f"Could not write {path}")
+        try:
+            buffer = QBuffer()
+            buffer.open(QIODevice.WriteOnly)
+            if not img.save(buffer, fmt, quality):
+                raise OSError("the picture could not be encoded")
+            data = bytes(buffer.data())
+            buffer.close()
+            _write_safely(lambda stream: stream.write(data), path)
+        except OSError as e:
+            self._warn(f"Could not write {path}: {e}")
             return False
-        self._exported()
+        if doc is self.doc:
+            self._exported()
         self.statusBar().showMessage(f"Saved {Path(path).name}", 3000)
         return True
 
-    def _save_office(self, path: str, fmt: str) -> bool:
+    def _save_office(self, path: str, fmt: str,
+                     doc: Document | None = None) -> bool:
         """The picture in a Word document or on a PowerPoint slide."""
+        doc = self.doc if doc is None else doc
         try:
-            export(fmt, self.doc.render_image(), path)
+            export(fmt, doc.render_image(), path)
         except ModuleNotFoundError as e:
             if (e.name or "").split(".")[0] not in ("docx", "pptx"):
                 self._warn(f"Could not save {Path(path).name}:\n{e}")
@@ -2686,16 +3173,27 @@ class MainWindow(QMainWindow):
             # their own kinds (zip, XML) as well as OSError
             self._warn(f"Could not save {Path(path).name}:\n{e}")
             return False
-        self._exported()
+        if doc is self.doc:
+            self._exported()
         self.statusBar().showMessage(f"Saved {Path(path).name}", 3000)
         return True
 
-    def _save_editable(self, path: str) -> bool:
+    def _save_editable(self, path: str,
+                       doc: Document | None = None) -> bool:
         """The editable .annotshot file. A document that already keeps
         itself (it has a file) writes a second COPY there and stays the
         one that keeps itself; its own file is simply written now. A
         document with no file at all takes this one as its file."""
-        self.doc.end_text_edit()
+        doc = self.doc if doc is None else doc
+        if doc is not self.doc:
+            try:
+                doc.write(path)
+            except OSError as e:
+                self._warn(f"Could not save {Path(path).name}: {e}")
+                return False
+            self.statusBar().showMessage(f"Saved {Path(path).name}", 3000)
+            return True
+        doc.end_text_edit()
         own = self.doc.path and os.path.normcase(os.path.abspath(path)) == \
             os.path.normcase(os.path.abspath(self.doc.path))
         try:
@@ -2704,8 +3202,23 @@ class MainWindow(QMainWindow):
             else:
                 self._autosave_timer.stop()
                 recent.writer().waitForDone()   # never two writers of a file
-                self.doc.save(path)
+                if self.is_recent_doc():
+                    if not self._protect_recent_edit(self.doc):
+                        return False
+                    holds = self._pending_edits[self.doc]
+                    recent._write_editable(path, *self.doc.snapshot(), holds)
+                    self._pending_edits.pop(self.doc, None)
+                    self.doc.written = self.doc.changes
+                    self.doc.last_write = None
+                    self.doc.undo_stack.setClean()
+                else:
+                    self.doc.save(path)
+                    if hasattr(self.doc, '_recent_source'):
+                        del self.doc._recent_source
+                    self.doc._recent_retry_path = None
         except OSError as e:
+            if isinstance(e, recent.RecentConflict):
+                self._detach_recent_conflict(self.doc, path, str(e))
             self._warn(f"Could not save the editable file:\n{e}")
             return False
         self._remember("project", path)
@@ -2770,7 +3283,11 @@ class MainWindow(QMainWindow):
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                doc = Document.load(path)
+                if (Path(path).suffix.lower() == recent.EDITABLE
+                        and self.recent_store.owns(path)):
+                    doc = recent.load_edit(path, fallback=False)
+                else:
+                    doc = Document.load(path)
         except Exception as e:          # never a bare traceback from Open
             self._warn(open_warning(path, e))
             return False
@@ -2847,6 +3364,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self._save_editor_geometry()
+        self._leave_first_welcome()
         if not self._quitting and self.can_hide_on_close():
             self.hide()
             self._bind(Document())
@@ -2913,6 +3431,7 @@ class MainWindow(QMainWindow):
 
     # -- capture ----------------------------------------------------------
     def capture(self, mode=None) -> None:
+        self._commit_capture_counts()
         self.end_key_interaction()
         if self._capture is not None or self._capture_pending:
             return
@@ -2946,15 +3465,21 @@ class MainWindow(QMainWindow):
             if session is not None and session.error:
                 self.statusBar().showMessage(f"Capture failed: {session.error}", 8000)
             return
-        doc, png = Document(result.image), None
-        if self.keep_recent():          # its record: the PNG and, from the
-            png = self.recent_store.reserve()   # first edit, the editable
-            doc.path = str(recent.editable_for(png))
+        self._commit_capture_counts()
+        count = self.capture_count() if self.keep_recent() else 0
+        doc, png, filing_error = Document(result.image), None, None
+        if count:
+            try:
+                png = self.recent_store.reserve()
+                doc.path = str(recent.editable_for(png))
+                doc._recent_source = recent.capture_source(png)
+            except OSError as error:
+                filing_error = str(error)
         self._bind(doc)
         self._show_again()
         self.fit_to_picture()
         if png is not None:             # never waits on the disk
-            self.recent.file_capture(result.image, path=png)
+            self.recent.file_capture(result.image, path=png, keep=count)
         size = f"{result.image.width()} × {result.image.height()}"
         if self.quick_copy():           # quick capture: straight out
             QApplication.clipboard().setImage(self.doc.render_image())
@@ -2962,10 +3487,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Copied {size} — {key_words(QKeySequence(QKeySequence.Paste))} to paste")
             if self.quick_minimize() and self._capture_was_visible:
                 self.showMinimized()
+            if filing_error:
+                self._filing_failed("Could not keep the capture in Recent captures: " + filing_error)
             return
         self.statusBar().showMessage(
             f"Captured {size}" + (f" — {result.title}" if result.title else ""),
             5000)
+        if filing_error:
+            self._filing_failed("Could not keep the capture in Recent captures: " + filing_error)
 
     def _may_record_screen(self) -> bool:
         if not macos.IS_MAC or macos.screen_capture_allowed():

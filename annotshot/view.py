@@ -12,8 +12,8 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QFont, QGuiApplication, QPainter,
-                           QPainterPath, QPen, QTransform)
+from PySide6.QtGui import (QColor, QFont, QGuiApplication, QKeySequence, QPainter,
+                           QMouseEvent, QPainterPath, QPen, QTransform)
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsView, QMenu
 
 from . import theme
@@ -209,6 +209,16 @@ class EditorView(QGraphicsView):
         self.doc = doc
         doc.editingChanged.connect(self._typing_changed)
         self.setScene(doc)
+        if not getattr(self, "_cursor_event_primed", False):
+            # ASSUMES: a window can appear under a resting pointer before
+            # any base mouse handler runs. Qt's unsetCursor path then reads
+            # a missing stored event. Seed it once, away from all items;
+            # call the base directly so no drawing tool sees this move.
+            outside = QPointF(-10000, -10000)
+            QGraphicsView.mouseMoveEvent(self, QMouseEvent(
+                QEvent.MouseMove, outside, outside, Qt.NoButton,
+                Qt.NoButton, Qt.NoModifier))
+            self._cursor_event_primed = True
         self._typing_changed(doc.editing_item)
         self._fit_pending = True
         self.set_zoom(1.0)
@@ -318,6 +328,25 @@ class EditorView(QGraphicsView):
 
     # -- tools ------------------------------------------------------------
     def event(self, event):
+        if event.type() in (QEvent.ShortcutOverride, QEvent.KeyPress) and hasattr(self, "doc"):
+            # Forward Delete always belongs to the live text editor. The
+            # shared Delete action still removes an object when clicked.
+            if (event.type() == QEvent.ShortcutOverride and self.doc.is_editing()
+                    and event.key() == Qt.Key_Delete and event.modifiers() == Qt.NoModifier):
+                event.accept()
+                return True
+            # Consume unanswered object keys locally as well as disabling
+            # their actions. A live text edit keeps every key its editor
+            # takes (a letter, Delete, Backspace), whatever object command
+            # the user assigned to it: only a modified key is an object
+            # command while typing.
+            seq = QKeySequence(event.keyCombination())
+            typing = self.doc.is_editing() and not event.modifiers() & (
+                Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+            if (not typing and not self.doc.selected() and any(
+                    seq in a.shortcuts() for a in getattr(self, "object_actions", ()))):
+                event.accept()
+                return True
         # An unmodified tool letter belongs to the text editor while typing.
         # Modified editing/action shortcuts retain their existing behaviour.
         if (event.type() == QEvent.ShortcutOverride

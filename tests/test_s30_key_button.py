@@ -17,7 +17,6 @@ from annotshot import help as help_module, hotkey, mainwindow, settings_dialog, 
 from annotshot.app import make_app
 from annotshot.keywords import key_words
 
-D = "Alt+Shift+Space"
 Y = "Alt+Y"
 
 
@@ -68,6 +67,12 @@ def rig(request, monkeypatch, qapp, private_settings):
     platform = request.param
     make_app()
     monkeypatch.setattr(hotkey.sys, "platform", platform)
+    monkeypatch.setattr(hotkey, "DEFAULT", hotkey.default_for_platform(platform))
+    # Independent literals: Qt PortableText storage and the words on screen.
+    default_sequence, default_words, default_mods = {
+        "darwin": ("Meta+Ctrl+Space", "Control+Command+Space", Qt.MetaModifier | Qt.ControlModifier),
+        "win32": ("Ctrl+Alt+Space", "Ctrl+Alt+Space", Qt.ControlModifier | Qt.AltModifier),
+    }[platform]
     words = lambda seq: key_words(seq, platform)
     for module in (hotkey, mainwindow, settings_dialog, tray, welcome, help_module):
         if hasattr(module, "key_words"):
@@ -109,9 +114,10 @@ def rig(request, monkeypatch, qapp, private_settings):
     monkeypatch.setattr(hotkey, "backend_class", lambda: Backend)
     windows = []
     def create(saved=None, off=False, refused=(), local=None, *, settings_page=True,
-               help_window=True):
+               help_window=True, relaunch=False):
         settings = QSettings(private_settings, QSettings.IniFormat)
-        settings.clear()
+        if not relaunch:
+            settings.clear()
         if saved is not None:
             settings.setValue("hotkey/sequence", saved)
         if off:
@@ -132,7 +138,7 @@ def rig(request, monkeypatch, qapp, private_settings):
         return w
     result = SimpleNamespace(create=create, backend=Backend, platform=platform,
                              qapp=qapp, words=words, monkeypatch=monkeypatch,
-                             d="Option+Shift+Space" if platform == "darwin" else "Alt+Shift+Space",
+                             default_sequence=default_sequence, default_mods=default_mods, d=default_words,
                              y="Option+Y" if platform == "darwin" else "Alt+Y")
     yield result
     Backend.fail_release.clear()
@@ -218,13 +224,141 @@ def test_row_01_launch(rig):
              status=w.capture_status(), trying=True)
     assert not w.hotkey.registered
     assert w.apply_hotkey() is None
-    assert rig.backend.calls == [("register", D)]
+    assert rig.backend.calls == [("register", rig.default_sequence)]
     assert not w.settings.contains("hotkey/sequence")
     surfaces(rig, w, status=w.capture_status())
 
 
+@pytest.mark.parametrize("choice", ["missing", "old_shift_first", "old_alt_first", "other", "new_default"])
+@pytest.mark.parametrize("off", [False, True])
+def test_s50_preferences_survive_launch_and_relaunch(rig, choice, off):
+    raw, held, words = {
+        "missing": (None, rig.default_sequence, rig.d),
+        "old_shift_first": ("Shift+Alt+Space", "Alt+Shift+Space",
+                            "Option+Shift+Space" if rig.platform == "darwin" else "Alt+Shift+Space"),
+        "old_alt_first": ("Alt+Shift+Space", "Alt+Shift+Space",
+                          "Option+Shift+Space" if rig.platform == "darwin" else "Alt+Shift+Space"),
+        "other": ("Alt+Y", "Alt+Y", rig.y),
+        "new_default": (rig.default_sequence, rig.default_sequence, rig.d),
+    }[choice]
+    w = rig.create(raw, off=off)
+    # Include the owner's explicit Off=false spelling, not only its absence.
+    w.settings.setValue("hotkey/off", off)
+    w.settings.setValue("unrelated/preference", "keep")
+    before = saved(w)
+    for launch in range(2):
+        calls = list(rig.backend.calls)
+        assert w.apply_hotkey() is None
+        assert w.hotkey_sequence() == QKeySequence(held)
+        assert w.hotkey.registered == (not off)
+        if not off:
+            assert w.hotkey.sequence.toString(QKeySequence.PortableText) == held
+        assert rig.backend.calls == calls + ([] if off else [("register", held)])
+        assert saved(w) == before
+        assert w.settings.contains("hotkey/sequence") == (raw is not None)
+        assert w.settings.value("hotkey/sequence") == raw
+        assert w.hotkey_off() == off
+        surfaces(rig, w, key=words, off=off,
+                 line="Capture key is off." if off else None, status=w.capture_status())
+        if launch == 0:
+            assert w.hotkey.clear() is None
+            w = rig.create(relaunch=True)
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_s50_owner_reset_adopts_or_keeps_the_working_key(rig, refused):
+    old = "Alt+Shift+Space"
+    old_words = "Option+Shift+Space" if rig.platform == "darwin" else old
+    w = ready(rig, old)
+    w.settings.setValue("hotkey/off", False)
+    w.settings.setValue("unrelated/preference", "keep")
+    before = saved(w)
+    identity = w.hotkey._backend.identity
+    rig.backend.calls.clear()
+    if refused:
+        rig.backend.refused.add(rig.default_sequence)
+    w._s30_page.hotkey_reset.click()
+    assert rig.backend.calls == [("register", rig.default_sequence)] + (
+        [] if refused else [("release", old, identity)])
+    if refused:
+        reason = f"{rig.d} is taken by the system or another app. Still using {old_words}."
+        assert saved(w) == before
+        surfaces(rig, w, key=old_words, line=reason, message=reason, status=error(reason))
+        captures = []
+        rig.monkeypatch.setattr(w, "capture", lambda: captures.append(1))
+        w.hotkey._backend.press()
+        assert captures == [1]
+    else:
+        assert saved(w) == {key: value for key, value in before.items() if key != "hotkey/sequence"}
+        surfaces(rig, w)
+    w.hotkey.clear()
+    w = rig.create(relaunch=True)
+    assert w.apply_hotkey() is None
+    assert w.hotkey_sequence() == QKeySequence(old if refused else rig.default_sequence)
+    assert w.settings.contains("hotkey/sequence") == refused
+    surfaces(rig, w, key=old_words if refused else rig.d, status=w.capture_status())
+
+
+@pytest.mark.parametrize("reset_all", [False, True])
+def test_s50_reset_while_off_then_turn_on(rig, reset_all):
+    w = rig.create("Alt+Shift+Space", off=True)
+    assert w.apply_hotkey() is None
+    if reset_all:
+        w._s30_page._reset_all()
+    else:
+        w._s30_page.hotkey_reset.click()
+    assert not rig.backend.calls and w.hotkey_off()
+    assert not w.settings.contains("hotkey/sequence")
+    surfaces(rig, w, field=rig.d, off=True, line="Capture key is off.", status=w.capture_status())
+    w.welcome.capture_bar.key_menu.actions()[0].trigger()
+    assert rig.backend.calls == [("register", rig.default_sequence)]
+    assert not w.hotkey_off()
+    surfaces(rig, w, status=w.capture_status())
+
+
+def test_s50_reset_already_held_saved_default_needs_no_registration(rig):
+    w = ready(rig, rig.default_sequence)
+    calls = list(rig.backend.calls)
+    w._s30_page.hotkey_reset.click()
+    assert rig.backend.calls == calls
+    assert not w.settings.contains("hotkey/sequence")
+    surfaces(rig, w)
+
+
+def test_s50_settings_replacement_while_off_enables_in_one_gesture(rig):
+    w = rig.create("Alt+Shift+Space", off=True)
+    assert w.apply_hotkey() is None
+    type_capture_chord(rig, w._s30_page, Qt.Key_Y, Qt.AltModifier)
+    assert rig.backend.calls == [("register", Y)]
+    assert not w.hotkey_off() and w.settings.value("hotkey/sequence") == Y
+    surfaces(rig, w, key=rig.y, status=w.capture_status())
+
+
+@pytest.mark.parametrize("recovery", ["retry", "choice"])
+def test_s50_empty_profile_refusal_leaves_capture_and_recovery(rig, recovery):
+    w = rig.create(refused=[rig.default_sequence])
+    assert w.apply_hotkey()
+    assert not w.hotkey.registered and not w.settings.contains("hotkey/sequence")
+    assert w.hotkey_sequence() == QKeySequence(rig.default_sequence)
+    captures = []
+    rig.monkeypatch.setattr(w, "_may_record_screen", lambda: captures.append(1) or False)
+    w.welcome.capture_bar.capture_button.click()
+    assert captures == [1]
+    rig.backend.refused.clear()
+    if recovery == "retry":
+        assert w.apply_hotkey() is None
+        assert not w.settings.contains("hotkey/sequence")
+        expected = rig.d
+    else:
+        w._s30_page.hotkey_edit.setKeySequence(QKeySequence(Y))
+        assert w._s30_page.commit_hotkey() is None
+        assert w.settings.value("hotkey/sequence") == Y
+        expected = rig.y
+    surfaces(rig, w, key=expected)
+
+
 def test_row_02_refused_launch(rig):
-    w = rig.create(refused=[D])
+    w = rig.create(refused=[rig.default_sequence])
     reason = f"{rig.d} is taken by the system or another app; pick another key"
     assert w.apply_hotkey() == reason
     surfaces(rig, w, face="amber", line=f"{rig.d} is unavailable.", message=reason, status=error(reason))
@@ -310,7 +444,7 @@ def test_row_06_manual_restore_cancels_once(rig, entry):
     surfaces(rig, w, status="Try cancelled")
     captures = []
     rig.monkeypatch.setattr(w, "capture", lambda: captures.append(1))
-    w._native_capture_key((QKeySequence(D), True, False, old_epoch))
+    w._native_capture_key((QKeySequence(rig.default_sequence), True, False, old_epoch))
     assert captures == []
     w.hotkey._backend.press()
     assert captures == [1]
@@ -318,13 +452,13 @@ def test_row_06_manual_restore_cancels_once(rig, entry):
 
 @pytest.mark.parametrize("accepted", [False, True])
 def test_row_07_retry(rig, accepted):
-    w = rig.create(refused=[D])
+    w = rig.create(refused=[rig.default_sequence])
     w.apply_hotkey()
     rig.backend.calls.clear()
     if accepted:
         rig.backend.refused.clear()
     w.try_capture_key()
-    assert rig.backend.calls == [("register", D)]
+    assert rig.backend.calls == [("register", rig.default_sequence)]
     if accepted:
         surfaces(rig, w, line=f"Press {rig.d} now.", trying=True)
         w.key_clock.advance(1000)
@@ -355,7 +489,7 @@ def test_row_08_first_chord_swaps(rig, entry):
     else:
         w._s30_page.hotkey_edit.setKeySequence(QKeySequence(Y))
         assert w._s30_page.commit_hotkey() is None
-    assert rig.backend.calls == [("register", Y), ("release", D, old_id)]
+    assert rig.backend.calls == [("register", Y), ("release", rig.default_sequence, old_id)]
     assert list(rig.backend.held.values()) == [Y]
     assert w.settings.value("hotkey/sequence") == Y
     surfaces(rig, w, key=rig.y)
@@ -379,12 +513,12 @@ def test_row_09_refused_change_keeps_old(rig, entry):
     reason = f"{rig.y} is taken by the system or another app. Still using {rig.d}."
     assert saved(w) == before and rig.backend.calls == [("register", Y)]
     assert Path(w.settings.fileName()).read_bytes() == disk_before
-    assert list(rig.backend.held.values()) == [D]
+    assert list(rig.backend.held.values()) == [rig.default_sequence]
     surfaces(rig, w, line=reason, message=reason, status=error(reason))
     w.welcome.refresh()
     reopened = settings_dialog.SettingsDialog(w)
     assert reopened.message.text() == reason
-    assert reopened.hotkey_edit.keySequence() == QKeySequence(D)
+    assert reopened.hotkey_edit.keySequence() == QKeySequence(rig.default_sequence)
     reopened.deleteLater()
     surfaces(rig, w, line=reason, message=reason, status=error(reason))
 
@@ -464,8 +598,8 @@ def test_row_12_off(rig, entry):
         w.welcome.capture_bar.key_menu.actions()[2].trigger()
     else:
         w._s30_page.hotkey_off.setChecked(True)
-    assert rig.backend.calls == [("release", D, identity)]
-    assert not rig.backend.held and w.hotkey_sequence() == QKeySequence(D)
+    assert rig.backend.calls == [("release", rig.default_sequence, identity)]
+    assert not rig.backend.held and w.hotkey_sequence() == QKeySequence(rig.default_sequence)
     surfaces(rig, w, off=True, line="Capture key is off.")
 
 
@@ -490,9 +624,9 @@ def test_row_14_reset_all_new_first(rig, refused, local_clash):
     w = ready(rig, Y)
     old_id = w.hotkey._backend.identity
     if local_clash:
-        assert w.set_shortcut("copy", QKeySequence(D)) is None
+        assert w.set_shortcut("copy", QKeySequence(rig.default_sequence)) is None
     rig.backend.calls.clear()
-    rig.backend.refused = {D} if refused else set()
+    rig.backend.refused = {rig.default_sequence} if refused else set()
     refreshes = []
     w.keyStateChanged.connect(lambda: refreshes.append(1))
     w._s30_page._reset_all()
@@ -500,11 +634,11 @@ def test_row_14_reset_all_new_first(rig, refused, local_clash):
     assert w.a_copy.shortcut() == QKeySequence("Ctrl+C")
     if refused:
         reason = f"{rig.d} is taken by the system or another app. Still using {rig.y}."
-        assert rig.backend.calls == [("register", D)]
+        assert rig.backend.calls == [("register", rig.default_sequence)]
         assert w.settings.value("hotkey/sequence") == Y
         surfaces(rig, w, key=rig.y, line=reason, message=reason, status=error(reason))
     else:
-        assert rig.backend.calls == [("register", D), ("release", Y, old_id)]
+        assert rig.backend.calls == [("register", rig.default_sequence), ("release", Y, old_id)]
         assert not w.settings.contains("hotkey/sequence")
         surfaces(rig, w)
 
@@ -557,9 +691,9 @@ def test_row_17_release_failure(rig, off):
         assert w.hotkey._backend is old
     else:
         assert w.reset_all_shortcuts() == reason
-        assert rig.backend.calls == [("register", D), ("release", Y, old.identity)]
+        assert rig.backend.calls == [("register", rig.default_sequence), ("release", Y, old.identity)]
         assert w.hotkey._retained == [(old, QKeySequence(Y))]
-        assert set(rig.backend.held.values()) == {D, Y}
+        assert set(rig.backend.held.values()) == {rig.default_sequence, Y}
         surfaces(rig, w, message=reason, status=error(reason))
         captures = []
         rig.monkeypatch.setattr(w, "capture", lambda: captures.append(1))
@@ -658,6 +792,13 @@ def test_renders_for_caller(rig, tmp_path):
         button = w.welcome.capture_bar.key_button
         assert button.width() == 166
         assert button.rect().contains(button.label.geometry())
+        label = button.label
+        assert label.height() >= len(label.text().splitlines()) * label.fontMetrics().height()
+        assert all(label.fontMetrics().horizontalAdvance(line) <= label.width()
+                   for line in label.text().splitlines())
+        if button.text() == rig.d:
+            assert label.text().replace("\n", "").removeprefix("✓ ") == rig.d
+            assert label.text().startswith("✓ ") == (button.face == "green")
         assert w.welcome.rect().contains(button.mapTo(w.welcome, button.rect().bottomRight()))
         assert w.grab().save(str(out / (name + ".png")))
     if rig.platform == "win32":
@@ -671,10 +812,10 @@ def test_renders_for_caller(rig, tmp_path):
     w.hotkey._backend.press()
     render("green")
     w.hotkey._backend.press(False)
-    w.set_hotkey(QKeySequence(D), True)
+    w.set_hotkey(QKeySequence(rig.default_sequence), True)
     render("off")
-    rig.backend.refused.add(D)
-    w.set_hotkey(QKeySequence(D), False)
+    rig.backend.refused.add(rig.default_sequence)
+    w.set_hotkey(QKeySequence(rig.default_sequence), False)
     render("amber")
     rig.backend.refused.clear()
     w.apply_hotkey()
@@ -707,6 +848,7 @@ def test_native_adapters_keep_independent_handles(qapp, monkeypatch):
         def __call__(self, *args):
             return self.callback(*args)
     for platform in ("win32", "darwin"):
+        default_sequence = "Ctrl+Alt+Space" if platform == "win32" else "Meta+Ctrl+Space"
         calls, delivered = [], []
         if platform == "win32":
             user = SimpleNamespace(GetTickCount=Function(lambda: 100),
@@ -714,7 +856,7 @@ def test_native_adapters_keep_independent_handles(qapp, monkeypatch):
                 UnregisterHotKey=Function(lambda hwnd, identity: calls.append(("release", identity)) or 1))
             monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: user, raising=False)
             first, second = hotkey.WinBackend(lambda: delivered.append(1)), hotkey.WinBackend(lambda: delivered.append(2))
-            assert first.register(QKeySequence(D)) is None
+            assert first.register(QKeySequence(default_sequence)) is None
             assert second.register(QKeySequence(Y)) is None
             assert first._id != second._id
             message = hotkey.MSG()
@@ -750,7 +892,7 @@ def test_native_adapters_keep_independent_handles(qapp, monkeypatch):
             monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: carbon)
             first = hotkey.MacBackend(lambda pressed: delivered.append((1, pressed)))
             second = hotkey.MacBackend(lambda pressed: delivered.append((2, pressed)))
-            assert first.register(QKeySequence(D)) is None
+            assert first.register(QKeySequence(default_sequence)) is None
             assert second.register(QKeySequence(Y)) is None
             assert first._id != second._id
             identity.id = second._id
@@ -1017,7 +1159,7 @@ def test_finding_5_painted_status_holds_wrapped_sentence(rig, name, state):
 
 
 def test_finding_6_draft_error_preserves_registration_result(rig):
-    w = rig.create(refused=[D])
+    w = rig.create(refused=[rig.default_sequence])
     outcome = w.apply_hotkey()
     line = w.welcome.key_row.text()
     w.welcome.start_recording()
@@ -1033,7 +1175,7 @@ def test_finding_6_draft_error_preserves_registration_result(rig):
     assert page.commit("copy") is None
     assert page.message.text() == outcome
     assert w.statusBar().currentMessage() == error(outcome)
-    assert rig.backend.calls[-1] == ("register", D)
+    assert rig.backend.calls[-1] == ("register", rig.default_sequence)
 
 
 def test_finding_7_modifier_release_and_settings_recording(rig):
@@ -1051,10 +1193,12 @@ def test_finding_7_modifier_release_and_settings_recording(rig):
     rig.qapp.processEvents()
     captures = []
     rig.monkeypatch.setattr(w, "capture", lambda: captures.append(1))
-    QTest.keyPress(page.hotkey_edit, Qt.Key_Alt)
+    modifier = Qt.Key_Meta if rig.platform == "darwin" else Qt.Key_Control
+    QTest.keyPress(page.hotkey_edit, modifier)
     # Native delivery can precede the Qt key-down for the completed chord.
     w.hotkey._backend.press()
-    QTest.keyClick(page.hotkey_edit, Qt.Key_Space, Qt.AltModifier | Qt.ShiftModifier)
+    QTest.keyClick(page.hotkey_edit, Qt.Key_Space, rig.default_mods)
+    QTest.keyRelease(page.hotkey_edit, modifier)
     assert captures == []
 
 
@@ -1221,7 +1365,7 @@ def type_capture_chord(rig, page, key, mods=Qt.NoModifier):
 
 @pytest.mark.parametrize("case", ["refused_swap", "unheld_invalid", "retained_release"])
 def test_s32_settings_passive_and_explicit_roads(rig, case):
-    w = rig.create(refused=[D]) if case == "unheld_invalid" else ready(rig, Y if case == "retained_release" else None)
+    w = rig.create(refused=[rig.default_sequence]) if case == "unheld_invalid" else ready(rig, Y if case == "retained_release" else None)
     if case == "unheld_invalid":
         w.apply_hotkey()
     page = w._s30_page
@@ -1241,7 +1385,7 @@ def test_s32_settings_passive_and_explicit_roads(rig, case):
         old = w.hotkey._backend.identity
         rig.backend.fail_release.add(old)
         page.hotkey_reset.click()  # row 17, real capture-row Reset
-        assert w.hotkey._retained and w.hotkey.sequence == QKeySequence(D)
+        assert w.hotkey._retained and w.hotkey.sequence == QKeySequence(rig.default_sequence)
         assert "Could not release" in page.message.text()
         rig.backend.fail_release.clear()
     before = saved(w)
@@ -1262,13 +1406,13 @@ def test_s32_settings_passive_and_explicit_roads(rig, case):
     assert page.message.text() == reason
     if case == "unheld_invalid":
         # Retyping the restored, unheld default is a deliberate retry.
-        type_capture_chord(rig, page, Qt.Key_Space, Qt.AltModifier | Qt.ShiftModifier)
+        type_capture_chord(rig, page, Qt.Key_Space, rig.default_mods)
         assert len(apply_calls) == 1
-        assert rig.backend.calls == calls + [("register", D)]
+        assert rig.backend.calls == calls + [("register", rig.default_sequence)]
     else:
         page.hotkey_reset.click()
         assert page.message.text() == "" and w.key_state()["outcome"] == ""
-        assert w.hotkey_sequence() == QKeySequence(D)
+        assert w.hotkey_sequence() == QKeySequence(rig.default_sequence)
         assert not w.settings.contains("hotkey/sequence")
         assert not w.hotkey._retained
         assert rig.backend.calls == (calls + [("release", Y, old)] if case == "retained_release" else calls)

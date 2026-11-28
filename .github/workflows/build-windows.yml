@@ -75,7 +75,7 @@ jobs:
         env:
           PUBLIC: ${{ github.repository == 'Bill-Viking/annotshot' }}
         run: |
-          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt licenses/OFL-VT323.txt annotshot/fonts/VT323-Regular.ttf docs/USER-MANUAL.md"
+          need="licenses/LGPL-3.0.txt licenses/GPL-3.0.txt licenses/OFL-VT323.txt annotshot/fonts/VT323-Regular.ttf docs/USER-MANUAL.md docs/PRIVACY.md docs/privacy/recent-menu-macos.png docs/privacy/capture-settings-windows.png"
           if [[ "$PUBLIC" == "true" ]]; then
             need="$need LICENSE THIRD-PARTY-NOTICES.md"
           fi
@@ -85,7 +85,7 @@ jobs:
           while IFS= read -r hit; do
             root=$(dirname "$(dirname "$hit")")
             missing=""
-            for n in $need; do [[ -e "$root/$n" ]] || missing="$missing $n"; done
+            for n in $need; do [[ -s "$root/$n" ]] || missing="$missing $n"; done
             if [[ -z "$missing" ]]; then ok="$root"; break; fi
             echo "in $root, missing:$missing"
           done < <(find "$bundle" -path '*/licenses/LGPL-3.0.txt')

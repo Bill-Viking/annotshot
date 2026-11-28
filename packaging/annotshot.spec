@@ -47,7 +47,10 @@ datas += [
     (at("packaging", "licenses", "OFL-VT323.txt"), "licenses"),
 ]
 # The user manual Help shows (the frozen --check looks for it).
-datas += [(at("docs", "USER-MANUAL.md"), "docs")]
+datas += [(at("docs", "USER-MANUAL.md"), "docs"),
+          (at("docs", "PRIVACY.md"), "docs"),
+          (at("docs", "privacy", "recent-menu-macos.png"), os.path.join("docs", "privacy")),
+          (at("docs", "privacy", "capture-settings-windows.png"), os.path.join("docs", "privacy"))]
 # The project's own licence and the third-party notices sit at the bundle's
 # root when the repository has them (the public repository does; a copy
 # without them builds without them).

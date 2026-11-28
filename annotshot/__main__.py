@@ -4,7 +4,8 @@
     --check     headless self-check: build the QApplication and the main
                 window offscreen (never shown), save a small picture as Word
                 and PowerPoint and re-open both; find the user manual that
-                Help shows and the pixel font it carries; a frozen app
+                Help shows, the privacy page and both PNGs, and the pixel
+                font it carries; a frozen app
                 also finds its licence texts (the GNU texts and the OFL);
                 print "Annotshot <version> OK"
                 and exit 0; any exception is printed and exits 1
@@ -80,6 +81,9 @@ def _check_office() -> None:
 
 LICENCE_TEXTS = ("LGPL-3.0.txt", "GPL-3.0.txt", "OFL-VT323.txt")
 MANUAL = Path("docs") / "USER-MANUAL.md"
+PRIVACY = Path("docs") / "PRIVACY.md"
+PRIVACY_IMAGES = (Path("docs/privacy/recent-menu-macos.png"),
+                  Path("docs/privacy/capture-settings-windows.png"))
 
 
 def app_root() -> Path:
@@ -130,6 +134,25 @@ def _check_licences(root: Path) -> int:
     return len(found)
 
 
+def _check_privacy(root: Path) -> int:
+    """Release gate, separate from the installed reader's recovery path."""
+    from PySide6.QtGui import QImageReader
+    path = root / PRIVACY
+    if not path.is_file():
+        raise RuntimeError(f"the privacy page {PRIVACY.as_posix()} is missing from the app")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"the privacy page {PRIVACY.as_posix()} is unreadable") from exc
+    if not text.strip():
+        raise RuntimeError(f"the privacy page {PRIVACY.as_posix()} is empty")
+    for image in PRIVACY_IMAGES:
+        reader = QImageReader(str(root / image))
+        if bytes(reader.format()).lower() != b"png" or reader.read().isNull():
+            raise RuntimeError(f"the privacy image {image.as_posix()} is missing or unreadable")
+    return len(PRIVACY_IMAGES)
+
+
 def check() -> int:
     """Build the app and the main window offscreen; never show a window."""
     os.environ["QT_QPA_PLATFORM"] = "offscreen"   # before Qt loads
@@ -150,6 +173,7 @@ def check() -> int:
         _check_office()
         _say("office export OK")
         _say(f"manual OK ({_check_manual(app_root())} lines)")
+        _say(f"privacy OK ({_check_privacy(app_root())} images)")
         from annotshot.typefaces import check_fonts
         _say(f"font OK ({', '.join(check_fonts())})")
         if getattr(sys, "frozen", False):

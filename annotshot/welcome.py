@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QEvent, QKeyCombination, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QKeyCombination, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QPushButton,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
@@ -18,8 +18,34 @@ class _WelcomeLinkRow(QHBoxLayout):
 
     def setGeometry(self, rect):
         super().setGeometry(rect)
-        # The trailing stretch can resize the row without moving either link.
+        self._flow(rect, True)
         self.geometryChanged.emit()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._flow(QRect(0, 0, width, 0), False)
+
+    def minimumSize(self):
+        sizes = [self.itemAt(i).sizeHint() for i in range(self.count())]
+        return QSize(max((s.width() for s in sizes), default=0),
+                     max((s.height() for s in sizes), default=0))
+
+    def _flow(self, rect, place):
+        x, y, height = rect.x(), rect.y(), 0
+        for i in range(self.count()):
+            item = self.itemAt(i)
+            size = item.sizeHint()
+            if x > rect.x() and x + size.width() > rect.right() + 1:
+                x = rect.x()
+                y += height + self.spacing()
+                height = 0
+            if place:
+                item.setGeometry(QRect(x, y, size.width(), size.height()))
+            x += size.width() + self.spacing()
+            height = max(height, size.height())
+        return y + height - rect.y()
 
 
 class KeyButton(QPushButton):
@@ -240,24 +266,36 @@ class WelcomeWidget(QWidget):
         self.copy_row.setText("Every capture is copied, ready to paste.")
         self.privacy_row = self._row(left, "lock")
         self.privacy_row.linkActivated.connect(lambda _: window.show_privacy())
+        self.privacy_row.setTextInteractionFlags(Qt.LinksAccessibleByMouse |
+                                               Qt.LinksAccessibleByKeyboard)
+        self.privacy_row.setFocusPolicy(Qt.StrongFocus)
         self.running_row = self._row(left, "running")
         self.running_row.row_widget.hide()  # Filled by keep-running integration.
         self.open_link = QLabel('<a href="open">Open a saved file…</a>', self)
         self.open_link.linkActivated.connect(lambda _: window.a_open.trigger())
+        self.manual_link = QLabel('<a href="manual">User manual</a>', self)
+        self.manual_link.linkActivated.connect(lambda _: window.a_help.trigger())
         self.feedback_link = QLabel('<a href="feedback">Send feedback…</a>', self)
         self.feedback_link.linkActivated.connect(lambda _: window.a_feedback.trigger())
         self.feedback_link.setToolTip(window.a_feedback.toolTip())
         self.link_row = _WelcomeLinkRow()
         self.link_row.setContentsMargins(0, 0, 0, 0)
         self.link_row.setSpacing(16)
-        for link in (self.open_link, self.feedback_link):
+        self._link_destinations = {
+            self.privacy_row: window.show_privacy,
+            self.open_link: lambda: window.a_open.trigger(),
+            self.manual_link: lambda: window.a_help.trigger(),
+            self.feedback_link: lambda: window.a_feedback.trigger(),
+        }
+        for link in (self.open_link, self.manual_link, self.feedback_link):
             link.setTextInteractionFlags(Qt.LinksAccessibleByMouse |
                                          Qt.LinksAccessibleByKeyboard)
             link.setFocusPolicy(Qt.StrongFocus)
             self.link_row.addWidget(link)
-        self.link_row.addStretch()
         left.addLayout(self.link_row)
-        QWidget.setTabOrder(self.open_link, self.feedback_link)
+        QWidget.setTabOrder(self.privacy_row, self.open_link)
+        QWidget.setTabOrder(self.open_link, self.manual_link)
+        QWidget.setTabOrder(self.manual_link, self.feedback_link)
         self.status_label = QLabel(self)
         self.status_label.setTextFormat(Qt.PlainText)
         self.status_label.setWordWrap(True)
@@ -265,7 +303,9 @@ class WelcomeWidget(QWidget):
         # Recompute wrapping when the links or theme change.
         self.link_row.geometryChanged.connect(self._place_status)
         self.open_link.installEventFilter(self)
+        self.manual_link.installEventFilter(self)
         self.feedback_link.installEventFilter(self)
+        self.privacy_row.installEventFilter(self)
         window.statusBar().messageChanged.connect(self.refresh_status)
         self.status_label.setText(window.statusBar().currentMessage())
         left.addStretch()
@@ -278,6 +318,9 @@ class WelcomeWidget(QWidget):
         self.recent_layout.setSpacing(5)
         self.recent_heading = QLabel("Recent", right)
         self.recent_layout.addWidget(self.recent_heading)
+        self.count_control = recent.CaptureCountControl(window, right)
+        self.count_control.setVisible(window._first_welcome_eligible)
+        self.recent_layout.addWidget(self.count_control)
         self.recent_buttons = []
         self.empty_recent = QLabel("Your captures appear here", right)
         self.empty_recent.setWordWrap(True)
@@ -294,6 +337,15 @@ class WelcomeWidget(QWidget):
         self.refresh()
         self.recorder.cancel.installEventFilter(self)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.window_._first_welcome_eligible:
+            self.window_._first_welcome_visible = True
+
+    def hideEvent(self, event):
+        self.window_._leave_first_welcome()
+        super().hideEvent(event)
+
     def eventFilter(self, watched, event):
         if watched is getattr(self, "status_label", None) and event.type() in (QEvent.Resize, QEvent.FontChange):
             self._place_status()
@@ -309,7 +361,7 @@ class WelcomeWidget(QWidget):
         if watched is self.recorder.cancel and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
             self.cancel_recording()
             return True
-        if watched in (self.open_link, self.feedback_link) and event.type() in (
+        if watched in self._link_destinations and event.type() in (
                 QEvent.ShortcutOverride, QEvent.KeyPress):
             if not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
                 key = event.key()
@@ -323,9 +375,7 @@ class WelcomeWidget(QWidget):
                         forward = key == Qt.Key_Tab and not event.modifiers() & Qt.ShiftModifier
                         self.focusNextPrevChild(forward)
                     elif not event.isAutoRepeat():
-                        action = (self.window_.a_open if watched is self.open_link
-                                  else self.window_.a_feedback)
-                        action.trigger()
+                        self._link_destinations[watched]()
                     event.accept()
                     return True
         if watched is self.open_link and event.type() in (
@@ -336,9 +386,9 @@ class WelcomeWidget(QWidget):
     def _place_status(self):
         from PySide6.QtCore import QRect
         label = self.status_label
-        rect = self.open_link.geometry()
-        rect.setWidth(self.link_row.geometry().width())
-        rect.moveTop(rect.bottom() + 1)
+        rect = self.link_row.geometry()
+        rect.moveTop(max(link.geometry().bottom() for link in
+                     (self.open_link, self.manual_link, self.feedback_link)) + 1)
         painted = label.fontMetrics().boundingRect(
             QRect(0, 0, max(1, rect.width()), 10000),
             Qt.TextWordWrap | Qt.AlignLeft, label.text())
@@ -368,7 +418,7 @@ class WelcomeWidget(QWidget):
         self.copy_row.row_widget.setVisible(w.quick_copy())
         where = "this Mac" if sys.platform == "darwin" else "this PC" if sys.platform == "win32" else "this computer"
         self.privacy_row.setText(
-            f'Private. Your pictures stay on {where}. Annotshot sends nothing anywhere. '
+            f'Annotshot edits pictures on {where} without uploading them. '
             '<a href="privacy">How it stays private</a>')
         self.running_row.setText("Close this window to keep Annotshot running.")
         self.running_row.row_widget.setVisible(w.can_hide_on_close())
@@ -464,7 +514,7 @@ class WelcomeWidget(QWidget):
                 button.setToolTip(path.name)
                 button.setAccessibleName(f"Open capture {button.text()}")
                 button.clicked.connect(lambda _=False, p=str(path): self.window_.open_recent(p))
-                self.recent_layout.insertWidget(len(self.recent_buttons) + 1, button)
+                self.recent_layout.insertWidget(len(self.recent_buttons) + 2, button)
                 self.recent_buttons.append(button)
         except Exception:
             pass

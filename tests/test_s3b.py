@@ -483,9 +483,368 @@ def test_the_permission_message_names_the_way_back(window, monkeypatch):
     manual = (Path(__file__).resolve().parent.parent / "docs" /
               "USER-MANUAL.md").read_text(encoding="utf-8")
     updating = manual[manual.index("### Updating to a new version"):
-                      manual.index("## The first ten seconds")]
+                      manual.index("## Capture options")]
     mac = [l for l in updating.splitlines() if l.startswith("- **macOS:**")][0]
-    assert way_back in mac and "after every update macOS asks again" in mac
-    install = manual[manual.index("### macOS — four steps"):
-                     manual.index("### Linux — three steps")]
-    assert way_back in install
+    assert "After an update of the unsigned app, capture may need permission again." in mac
+    assert "If Annotshot is already enabled in the screen recording list, remove it, add it again from **Applications**, and switch it on." in mac
+    install = manual[manual.index("### macOS"):
+                     manual.index("### Linux")]
+    assert "If Annotshot is already on the list and capture is still blocked, remove it from the list, add **Annotshot** again from **Applications**, and switch it on." in install
+
+
+# -- s50: independent local privacy reader ---------------------------------------
+def click_browser_link(browser, href, qapp):
+    """Click an anchor in the laid-out document, rather than emitting a signal."""
+    from PySide6.QtGui import QTextCursor
+    block = browser.document().begin()
+    while block.isValid():
+        fragment = block.begin()
+        while not fragment.atEnd():
+            part = fragment.fragment()
+            if part.charFormat().anchorHref() == href:
+                cursor = QTextCursor(browser.document())
+                cursor.setPosition(part.position() + 1)
+                browser.setTextCursor(cursor)
+                browser.ensureCursorVisible()
+                qapp.processEvents()
+                point = browser.cursorRect(cursor).center()
+                assert browser.anchorAt(point) == href
+                QTest.mouseClick(browser.viewport(), Qt.LeftButton, pos=point)
+                return
+            fragment += 1
+        block = block.next()
+    pytest.fail(f"No anchor {href}")
+
+
+def test_privacy_manual_routes_buttons_and_independent_reading(window, monkeypatch, qapp):
+    from annotshot import help
+    opened = []
+    monkeypatch.setattr(help, "open_url", lambda url: opened.append(url) or True)
+    window.show()
+    window.a_help.trigger()
+    h = window._help_window
+    qapp.processEvents()
+    assert h.browser.verticalScrollBar().value() == 0
+    click_browser_link(h.browser, help.PRIVACY_URL, qapp)
+    p = window._privacy_window
+    qapp.processEvents()
+    saved = h.browser.verticalScrollBar().value()
+    assert saved > 0 and not opened
+    assert p is not h and p.windowTitle() == "How it stays private"
+    p.browser.verticalScrollBar().setValue(130)
+    pos = p.browser.verticalScrollBar().value()
+    window.show_privacy()
+    window.show_help()
+    assert p.browser.verticalScrollBar().value() == pos
+    assert h.browser.verticalScrollBar().value() == saved
+    h.github.click()
+    p.github.click()
+    h.report.click()
+    assert opened == [help.MANUAL_URL, help.PRIVACY_URL, help.ISSUES_URL]
+    p.close()
+    qapp.processEvents()
+    assert window._privacy_window is None and window._help_window is h
+    assert h.browser.hasFocus()
+    assert h.browser.verticalScrollBar().value() == saved
+    window.show_privacy()
+    replacement = window._privacy_window
+    assert replacement is not p
+    h.close()
+    assert window._help_window is None and window._privacy_window is replacement
+    replacement.close()
+
+
+def test_help_links_exact_policy_route_fragment_and_near_match(qapp, tmp_path, monkeypatch):
+    from annotshot import help
+    hrefs = [help.PRIVACY_URL, help.PRIVACY_URL + "?near=1",
+             "https://example.test/manual", "#privacy"]
+    manual = "# Manual\n\n## Privacy\n\n" + "\n\n".join(
+        f"[Link {i}]({href})" for i, href in enumerate(hrefs))
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/USER-MANUAL.md").write_text(manual)
+    monkeypatch.setattr(help, "_root", lambda: tmp_path)
+    opened, internal = [], []
+    monkeypatch.setattr(help, "open_url", lambda url: opened.append(url) or True)
+    h = help.HelpWindow([])
+    h.privacyRequested.connect(lambda: internal.append(True))
+    h.show()
+    qapp.processEvents()
+    for href in hrefs:
+        click_browser_link(h.browser, href, qapp)
+    assert internal == [True]
+    assert opened == hrefs[1:3]
+    h.close()
+
+
+@pytest.mark.parametrize("damage", ["missing", "empty", "unreadable", "utf8"])
+@pytest.mark.parametrize("frozen", [False, True])
+def test_privacy_missing_page_local_recovery_and_retry(qapp, tmp_path, monkeypatch, damage, frozen):
+    import sys
+    from pathlib import Path
+    from annotshot import help
+    from annotshot.__main__ import PRIVACY, app_root
+    root = app_root()
+    policy = (root / PRIVACY).read_text()
+    (tmp_path / "docs").mkdir()
+    target = tmp_path / PRIVACY
+    if damage == "empty":
+        target.write_text(" \n")
+    elif damage == "utf8":
+        target.write_bytes(b"\xff\xfe")
+    elif damage == "unreadable":
+        target.mkdir()  # read_text raises OSError even when running as root
+    if frozen:
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    else:
+        monkeypatch.setattr(help, "_root", lambda: tmp_path)
+    opened = []
+    monkeypatch.setattr(help, "open_url", lambda url: opened.append(url) or False)
+    p = help.PrivacyWindow()
+    h = help.HelpWindow([])
+    assert help.PRIVACY_SUMMARY in p.browser.toPlainText()
+    assert help.NO_PRIVACY in p.browser.toPlainText()
+    assert p.browser.toPlainText().startswith("How it stays private")
+    assert help.PRIVACY_SUMMARY in h.browser.toPlainText()
+    assert not opened
+    p.show()
+    qapp.processEvents()
+    p.browser.verticalScrollBar().setValue(15)
+    position = p.browser.verticalScrollBar().value()
+    text = p.browser.toPlainText()
+    p.github.click()
+    assert opened == [help.PRIVACY_URL]
+    assert p.browser.toPlainText() == text
+    assert p.browser.verticalScrollBar().value() == position
+    assert "Could not open the privacy page in your browser." in p.failure.text()
+    assert help.PRIVACY_URL in p.failure.text()
+    assert p.github.isEnabled() and p.close_buttons.isEnabled()
+    if target.is_dir():
+        target.rmdir()
+    target.write_text(policy)
+    p.close()
+    p = help.PrivacyWindow()
+    assert "Where pictures are kept" in p.browser.toPlainText()
+    assert help.NO_PRIVACY not in p.browser.toPlainText()
+    assert help.NO_MANUAL in h.browser.toPlainText()
+    p.close()
+    h.close()
+
+
+@pytest.mark.parametrize("asset", ["docs/privacy/recent-menu-macos.png",
+                                   "docs/privacy/capture-settings-windows.png"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_privacy_missing_image_keeps_instructions_and_caption(qapp, tmp_path, monkeypatch, asset, damage):
+    import shutil
+    from annotshot import help
+    from annotshot.__main__ import PRIVACY, app_root
+    (tmp_path / "docs/privacy").mkdir(parents=True)
+    shutil.copyfile(app_root() / PRIVACY, tmp_path / PRIVACY)
+    if damage == "corrupt":
+        (tmp_path / asset).write_bytes(b"not a PNG")
+    monkeypatch.setattr(help, "_root", lambda: tmp_path)
+    monkeypatch.setattr(help, "open_url", lambda _: pytest.fail("unsolicited URL"))
+    p = help.PrivacyWindow()
+    text = p.browser.toPlainText()
+    assert "Show in folder opens the folder containing the capture." in text
+    assert "these two checkboxes control the clipboard copy" in text
+    assert "Keep the last 12 captures in the Recent pane" in text
+    assert help.NO_PRIVACY not in text
+    p.close()
+
+
+def test_privacy_release_gate_requires_each_asset(tmp_path, qapp):
+    import shutil
+    from annotshot.__main__ import PRIVACY, PRIVACY_IMAGES, _check_privacy, app_root
+    root = app_root()
+    (tmp_path / "docs/privacy").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="PRIVACY.md is missing"):
+        _check_privacy(tmp_path)
+    policy = (root / PRIVACY).read_bytes()
+    for broken, message in [(b"", "empty"), (b"\xff", "unreadable")]:
+        (tmp_path / PRIVACY).write_bytes(broken)
+        with pytest.raises(RuntimeError, match=message):
+            _check_privacy(tmp_path)
+    (tmp_path / PRIVACY).write_bytes(policy)
+    # A pre-existing icon is a decoder fixture only; no policy render is made.
+    for asset in PRIVACY_IMAGES:
+        shutil.copyfile(root / "icon.png", tmp_path / asset)
+    assert _check_privacy(tmp_path) == 2
+    for asset in PRIVACY_IMAGES:
+        saved = (tmp_path / asset).read_bytes()
+        (tmp_path / asset).unlink()
+        with pytest.raises(RuntimeError, match=asset.as_posix()):
+            _check_privacy(tmp_path)
+        (tmp_path / asset).write_bytes(b"corrupt")
+        with pytest.raises(RuntimeError, match=asset.as_posix()):
+            _check_privacy(tmp_path)
+        (tmp_path / asset).write_bytes(saved)
+
+
+def test_privacy_image_fit_uses_local_resources_only(qapp, tmp_path, monkeypatch):
+    import shutil
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QTextDocument
+    from annotshot import help
+    from annotshot.__main__ import app_root
+    # Reuse a real repository PNG solely to exercise Qt decoding and sizing.
+    (tmp_path / "docs").mkdir()
+    shutil.copyfile(app_root() / "icon.png", tmp_path / "docs/local.png")
+    (tmp_path / "docs/PRIVACY.md").write_text("# How it stays private\n\n![local](local.png)")
+    monkeypatch.setattr(help, "_root", lambda: tmp_path)
+    monkeypatch.setattr(help, "open_url", lambda _: pytest.fail("unsolicited URL"))
+    p = help.PrivacyWindow()
+    p.resize(400, 450)
+    p.show()
+    qapp.processEvents()
+    p._fit_images()
+    image = p.browser.document().begin().next().begin().fragment().charFormat().toImageFormat()
+    assert 0 < image.width() <= p.browser.viewport().width()
+    resource = p.browser.document().resource(QTextDocument.ImageResource, QUrl("local.png"))
+    assert resource is not None
+    assert p.browser.loadResource(QTextDocument.ImageResource, QUrl("https://example.test/picture.png")) is None
+    p.close()
+
+
+def test_privacy_survives_theme_help_close_and_editor_state(window, white, monkeypatch, qapp):
+    from annotshot import help, recent, theme
+    monkeypatch.setattr(help, "open_url", lambda _: pytest.fail("URL"))
+    at_100(window, white)
+    # Preserve an unsaved edit, its selection, the clipboard, settings and Recent.
+    item = make_callout(window.doc)
+    item.setSelected(True)
+    qapp.clipboard().setText("private clipboard sentinel")
+    window.settings.setValue("capture/copy", False)
+    window.settings.setValue(recent.SETTING, False)
+    before = (window.doc, list(window.doc.selected()), window.doc.undo_stack.index(),
+              window.doc.undo_stack.isClean(), window.recent_store.files(),
+              dict((k, window.settings.value(k)) for k in window.settings.allKeys()))
+    window.show()
+    window.activateWindow()
+    qapp.processEvents()
+    QTest.keyClick(window, Qt.Key_F1)
+    qapp.processEvents()
+    h = window._help_window
+    assert h is not None
+    window.show_privacy()
+    p = window._privacy_window
+    qapp.processEvents()
+    h.browser.verticalScrollBar().setValue(100)
+    p.browser.verticalScrollBar().setValue(100)
+    positions = (h.browser.verticalScrollBar().value(), p.browser.verticalScrollBar().value())
+    for name in ("Light", "Dark", "Retro"):
+        theme.apply(qapp, name)
+        qapp.processEvents()
+        assert (h.browser.verticalScrollBar().value(), p.browser.verticalScrollBar().value()) == positions
+    h.close()
+    assert window._privacy_window is p
+    window.show_help()
+    assert window._help_window is not h and window._privacy_window is p
+    after = (window.doc, list(window.doc.selected()), window.doc.undo_stack.index(),
+             window.doc.undo_stack.isClean(), window.recent_store.files(),
+             dict((k, window.settings.value(k)) for k in window.settings.allKeys()
+                  if k != theme.SETTING))
+    assert before[:-1] == after[:-1]
+    assert {k: v for k, v in before[-1].items() if k != theme.SETTING} == after[-1]
+    assert qapp.clipboard().text() == "private clipboard sentinel"
+    window._help_window.close()
+    p.close()
+    window.doc.undo_stack.mark_exported()
+
+
+def test_privacy_caller_images_decode_and_render(qapp):
+    from annotshot import help
+    from annotshot.__main__ import PRIVACY_IMAGES, app_root, _check_privacy
+    missing = [p.as_posix() for p in PRIVACY_IMAGES if not (app_root() / p).is_file()]
+    if missing:
+        pytest.skip("WAITS ON PICTURES: " + ", ".join(missing))
+    assert _check_privacy(app_root()) == 2
+    p = help.PrivacyWindow()
+    p.show()
+    qapp.processEvents()
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QImage, QTextDocument
+    formats = {}
+    block = p.browser.document().begin()
+    while block.isValid():
+        fragment = block.begin()
+        while not fragment.atEnd():
+            fmt = fragment.fragment().charFormat()
+            if fmt.isImageFormat():
+                fmt = fmt.toImageFormat()
+                formats[fmt.name()] = fmt
+            fragment += 1
+        block = block.next()
+    for asset in PRIVACY_IMAGES:
+        fmt = formats["privacy/" + asset.name]
+        assert 0 < fmt.width() <= p.browser.viewport().width()
+        assert fmt.height() > 0
+        url = QUrl.fromLocalFile(str(app_root() / asset))
+        resource = p.browser.document().resource(QTextDocument.ImageResource, url)
+        assert resource is not None
+        assert not QImage(str(app_root() / asset)).isNull()
+    p.close()
+
+
+def test_privacy_real_images_fit_viewport_after_show_and_resize(qapp):
+    from annotshot.help import PrivacyWindow
+    from annotshot.__main__ import PRIVACY_IMAGES, app_root
+
+    originals = {"privacy/" + asset.name: QImage(str(app_root() / asset))
+                 for asset in PRIVACY_IMAGES}
+    assert len(originals) == 2
+    assert all(not image.isNull() for image in originals.values())
+    p = PrivacyWindow()
+    try:
+        p.resize(760, 900)
+        p.show()
+        previous = None
+        for width in (760, 480):
+            p.resize(width, 900)
+            for _ in range(5):
+                qapp.processEvents()
+            document = p.browser.document()
+            available = p.browser.viewport().width() - 2 * document.documentMargin()
+            formats = {}
+            block = document.begin()
+            while block.isValid():
+                fragment = block.begin()
+                while not fragment.atEnd():
+                    fmt = fragment.fragment().charFormat()
+                    if fmt.isImageFormat():
+                        fmt = fmt.toImageFormat()
+                        formats[fmt.name()] = fmt
+                    fragment += 1
+                block = block.next()
+            assert formats.keys() == originals.keys()
+            for name, image in originals.items():
+                fitted = min(available, image.width())
+                assert formats[name].width() == pytest.approx(fitted, abs=1)
+                assert formats[name].height() == pytest.approx(
+                    image.height() * fitted / image.width(), abs=1)
+                if previous is not None:
+                    assert formats[name].width() < previous[name]
+            previous = {name: fmt.width() for name, fmt in formats.items()}
+    finally:
+        p.close()
+
+
+def test_privacy_rejected_github_preserves_full_document_and_position(qapp, monkeypatch):
+    from annotshot import help
+    calls = []
+    monkeypatch.setattr(help, "open_url", lambda url: calls.append(url) or False)
+    p = help.PrivacyWindow()
+    p.resize(500, 300)
+    p.show()
+    qapp.processEvents()
+    p.browser.verticalScrollBar().setValue(100)
+    position = p.browser.verticalScrollBar().value()
+    assert position > 0
+    text = p.browser.toPlainText()
+    QTest.mouseClick(p.github, Qt.LeftButton)
+    qapp.processEvents()
+    assert calls == [help.PRIVACY_URL]
+    assert p.browser.toPlainText() == text
+    assert p.browser.verticalScrollBar().value() == position
+    assert p.failure.isVisible() and help.PRIVACY_URL in p.failure.text()
+    p.close()

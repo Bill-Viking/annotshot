@@ -19,7 +19,17 @@ from PySide6.QtGui import QKeySequence
 
 from .keywords import key_words
 
-DEFAULT = "Shift+Alt+Space"
+
+def default_for_platform(platform: str) -> str:
+    """The capture key requested when no preference is saved."""
+    if platform == "win32":
+        return "Ctrl+Alt+Space"
+    if platform == "darwin":
+        return "Meta+Ctrl+Space"
+    return "Shift+Alt+Space"
+
+
+DEFAULT = default_for_platform(sys.platform)
 NOT_ON_LINUX = "not available on Linux yet"
 NEED_MODIFIER = (
     "Use Control, Option, Shift or Command with the key (or an F key alone)"

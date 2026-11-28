@@ -409,11 +409,9 @@ class SettingsDialog(QDialog):
         box.addSpacing(8)
         box.addWidget(note)
         box.addSpacing(16)
-        self.keep_recent = QCheckBox(recent.KEEP_TEXT, page)
-        self.keep_recent.setChecked(w.keep_recent())
-        self.keep_recent.toggled.connect(
-            lambda on: w.settings.setValue(recent.SETTING, bool(on)))
-        box.addWidget(self.keep_recent)
+        self.count_control = recent.CaptureCountControl(w, page)
+        self.keep_recent = self.count_control.spin
+        box.addWidget(self.count_control)
         self.keep_running = QCheckBox(
             "Keep Annotshot running when its window is closed", page)
         self.keep_running.setChecked(w.keep_running())

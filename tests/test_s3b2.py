@@ -199,18 +199,17 @@ def _manual() -> str:
 
 
 def test_the_manual_gives_the_installer_first_and_the_zip_second():
-    from annotshot import __version__
     m = _manual()
-    win = m[m.index("### Windows (10 and 11)"):m.index("### macOS — four steps")]
+    win = m[m.index("### Windows (10 and 11)"):m.index("### macOS")]
     assert win.index("#### The installer") < win.index("#### The zip")
     installer = win[:win.index("#### The zip")]
-    assert f"Annotshot-{__version__}-setup.exe" in installer
-    assert "Start menu" in installer and "**Install**" in installer
-    assert f"Annotshot-{__version__}-windows.zip" in win[win.index("#### The zip"):]
+    assert "download the Windows installer (the file ending in `-setup.exe`)" in installer
+    assert "Start menu" in installer and "Open the downloaded file and follow the installer." in installer
+    assert "From **Releases**, choose the Windows zip." in win[win.index("#### The zip"):]
     updating = m[m.index("### Updating to a new version"):]
-    assert "it replaces the old copy in place" in updating
-    removing = m[m.index("### Removing Annotshot"):m.index("## The first ten seconds")]
-    assert "**Settings → Apps**" in removing and "**Uninstall**" in removing
+    assert "**Windows installer:** Close Annotshot and run the new installer." in updating
+    removing = m[m.index("### Removing Annotshot"):m.index("## Capture options")]
+    assert "**Windows installer:** Find Annotshot in Windows settings and choose the uninstall option." in removing
 
 
 # -- 2. the SmartScreen step: the words now, the picture when it exists ------
@@ -236,17 +235,23 @@ def test_both_windows_roads_lead_with_the_box_and_hold_the_picture_spot(which):
     text = _manual() if which == "manual" else _public_readme()
     pic = "windows-protected.png" if which == "manual" \
         else "docs/windows-protected.png"
-    win = text[text.index("### Windows (10 and 11)"):
-               text.index("### macOS — four steps")]
+    mac_heading = "### macOS" if which == "manual" else "### macOS — four steps"
+    win = text[text.index("### Windows (10 and 11)"):text.index(mac_heading)]
     roads = win.split("#### ")[1:]
     assert [r.splitlines()[0].split(" — ")[0] for r in roads] == [
         "The installer", "The zip", "For IT departments: the MSI"]
-    for road in roads[:2]:
-        assert SMARTSCREEN in road
-        comment = re.search(r"<!-- picture: (.*?) -->", road)
-        assert comment and pic in comment.group(1)
-        assert (f"![Windows protected your PC — click More info, then Run "
-                f"anyway]({pic})") in comment.group(1)
+    if which == "manual":
+        assert "Open the downloaded file and follow the installer." in roads[0]
+        assert "Open **Annotshot.exe** from the extracted folder. Keep the files together." in roads[1]
+        assert SMARTSCREEN not in win
+        assert "<!-- picture:" not in win
+    else:
+        for road in roads[:2]:
+            assert SMARTSCREEN in road
+            comment = re.search(r"<!-- picture: (.*?) -->", road)
+            assert comment and pic in comment.group(1)
+            assert (f"![Windows protected your PC — click More info, then Run "
+                    f"anyway]({pic})") in comment.group(1)
     # no image tag outside the comment: the picture does not exist yet
     bare = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     assert "windows-protected" not in bare
@@ -255,9 +260,9 @@ def test_both_windows_roads_lead_with_the_box_and_hold_the_picture_spot(which):
 def test_the_help_window_never_shows_the_picture_note(qapp):
     from PySide6.QtWidgets import QTextBrowser
     b = QTextBrowser()
-    b.setMarkdown(_manual())
+    b.setMarkdown(_manual() + "\n\n<!-- picture: windows-protected.png is captured on a Windows computer -->\n")
     shown = b.toPlainText()
-    assert "Windows protected your PC" in shown
+    assert "Open the downloaded file and follow the installer." in shown
     assert "windows-protected" not in shown
     assert "is captured on a Windows computer" not in shown
 
@@ -514,12 +519,13 @@ def test_the_right_click_menu(window, private_pictures, monkeypatch):
     pane = window.recent
     menu = pane.menu_for(pane.list.item(1))
     names = [a.text() for a in menu.actions()]
-    assert names == ["Open", "Delete", "Show in folder", "", "Clear recent captures"]
+    assert names == ["Open", "Save…", "Show in folder", "", "Delete", "",
+                     "Clear recent captures"]
     opened = []
     pane.openRequested.connect(opened.append)
     menu.actions()[0].trigger()
     assert opened == [str(old)]
-    menu.actions()[1].trigger()                     # Delete: no question
+    menu.actions()[4].trigger()                     # Delete: no question
     assert not old.exists() and pane.paths() == [str(new)]
     menu.deleteLater()
     urls = []
@@ -541,13 +547,15 @@ def test_the_right_click_menu(window, private_pictures, monkeypatch):
 
 
 def test_the_capture_tab_has_the_keep_box(window):
-    from annotshot.recent import KEEP_TEXT, SETTING
+    from annotshot.recent import SETTING
     from annotshot.settings_dialog import SettingsDialog
     d = SettingsDialog(window)
-    assert d.keep_recent.text() == KEEP_TEXT == \
-        "Keep the last 12 captures in the Recent pane"
-    assert d.keep_recent.isChecked()                # on by default
-    d.keep_recent.setChecked(False)
+    assert d.count_control.caption.text() == "Captures to keep"
+    assert d.keep_recent.value() == 12
+    d.keep_recent.stepDown()
+    assert d.keep_recent.value() == 11
+    assert window.settings.value(SETTING, True, type=bool) is False
+    d.keep_recent.setValue(0)
     assert window.settings.value(SETTING, True, type=bool) is False
     assert not window.keep_recent()
     d.deleteLater()
@@ -666,3 +674,33 @@ def test_a_frozen_check_without_the_ofl_text_fails(tmp_path):
         _check_licences(tmp_path)
     (lic / "OFL-VT323.txt").write_text("x")
     assert _check_licences(tmp_path) == 3
+
+
+def test_s49_approved_build_study_in_manual_and_about(qapp):
+    from PySide6.QtWidgets import QLabel
+    from PySide6.QtCore import Qt
+    from annotshot.help import ABOUT_LINE, PUBLISHER, about_widget
+
+    manual = _manual()
+    approved = '## How Annotshot was built\n\nAnnotshot’s maker directed the work and tested the app on screen. AI models wrote the code. One model prepared a brief, another built from it, and a model from a different vendor reviewed the result. The maker decided when to release it.\n\nThe first commit was on November 3, 2026. That day the Windows app could already capture a screenshot, add an arrow and save the picture. The project notes record submission to the Microsoft Store on November 15, an approval email dated November 17 and a check of the public listing on November 19.\n\nThe study ends on November 19, 2026. By the end of that day, the project had 511 commits across 13 dates. Each date counts once, however much work happened that day. The app had about 9,600 lines of Python code, with another 14,500 or so in its tests.\n\nOne AI model estimated that an experienced desktop programmer working alone would need 85 to 130 full-time working days to build and ship the app as it stood then. No programmer built a comparison copy or checked that estimate.'
+    heading = "## How Annotshot was built"
+    assert manual.count(heading) == 1
+    limits = manual.index("## Known limits in this first version")
+    start = manual.index(heading)
+    licence = manual.index("## Licence")
+    assert limits < start < licence
+    assert manual[start:licence].strip() == approved
+    assert manual[limits:licence].count("\n## ") == 1
+    expected_lines = ['AI models wrote Annotshot. Its maker directed and tested it.', 'Through November 19, 2026, the project had 511 commits across 13 dates.', 'Read “How Annotshot was built” in Help.']
+    widget = about_widget()
+    try:
+        labels = widget.findChildren(QLabel)
+        texts = [label.text() for label in labels]
+        first = texts.index(expected_lines[0])
+        assert texts[first:first + 3] == expected_lines
+        assert texts.index(ABOUT_LINE) < first < first + 2 < texts.index(PUBLISHER)
+        for i, text in enumerate(expected_lines, 1):
+            label = widget.findChild(QLabel, f"aboutStudy{i}")
+            assert label.text() == text and label.textFormat() == Qt.PlainText
+    finally:
+        widget.deleteLater()

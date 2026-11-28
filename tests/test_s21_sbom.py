@@ -19,8 +19,8 @@ STEP = 'Parts list (CycloneDX SBOM)'
 # Freeze every existing workflow byte, including the surrounding steps. These
 # constants never depend on HEAD or on whether a change has been committed.
 EXPECTED_WORKFLOW_SHA256 = {
-    'build-windows.yml': 'f5ff37bc302fd2ada7f210565165ed73b5eddf922fe9d037ece7f7b486491323',
-    'release.yml': '34b6c55a472a401e9cbe03533ba6966a6a259c56fa4d0c63a912d2919ca562a3',
+    'build-windows.yml': 'e89e436f9c60c698ffad7c78cb30912a0d90715cc7a12083eb6aae3a096a5f6f',
+    'release.yml': '597c25e38327501bed5ae61d9ab3801849a3cc0e5480fd97513a61f256d43509',
 }
 
 

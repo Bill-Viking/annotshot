@@ -11,8 +11,8 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QTextCursor
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QImage, QTextCursor
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                                QPlainTextEdit, QPushButton, QTextBrowser,
                                QVBoxLayout, QWidget)
@@ -25,6 +25,14 @@ PUBLISHER = "Bill Moldestad"
 PROJECT_URL = "https://github.com/Bill-Viking/annotshot"
 ISSUES_URL = PROJECT_URL + "/issues"
 MANUAL_URL = PROJECT_URL + "/blob/main/docs/USER-MANUAL.md"
+PRIVACY_URL = PROJECT_URL + "/blob/main/docs/PRIVACY.md"
+PRIVACY_SUMMARY = (
+    "Annotshot captures and edits pictures on your computer. By default, it keeps "
+    "each capture in Recent captures and copies it to the clipboard. You can turn "
+    "either option off in Settings… → Capture. Turning off Recent leaves earlier "
+    "pictures in place. Opening the feedback page does not attach your screenshot.")
+NO_PRIVACY = ("This copy of Annotshot could not open the full privacy page. "
+              "Choose Open on GitHub to read it online.")
 ABOUT_LINE = ("Capture a region or a window, annotate it, copy or save it, "
               "and keep the project editable.")
 LICENCE_LINE = "MIT licence"
@@ -103,6 +111,21 @@ def about_widget(parent=None, on_help=None) -> QWidget:
     line = QLabel(ABOUT_LINE, w)
     line.setWordWrap(True)
     box.addWidget(line)
+    study_line = QLabel('AI models wrote Annotshot. Its maker directed and tested it.', w)
+    study_line.setObjectName("aboutStudy1")
+    study_line.setTextFormat(Qt.PlainText)
+    study_line.setWordWrap(True)
+    box.addWidget(study_line)
+    study_line = QLabel('Through November 19, 2026, the project had 511 commits across 13 dates.', w)
+    study_line.setObjectName("aboutStudy2")
+    study_line.setTextFormat(Qt.PlainText)
+    study_line.setWordWrap(True)
+    box.addWidget(study_line)
+    study_line = QLabel('Read “How Annotshot was built” in Help.', w)
+    study_line.setObjectName("aboutStudy3")
+    study_line.setTextFormat(Qt.PlainText)
+    study_line.setWordWrap(True)
+    box.addWidget(study_line)
     box.addWidget(QLabel(PUBLISHER, w))
     link = QLabel(f'<a href="{PROJECT_URL}">{PROJECT_URL}</a>', w)
     link.setObjectName("aboutLink")
@@ -215,7 +238,7 @@ def shortcuts_markdown(rows) -> str:
     lines = ["## Keyboard shortcuts", "",
              "Your keys as they are set now (change them in **Settings…**). "
              "The table further down lists the keys Annotshot starts with. "
-             "Default on Mac: Option+Shift+Space. Default on Windows: Alt+Shift+Space. "
+             "The default capture key is Control+Command+Space on Mac and Ctrl+Alt+Space on Windows. "
              "Same area is a button on the capture bar. Hover to preview it, "
              "then click once to capture it. No key takes the last area.",
              "", "| Keys | Does |", "|---|---|"]
@@ -228,8 +251,9 @@ def manual_text(root: Path | None = None) -> str | None:
     from .__main__ import MANUAL
     path = (_root() if root is None else root) / MANUAL
     try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
+        text = path.read_text(encoding="utf-8")
+        return text if text.strip() else None
+    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -238,23 +262,39 @@ def help_markdown(rows, manual: str | None) -> str:
     its title and date line, before its first section."""
     keys = shortcuts_markdown(rows)
     if manual is None:
-        return f"# Annotshot help\n\n{NO_MANUAL}\n\n{keys}"
+        return (f"# Annotshot help\n\n{NO_MANUAL}\n\n{keys}\n\n"
+                f"## Privacy\n\n{PRIVACY_SUMMARY}\n\n"
+                f"[How it stays private]({PRIVACY_URL})")
     lines = manual.splitlines()
     at = next((i for i, l in enumerate(lines) if l.startswith("## ")),
               len(lines))
     return "\n".join(lines[:at]) + "\n\n" + keys + "\n" + "\n".join(lines[at:])
 
 
+class LocalBrowser(QTextBrowser):
+    """Read bundled pictures only, without fetching remote resources."""
+
+    def loadResource(self, kind, url):
+        local = self.document().baseUrl().resolved(url)
+        if local.isLocalFile():
+            return super().loadResource(kind, local)
+        return None
+
+
 class HelpWindow(QDialog):
     """The manual, the user's own keys at the top, and two buttons to the
     project's pages. It does not block the editor."""
+
+    privacyRequested = Signal()
 
     def __init__(self, rows, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Annotshot help")
         self.setModal(False)
-        self.browser = QTextBrowser(self)
-        self.browser.setOpenExternalLinks(True)
+        self.browser = LocalBrowser(self)
+        self.browser.setOpenExternalLinks(False)
+        self.browser.setOpenLinks(False)
+        self.browser.anchorClicked.connect(self._link)
         self.github = QPushButton("Open on GitHub", self)
         self.github.setToolTip(MANUAL_URL)
         self.github.clicked.connect(lambda: open_url(MANUAL_URL))
@@ -274,12 +314,115 @@ class HelpWindow(QDialog):
         self.resize(760, 720)
         self.refresh(rows)
 
+    def _link(self, url):
+        if url.toString() == PRIVACY_URL:
+            self.privacyRequested.emit()
+        elif not url.scheme() and not url.path() and url.hasFragment():
+            self.browser.scrollToAnchor(url.fragment())
+        else:
+            open_url(url.toString())
+
     def refresh(self, rows) -> None:
         """Show the manual again with the keys as they are now. Pictures
         the manual names that are not on this computer are left out."""
         from .__main__ import MANUAL
         position = self.browser.verticalScrollBar().value()
+        self.browser.document().setBaseUrl(QUrl.fromLocalFile(str(_root() / MANUAL)))
         self.browser.setSearchPaths([str(_root() / MANUAL.parent)])
         self.browser.setMarkdown(help_markdown(rows, manual_text()).replace(
             "## Privacy", '<a name="privacy"></a>\n\n## Privacy'))
+        self.browser.verticalScrollBar().setValue(position)
+
+
+class PrivacyWindow(QDialog):
+    """The offline policy, independent of Help and its reading position."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("How it stays private")
+        self.setModal(False)
+        self.browser = LocalBrowser(self)
+        self.browser.setOpenLinks(False)
+        self.browser.setOpenExternalLinks(False)
+        self.github = QPushButton("Open on GitHub", self)
+        self.github.setToolTip(PRIVACY_URL)
+        self.github.clicked.connect(self._open_github)
+        self.failure = QLabel(self)
+        self.failure.setTextFormat(Qt.PlainText)
+        self.failure.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        self.failure.setWordWrap(True)
+        self.failure.hide()
+        self.close_buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        self.close_buttons.rejected.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.github)
+        bottom.addStretch(1)
+        bottom.addWidget(self.close_buttons)
+        box = QVBoxLayout(self)
+        box.addWidget(self.browser)
+        box.addWidget(self.failure)
+        box.addLayout(bottom)
+        self.resize(760, 720)
+        self.refresh()
+        self.browser.viewport().installEventFilter(self)
+
+    def refresh(self):
+        from .__main__ import PRIVACY
+        path = _root() / PRIVACY
+        position = self.browser.verticalScrollBar().value()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        self.browser.document().setBaseUrl(QUrl.fromLocalFile(str(path)))
+        self.browser.setSearchPaths([str(path.parent)])
+        # ASSUMES: the bundled policy is readable. A damaged copy keeps the
+        # short answer available locally and never switches to the web.
+        self.browser.setMarkdown(text if text.strip() else
+            f"# How it stays private\n\n{PRIVACY_SUMMARY}\n\n{NO_PRIVACY}")
+        self._fit_images()
+        self.browser.verticalScrollBar().setValue(position)
+
+    def _fit_images(self):
+        document = self.browser.document()
+        position = self.browser.verticalScrollBar().value()
+        width = max(1, self.browser.viewport().width() - 2 * document.documentMargin())
+        block = document.begin()
+        while block.isValid():
+            fragment = block.begin()
+            while not fragment.atEnd():
+                part = fragment.fragment()
+                fmt = part.charFormat()
+                if fmt.isImageFormat():
+                    fmt = fmt.toImageFormat()
+                    url = document.baseUrl().resolved(QUrl(fmt.name()))
+                    image = QImage(url.toLocalFile()) if url.isLocalFile() else QImage()
+                    if not image.isNull():
+                        fitted = min(width, image.width())
+                        fmt.setWidth(fitted)
+                        fmt.setHeight(image.height() * fitted / image.width())
+                        cursor = QTextCursor(document)
+                        cursor.setPosition(part.position())
+                        cursor.setPosition(part.position() + part.length(), QTextCursor.KeepAnchor)
+                        cursor.setCharFormat(fmt)
+                fragment += 1
+            block = block.next()
+        self.browser.verticalScrollBar().setValue(position)
+
+    def eventFilter(self, watched, event):
+        # The dialog resizes before its layout gives the reader its new
+        # width. Let the browser handle that resize (including scrollbars)
+        # before fitting against the viewport's actual width.
+        if (watched is self.browser.viewport() and event.type() == QEvent.Resize
+                and event.size().width() != event.oldSize().width()):
+            QTimer.singleShot(0, self._fit_images)
+        return super().eventFilter(watched, event)
+
+    def _open_github(self):
+        position = self.browser.verticalScrollBar().value()
+        if not open_url(PRIVACY_URL):
+            self.failure.setText("Could not open the privacy page in your browser.\n" + PRIVACY_URL)
+            self.failure.show()
+        else:
+            self.failure.hide()
         self.browser.verticalScrollBar().setValue(position)

@@ -5,8 +5,12 @@ base.png).
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import stat
+import sys
+import tempfile
 import warnings
 import zipfile
 from pathlib import Path
@@ -46,31 +50,91 @@ def _is_move(item, a: tuple, b: tuple) -> bool:
                                         for m, v in zip(moved, b))
 
 
-def write_project(path, meta_json: str, base: QImage) -> None:
-    """Write an editable file: project.json + base.png in a zip, through a
-    temporary file replaced at once, so a file is never half-written. Safe
-    on a worker thread (no scene object is touched)."""
+def encode_project(meta_json: str, base: QImage) -> bytes:
+    """Finish the archive before any destination is touched; worker-safe."""
+    png = png_bytes(base)
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as z:
+        z.writestr("project.json", meta_json,
+                   compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("base.png", png)
+    return stream.getvalue()
+
+
+def write_project(path, meta_json: str, base: QImage):
+    """Ordinary saves use a sibling temporary; Recent supplies a pinned sink.
+
+    Both roads encode the same archive, and an encoder failure touches no
+    destination. No scene object is touched on the worker thread.
+    """
+    data = encode_project(meta_json, base)
+    if callable(getattr(path, 'write_encoded', None)):
+        return path.write_encoded(data)
     path = str(path)
-    tmp = path + ".tmp"
+    tmp = None
     try:
-        with zipfile.ZipFile(tmp, "w") as z:
-            z.writestr("project.json", meta_json,
-                       compress_type=zipfile.ZIP_DEFLATED)
-            z.writestr("base.png", png_bytes(base))
+        folder, name = os.path.split(os.path.abspath(path))
+        short = name.encode("utf-8")[:200].decode("utf-8", "ignore")
+        # ASSUMES: a sibling called <destination>.tmp may belong to someone
+        # else, including a link. Only this exclusively created file is ours.
+        fd, tmp = tempfile.mkstemp(prefix="." + short + ".", suffix=".tmp",
+                                   dir=folder)
+        with os.fdopen(fd, "wb") as output:
+            if output.write(data) != len(data):
+                raise OSError("the editable file write was incomplete")
+        # ASSUMES: mkstemp makes a private (0600) file. The file put in place
+        # keeps the bits its owner set; a new one gets what any new file gets.
+        # Only «nothing there» earns a new file's bits: any other error
+        # reading them stops the save, so a private file is never widened.
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:      # no file yet, or a dangling link
+            mode = _NEW_FILE_MODE
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        if tmp is not None:
+            # ASSUMES: a read-only file can be removed. False on Windows, and
+            # a read-only destination has just given this file its bits.
+            try:
+                os.chmod(tmp, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                pass
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         raise
+
+
+def _new_file_mode() -> int:
+    """The permission bits a newly created file gets here (0666 less the
+    process's umask)."""
+    if sys.platform == "win32":
+        return 0o666
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
+# Read once at import, on the main thread: os.umask can only be read by
+# setting it, process-wide, and write_project also runs on a worker thread.
+_NEW_FILE_MODE = _new_file_mode()
 
 
 def png_bytes(img: QImage) -> bytes:
     buf = QBuffer()
-    buf.open(QIODevice.WriteOnly)
-    img.save(buf, "PNG")
-    return bytes(buf.data())
+    if not buf.open(QIODevice.WriteOnly):
+        raise OSError("the picture encoding buffer could not be opened")
+    try:
+        if not img.save(buf, "PNG"):
+            raise OSError("the picture could not be encoded as PNG")
+        data = bytes(buf.data())
+        if not data:
+            raise OSError("the encoded PNG is empty")
+        return data
+    finally:
+        buf.close()
 
 
 class UndoStack(QUndoStack):
@@ -327,7 +391,16 @@ class Document(QGraphicsScene):
 
     @classmethod
     def load(cls, path) -> "Document":
-        with zipfile.ZipFile(str(path)) as z:
+        return cls._load(str(path), path)
+
+    @classmethod
+    def load_bytes(cls, data: bytes, path) -> "Document":
+        """Load the exact pinned bytes read under Recent's stem claim."""
+        return cls._load(io.BytesIO(data), path)
+
+    @classmethod
+    def _load(cls, source, path) -> "Document":
+        with zipfile.ZipFile(source) as z:
             meta = json.loads(z.read("project.json").decode("utf-8"))
             data = z.read("base.png")
         if not isinstance(meta, dict) or meta.get("format") not in (FORMAT, *LEGACY_FORMATS):

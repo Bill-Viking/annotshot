@@ -265,7 +265,7 @@ def test_welcome_chrome_and_picture_actions_and_copy_button(welcome_window, whit
     assert w.recent.isHidden() and w.statusBar().isHidden()
     assert not w.a_copy.isEnabled() and not w.a_save.isEnabled()
     assert all(not action.isEnabled() for action in w.tool_actions.values())
-    assert w.findChild(QToolBar, "main").widgetForAction(w.a_copy).objectName() != "outline"
+    assert w.findChild(QToolBar, "main").widgetForAction(w.a_copy).objectName() == "outline"
     w._bind(Document(white))
     assert w.state_name == "editor" and w.pages.currentWidget() is w.view
     assert all(not bar.isHidden() for bar in w.findChildren(QToolBar))
@@ -356,7 +356,7 @@ def test_welcome_text_rows_follow_copy_key_and_platform(welcome_window, monkeypa
     for platform, word in (("darwin", "this Mac"), ("win32", "this PC"), ("linux", "this computer")):
         monkeypatch.setattr(welcome.sys, "platform", platform)
         w.welcome.refresh()
-        assert f"Private. Your pictures stay on {word}. Annotshot sends nothing anywhere." in w.welcome.privacy_row.text()
+        assert f"Annotshot edits pictures on {word} without uploading them." in w.welcome.privacy_row.text()
     assert w.welcome.key_row.text() == "Setting up the capture key…"
     assert w.set_hotkey(QKeySequence(), False)
     assert w.welcome.key_row.text() == "Setting up the capture key…"
@@ -447,19 +447,52 @@ def test_welcome_recent_is_limited_to_newest_four(welcome_window, white):
     assert "0604" in w.welcome.recent_buttons[0].toolTip().replace("-", "")
 
 
-def test_privacy_section_and_link(welcome_window):
-    from annotshot.help import help_markdown, manual_text
-    text = manual_text()
+def test_privacy_section_and_link(welcome_window, monkeypatch, qapp):
+    from annotshot import help
+    text = help.manual_text()
     paragraph = text.split("## Privacy\n\n", 1)[1].split("\n\n", 1)[0]
-    assert paragraph.startswith("Annotshot works entirely on this computer. It has no internet code: it cannot upload, sync or report anything, and it never checks for updates by itself.")
-    assert "Pictures folder, under Annotshot/Recent" in paragraph
-    assert "app data folder under Captures/Recent" in paragraph
-    assert paragraph in help_markdown([], text)
+    assert paragraph.startswith("Annotshot captures and edits pictures on your computer.")
+    assert "Turning off Recent leaves earlier pictures in place." in paragraph
+    assert text.count(f"[How it stays private]({help.PRIVACY_URL})") == 1
+    assert paragraph in help.help_markdown([], text)
+    monkeypatch.setattr(help, "open_url", lambda _: pytest.fail("unsolicited URL"))
     w = welcome_window
-    w.welcome.privacy_row.linkActivated.emit("privacy")
-    assert w._help_window is not None
-    assert paragraph in w._help_window.browser.toPlainText()
-    w._help_window.close()
+    w.show()
+    w.activateWindow()
+    qapp.processEvents()
+    label = w.welcome.privacy_row
+    # The ordinary sentence is not a link.
+    QTest.mouseClick(label, Qt.LeftButton, pos=QPoint(4, 4))
+    assert w._privacy_window is None
+    click_label_anchor(label, "privacy", qapp)
+    reader = w._privacy_window
+    assert w._help_window is None and reader.isVisible()
+    assert reader.windowTitle() == "How it stays private"
+    assert "Where pictures are kept" in reader.browser.toPlainText()
+    assert "Pictures/Annotshot/Recent" in reader.browser.toPlainText()
+    reader.browser.verticalScrollBar().setValue(100)
+    position = reader.browser.verticalScrollBar().value()
+    w.show_privacy()
+    assert w._privacy_window is reader
+    assert reader.browser.verticalScrollBar().value() == position
+    reader.close()
+
+
+def click_label_anchor(label, href, app):
+    """Find the real QLabel anchor by hover, then click its painted text."""
+    hovered = []
+    label.linkHovered.connect(hovered.append)
+    try:
+        for y in range(2, label.height(), 3):
+            for x in range(2, label.width(), 5):
+                QTest.mouseMove(label, QPoint(x, y))
+                app.processEvents()
+                if hovered and hovered[-1] == href:
+                    QTest.mouseClick(label, Qt.LeftButton, pos=QPoint(x, y))
+                    return
+        pytest.fail(f"No hittable anchor {href}")
+    finally:
+        label.linkHovered.disconnect(hovered.append)
 
 
 def test_mainwindow_capture_passes_optional_mode(welcome_window, monkeypatch):

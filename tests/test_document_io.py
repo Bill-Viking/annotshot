@@ -1,6 +1,10 @@
 """Document proofs: save/load (check 7), PNG export with pixel probes (the
 file half of check 6), crop and its undo (check 5). Offscreen."""
+import errno
 import json
+import os
+import stat
+import sys
 import warnings
 import zipfile
 
@@ -13,6 +17,155 @@ from annotshot.items import (ArrowItem, BaseItem, EllipseItem, HighlightItem, Pe
 from annotshot.scene import Document
 
 from test_items import add, near, px
+
+
+@pytest.mark.parametrize("failure", ["false-encode", "empty-encode", "buffer-open"])
+def test_f2_failed_png_keeps_good_editable(qapp, white, tmp_path, monkeypatch, failure):
+    from annotshot import scene
+    path = tmp_path / "good.annotshot"
+    doc = Document(white)
+    doc.save(path)
+    before = path.read_bytes()
+    if failure == "buffer-open":
+        monkeypatch.setattr(scene.QBuffer, "open", lambda *a: False)
+    else:
+        monkeypatch.setattr(QImage, "save", lambda *a: failure == "empty-encode")
+    with pytest.raises(OSError):
+        doc.save(path)
+    assert path.read_bytes() == before
+    assert set(p.name for p in tmp_path.iterdir()) == {"good.annotshot"}
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("fail_replace", [False, True])
+def test_f3_users_own_tmp_is_never_touched(
+        qapp, white, tmp_path, monkeypatch, linked, fail_replace):
+    from annotshot import scene
+    path, mine = tmp_path / "keep.annotshot", tmp_path / "keep.annotshot.tmp"
+    path.write_bytes(b"GOOD")
+    notes = tmp_path / "notes"
+    if linked:
+        notes.write_bytes(b"MY OWN NOTES")
+        mine.symlink_to(notes)
+    else:
+        mine.write_bytes(b"MY OWN NOTES")
+    if fail_replace:
+        def fail(*args):
+            raise PermissionError("replacement refused")
+        monkeypatch.setattr(scene.os, "replace", fail)
+        with pytest.raises(PermissionError, match="replacement refused"):
+            Document(white).write(path)
+        assert path.read_bytes() == b"GOOD"
+    else:
+        Document(white).write(path)
+        assert Document.load(path).base == white
+    assert mine.read_bytes() == b"MY OWN NOTES"
+    assert mine.is_symlink() == linked
+    if linked:
+        assert mine.readlink() == notes
+    assert set(p.name for p in tmp_path.iterdir()) == \
+        ({"keep.annotshot", "keep.annotshot.tmp", "notes"} if linked else
+         {"keep.annotshot", "keep.annotshot.tmp"})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_f3_saved_editable_keeps_ordinary_permissions(qapp, white, tmp_path):
+    """The private temporary file must not make every saved editable 0600:
+    a new file gets what any new file gets here; a replaced one keeps the
+    bits its owner set (through a link too)."""
+    mask = os.umask(0)
+    os.umask(mask)
+    doc = Document(white)
+    new = tmp_path / "new.annotshot"
+    doc.save(new)
+    assert stat.S_IMODE(new.stat().st_mode) == 0o666 & ~mask
+    for bits in (0o640, 0o664, 0o600):
+        new.chmod(bits)
+        doc.save(new)
+        assert stat.S_IMODE(new.stat().st_mode) == bits
+    assert {p.name for p in tmp_path.iterdir()} == {"new.annotshot"}
+    # The writer replaces a link at the destination with the file itself:
+    # the bits come from the file the link named, which is left alone.
+    target, link = tmp_path / "target.annotshot", tmp_path / "link.annotshot"
+    target.write_bytes(b"MINE")
+    target.chmod(0o640)
+    link.symlink_to(target)
+    doc.save(link)
+    assert not link.is_symlink()
+    assert stat.S_IMODE(link.stat().st_mode) == 0o640
+    assert target.read_bytes() == b"MINE"
+
+
+def test_f3_unreadable_permissions_stop_the_save(qapp, white, tmp_path, monkeypatch):
+    """Only «no file there» earns a new file's bits. Any other error reading
+    the destination's permissions stops the save: a private picture is never
+    put back wider than it was."""
+    from annotshot import scene
+    path = tmp_path / "private.annotshot"
+    doc = Document(white)
+    doc.save(path)
+    path.chmod(0o600)
+    before = path.read_bytes()
+    real = os.stat
+    def failing(target, *args, **kwargs):
+        if str(target) == str(path) and not args and not kwargs:
+            raise OSError(errno.EIO, "permissions unreadable")
+        return real(target, *args, **kwargs)
+    with monkeypatch.context() as m:
+        m.setattr(scene.os, "stat", failing)
+        with pytest.raises(OSError, match="permissions unreadable"):
+            scene.write_project(path, "{}", white)
+    assert path.read_bytes() == before
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert {p.name for p in tmp_path.iterdir()} == {"private.annotshot"}
+
+
+def test_f3_read_only_temporary_file_is_still_cleaned_up(qapp, white, tmp_path, monkeypatch):
+    """A read-only destination gives the temporary file its bits. Where a
+    read-only file cannot be removed (Windows), a failed replacement must
+    still leave no temporary file behind."""
+    from annotshot import scene
+    path = tmp_path / "locked.annotshot"
+    doc = Document(white)
+    doc.save(path)
+    before = path.read_bytes()
+    path.chmod(0o444)
+    real_remove = os.remove
+    def remove(target, *args, **kwargs):
+        if not os.stat(target).st_mode & stat.S_IWRITE:
+            raise PermissionError(errno.EACCES, "read-only file", str(target))
+        return real_remove(target, *args, **kwargs)
+    def refuse(*args):
+        raise PermissionError("replacement refused")
+    with monkeypatch.context() as m:
+        m.setattr(scene.os, "remove", remove)
+        m.setattr(scene.os, "replace", refuse)
+        with pytest.raises(PermissionError, match="replacement refused"):
+            scene.write_project(path, "{}", white)
+    assert path.read_bytes() == before
+    assert {p.name for p in tmp_path.iterdir()} == {"locked.annotshot"}
+    path.chmod(0o644)
+
+
+def test_f2_short_write_never_replaces_good_editable(qapp, white, tmp_path, monkeypatch):
+    from annotshot import scene
+    path = tmp_path / "keep.annotshot"
+    path.write_bytes(b"GOOD")
+    original_open = scene.os.fdopen
+    class ShortWriter:
+        def __init__(self, fd, *args, **kwargs):
+            self.stream = original_open(fd, *args, **kwargs)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+        def write(self, data):
+            return self.stream.write(data[:-1])
+    monkeypatch.setattr(scene.os, "fdopen", ShortWriter)
+    with pytest.raises(OSError, match="incomplete"):
+        Document(white).write(path)
+    assert path.read_bytes() == b"GOOD"
+    assert set(p.name for p in tmp_path.iterdir()) == {"keep.annotshot"}
 
 
 def _repack(src, out, edit) -> None:

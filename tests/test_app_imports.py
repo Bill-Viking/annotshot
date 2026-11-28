@@ -265,7 +265,9 @@ def test_an_exported_picture_counts_as_saved(window, monkeypatch, tmp_path):
 
 def test_typing_keys_go_to_the_text_box_not_the_actions(window):
     """While a text box is edited, Delete / Ctrl+C / Ctrl+Z / Ctrl+Y are the
-    text's (ShortcutOverride accepted); Esc and Ctrl+D stay the window's."""
+    text's (ShortcutOverride accepted). Esc stays the window's. Ctrl+D is
+    claimed with only a caret; with the box object-selected while typing,
+    it stays the window's so Duplicate can use the live text."""
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import QApplication
@@ -277,6 +279,7 @@ def test_typing_keys_go_to_the_text_box_not_the_actions(window):
     QApplication.sendEvent(doc, QEvent(QEvent.WindowActivate))
     t.start_edit()
     assert doc.focusItem() is t.editor
+    assert doc.selected() == []
 
     def claimed(key, mod=Qt.NoModifier):
         ev = QKeyEvent(QEvent.ShortcutOverride, key, mod)
@@ -285,6 +288,12 @@ def test_typing_keys_go_to_the_text_box_not_the_actions(window):
         return ev.isAccepted()
     assert claimed(Qt.Key_Delete) and claimed(Qt.Key_C, Qt.ControlModifier)
     assert claimed(Qt.Key_Z, Qt.ControlModifier) and claimed(Qt.Key_Y, Qt.ControlModifier)
+    assert not claimed(Qt.Key_Escape) and claimed(Qt.Key_D, Qt.ControlModifier)
+
+    doc.select_only([t])
+    if not doc.is_editing():
+        t.start_edit()
+    assert doc.is_editing()
     assert not claimed(Qt.Key_Escape) and not claimed(Qt.Key_D, Qt.ControlModifier)
 
 
@@ -358,7 +367,8 @@ def test_the_toolbars_are_two_rows_then_the_properties(window):
     assert kids.index(bars["main"]) < kids.index(bars["tools"]) <         kids.index(bars["properties"])
     main = bars["main"]
     assert main.widgetForAction(window.a_capture).objectName() == "primary"
-    assert main.widgetForAction(window.a_copy).objectName() != "outline"
+    assert main.widgetForAction(window.a_copy).objectName() == "outline"
+    assert main.widgetForAction(window.a_clear).objectName() == "closePicture"
     # The buttons show the whole label, "…" included, beside the icon;
     # Undo, Redo and the item actions show only the icon, named by the
     # tooltip, and keep their shortcuts.

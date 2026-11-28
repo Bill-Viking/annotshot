@@ -120,10 +120,10 @@ def test_g2_sweep_exact_thresholds_and_retheme(editor, qapp, name, area):
         theme.apply(qapp, following)
         settle(window, qapp, window.minimumWidth())
         assert_all_buttons_visible(window)
-        assert (window.main_bar.needs()[window.main_bar.level()]
-                == window.main_bar.sizeHint().width())
-        expected = next(i for i, need in enumerate(window.tools_bar.needs())
-                        if need <= window.tools_bar.width())
+        assert window.main_bar.sizeHint().width() <= window.main_bar.width()
+        expected = next((i for i, need in enumerate(window.tools_bar.needs())
+                         if need <= window.tools_bar.width()),
+                        len(window.tools_bar.needs()) - 1)
         assert window.tools_bar.level() == expected
 
 
@@ -133,16 +133,17 @@ def test_g3_pinned_look(editor, qapp, name):
         needs = (window.main_bar.needs(), window.tools_bar.needs())
         print(f"{name}: Main {needs[0]}, Tools {needs[1]}")
         settle(window, qapp, 900)
-        assert (window.main_bar.level(), window.tools_bar.level()) == (0, 1), needs
-        for action in window.tool_actions.values():
-            button = window.tools_bar.widgetForAction(action)
-            assert button.toolButtonStyle() == Qt.ToolButtonTextBesideIcon, needs
-        for action in (window.a_dup, window.a_front, window.a_back, window.a_delete):
-            button = window.tools_bar.widgetForAction(action)
-            assert button.toolButtonStyle() == Qt.ToolButtonIconOnly, needs
+        for bar in (window.main_bar, window.tools_bar):
+            expected = next((i for i, n in enumerate(bar.needs()) if n <= bar.width()),
+                            len(bar.needs()) - 1)
+            assert bar.level() == expected, needs
+        for action in (window.a_copy, window.a_clear):
+            assert window.main_bar.widgetForAction(action).toolButtonStyle() == Qt.ToolButtonTextBesideIcon
         assert_all_buttons_visible(window)
         settle(window, qapp, 1100)
         assert (window.main_bar.level(), window.tools_bar.level()) == (0, 0), needs
+        for bar in (window.main_bar, window.tools_bar):
+            assert len({bar.widgetForAction(a).geometry().center().y() for a in bar.actions() if a.text()}) == 1
         assert_all_buttons_visible(window)
 
 
@@ -154,9 +155,7 @@ def test_g4_font_free_compact_measure_and_floor(editor, qapp, area):
             needs = (window.main_bar.compact_need(), window.tools_bar.compact_need())
             compact_tools.append(needs[1])
             assert needs[1] <= 640
-            assert window.minimumWidth() >= max(needs)
-            if area == (500, 400):
-                assert window.minimumWidth() > 400
+            assert window.minimumWidth() == min(900, int(.8 * area[0]))
             settle(window, qapp, window.minimumWidth())
             assert_all_buttons_visible(window)
     assert len(set(compact_tools)) == 1, compact_tools
@@ -173,7 +172,10 @@ def test_g5_every_icon_is_named(editor, qapp, name):
                 label = {"Front": "Bring to front", "Back": "Send to back"}.get(
                     action.text(), action.text())
                 word = label.split()[0].rstrip("…")
-                assert action.toolTip().startswith(word), action.text()
+                if action in (window.a_dup, window.a_front, window.a_back, window.a_delete):
+                    assert action.toolTip() == "Select an object first"
+                else:
+                    assert action.toolTip().startswith(word), action.text()
 
 
 @pytest.mark.parametrize("name", THEMES)

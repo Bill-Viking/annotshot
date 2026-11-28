@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / '.github' / 'workflows' / 'build-windows.yml'
 RELEASE = ROOT / '.github' / 'workflows' / 'release.yml'
 # SHA-256 of the Windows steps block before MSI/SBOM additions, with neutral MSIX defaults.
-ORIGINAL_WINDOWS_STEPS_SHA256 = '14b458da6081be65ee5895374285a532e9dbf1f57e5d4fb58fd9b833182c6aa7'
+ORIGINAL_WINDOWS_STEPS_SHA256 = '272453c500adf10f840c9e5815d4c3b905dc9d4f9e0269249d44cf14915db922'
 CONDITION = "((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign))"
 SIGNER_SUBJECT_SHA256 = '245dc45e91f6a982cc5c39835225e6a18970f589707a56d69a2ba83201f305e0'
 SIGNING_STEPS = (

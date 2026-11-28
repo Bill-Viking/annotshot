@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit, QToolBu
 import test_s30_key_button as s30
 from annotshot import hotkey, settings_dialog
 
-D, Y = s30.D, s30.Y
+Y = s30.Y
 STATES = ('D', 'Y', 'U', 'O', 'R', 'F', 'TD', 'TY')
 # One row per coverage-grid row, in its original order. Zero = unreachable.
 GRID = [
@@ -242,9 +242,9 @@ def setup(rig,case,*,help_window=True):
     copy_default = action in ('j_reset_copy','o_reset_copy')
     saved = None if state in ('D','TD') else Y
     if case.variant=='explicit_D':
-        saved=hotkey.DEFAULT
+        saved=rig.default_sequence
     elif case.variant=='remember_D':
-        saved=hotkey.DEFAULT
+        saved=rig.default_sequence
     elif case.variant=='retry_ctrl_alt':
         saved='Ctrl+Alt+Y'
     elif case.variant=='legacy':
@@ -253,10 +253,10 @@ def setup(rig,case,*,help_window=True):
         saved = 'A'
     if invalid and state in ('Y','TY','F'):
         saved = 'Ctrl+C'
-    local = 'Alt+8' if saved == 'Ctrl+C' else D if copy_default else None
+    local = 'Alt+8' if saved == 'Ctrl+C' else rig.default_sequence if copy_default else None
     # These cases open Settings through its public modal action. Do not first
     # construct a second, unused 28-field dialog in the legacy s30 fixture.
-    w = rig.create(saved=saved,off=state=='O',refused=[saved or D] if state=='U' else (),local=local,
+    w = rig.create(saved=saved,off=state=='O',refused=[saved or rig.default_sequence] if state=='U' else (),local=local,
                    settings_page=False,help_window=help_window)
     # Startup boundary, as in app.main; never used for a Settings gesture.
     w.apply_hotkey()
@@ -281,7 +281,7 @@ def setup(rig,case,*,help_window=True):
         # A held key becomes locally invalid through the reachable Reset all
         # path: restore Copy first, refuse D, keep the held key.
         if state in ('Y','TY'):
-            rig.backend.refused.add(D)
+            rig.backend.refused.add(rig.default_sequence)
             visit(rig,w,lambda p: click(rig,p.reset_all))
         else:
             visit(rig,w,lambda p: click(rig,p.resets['copy']))
@@ -327,7 +327,7 @@ def oracle(rig,w,page,case):
     is_all = '_all_' in action or action.startswith('m_')
     is_on = '_on_' in action or action.startswith('l_')
     is_off = action in ('k_off','o_off')
-    target = QKeySequence(D if is_reset or is_all else q if action.startswith('e_') or is_on or is_off else 'Alt+X')
+    target = QKeySequence(rig.default_sequence if is_reset or is_all else q if action.startswith('e_') or is_on or is_off else 'Alt+X')
     if case.variant.endswith('retained_target'):
         target=QKeySequence(Y)
     if 'taken' in action:
@@ -479,7 +479,7 @@ def oracle(rig,w,page,case):
             assert not any(hotkey.ONE_KEY in m for m in messages)
         if is_all:
             assert not any(k.startswith('shortcuts/') for k in w.settings.allKeys())
-            assert w.a_copy.shortcut() != QKeySequence(D)
+            assert w.a_copy.shortcut() != QKeySequence(rig.default_sequence)
         if not failed and not refused and kid not in (5,9):
             assert w.hotkey.registered and w.hotkey.sequence == target
         if not failed and kid in (5,9):
@@ -615,7 +615,21 @@ def test_K11(rig,case):
     if case.variant == 'inactive_observer':
         # Construction and passive snapshots are not input.
         p = settings_dialog.SettingsDialog(w)
+        assert w.welcome.count_control.isVisible()
+        assert not w.settings.contains('recent/first-welcome-v1')
+        assert bytes_(w) == before[1]
         w.key_clock.advance(1000)
+        assert w.isMinimized()
+        post_minimize = bytes_(w)
+        assert w.settings.value('recent/first-welcome-v1', False, type=bool)
+        lines = post_minimize.splitlines(keepends=True)
+        markers = [i for i, line in enumerate(lines) if line in (
+            b'first-welcome-v1=true\n', b'first-welcome-v1=true\r\n')]
+        assert len(markers) == 1
+        marker = markers[0]
+        assert [line.rstrip(b'\r\n') for line in lines[:marker]
+                if line.startswith(b'[')][-1] == b'[recent]'
+        assert b''.join(lines[:marker] + lines[marker + 1:]) == before[1]
         w._publish_key()
         assert w._key_try['phase']=='armed'
         p.show()
@@ -639,7 +653,11 @@ def test_K11(rig,case):
         callback()
     w.key_clock.advance(20000)
     assert captured==[] and w._key_try is None
-    assert (captures(w),bytes_(w),list(native.calls))==before
+    if case.variant == 'inactive_observer':
+        assert (captures(w),bytes_(w),list(native.calls)) == (
+            before[0],post_minimize,before[2])
+    else:
+        assert (captures(w),bytes_(w),list(native.calls))==before
     assert w.statusBar().currentMessage()=='Try cancelled'
 
 
@@ -652,14 +670,29 @@ def test_K12(rig,case):
     if case.variant=='before_choice':
         raw=native.raw()
     menu_try(w)
+    assert w.welcome.count_control.isVisible()
+    assert not w.settings.contains('recent/first-welcome-v1')
+    assert bytes_(w) == before[1]
     if case.variant in ('before_arm','wrap_before'):
         w.key_clock.advance(999)
         raw=native.raw()
+        assert bytes_(w) == before[1]
         w.key_clock.advance(1)
     else:
         w.key_clock.advance(1000)
-        if case.variant!='before_choice':
-            raw=native.raw()
+    assert w.isMinimized()
+    post_minimize = bytes_(w)
+    assert w.settings.value('recent/first-welcome-v1', False, type=bool)
+    lines = post_minimize.splitlines(keepends=True)
+    markers = [i for i, line in enumerate(lines) if line in (
+        b'first-welcome-v1=true\n', b'first-welcome-v1=true\r\n')]
+    assert len(markers) == 1
+    marker = markers[0]
+    assert [line.rstrip(b'\r\n') for line in lines[:marker]
+            if line.startswith(b'[')][-1] == b'[recent]'
+    assert b''.join(lines[:marker] + lines[marker + 1:]) == before[1]
+    if case.variant not in ('before_choice','before_arm','wrap_before'):
+        raw=native.raw()
     attempt=w._key_try
     deadline=list(w.key_clock.queue)
     native.dispatch(raw)
@@ -671,7 +704,8 @@ def test_K12(rig,case):
     w.key_clock.advance(1)
     native.dispatch(native.raw())
     assert w._key_try is None and w._key_green and captured==[]
-    assert (captures(w),bytes_(w),list(native.calls))==before
+    assert (captures(w),bytes_(w),list(native.calls)) == (
+        before[0],post_minimize,before[2])
 
 
 @pytest.mark.parametrize('case',[c for c in CASES if c.kid==13],ids=lambda c:c.name)
@@ -715,7 +749,7 @@ def test_K14(rig,case):
         QTest.qWait(5200)
     visit(rig,w,lambda p: (
         pytest_check(p.message.text()==''),pytest_check(not p.hotkey_off.isChecked()),
-        pytest_check(p.hotkey_edit.keySequence()==QKeySequence(D))))
+        pytest_check(p.hotkey_edit.keySequence()==QKeySequence(rig.default_sequence))))
     assert w.statusBar().currentMessage()=='Annotshot received your key'
     if case.variant=='swap':
         QTest.qWait(5800)
@@ -809,10 +843,9 @@ def test_probed_assumptions(rig,case):
             QTest.keyRelease(edit,Qt.Key_1,Qt.AltModifier|Qt.KeypadModifier)
             QTest.keyRelease(edit,Qt.Key_Alt)
         else:
-            assert QKeySequence(hotkey.DEFAULT).toString(QKeySequence.PortableText)==D
-            assert s30.key_words(QKeySequence(D),'darwin')=='Option+Shift+Space'
-            assert s30.key_words(QKeySequence(D),'win32')=='Alt+Shift+Space'
-            chord(rig,page,D)
+            assert QKeySequence(hotkey.DEFAULT).toString(QKeySequence.PortableText)==rig.default_sequence
+            assert s30.key_words(QKeySequence(rig.default_sequence),rig.platform)==rig.d
+            chord(rig,page,rig.default_sequence)
             assert field_parts(page.hotkey_edit)[0].text()==rig.d
     visit(rig,w,probe)
 

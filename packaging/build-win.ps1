@@ -54,7 +54,12 @@ if ($p.ExitCode -ne 0) { Stop-Build "Annotshot.exe --check exit $($p.ExitCode): 
 if ($stdout -ne $want) { Stop-Build "Annotshot.exe --check printed '$stdout' (check.txt '$filed'), wanted '$want'" }
 $Manual = Get-ChildItem -Path (Join-Path $Dist 'Annotshot') -Recurse -Filter 'USER-MANUAL.md' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $Manual) { Stop-Build 'the user manual docs\USER-MANUAL.md is missing from dist\Annotshot (Help shows it)' }
-Step 3 "Annotshot.exe --check -> $stdout . manual in the bundle"
+foreach ($relative in @('docs/PRIVACY.md', 'docs/privacy/recent-menu-macos.png', 'docs/privacy/capture-settings-windows.png')) {
+    $asset = Join-Path $Manual.Directory.Parent.FullName $relative
+    if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { Stop-Build "required privacy asset $relative is missing from the bundle" }
+    if ((Get-Item -LiteralPath $asset).Length -eq 0) { Stop-Build "required privacy asset $relative is empty in the bundle" }
+}
+Step 3 "Annotshot.exe --check -> $stdout . manual and privacy in the bundle"
 
 # 4. the installer (Inno Setup 6), from the folder step 3 proved
 $Iss = Join-Path $Root 'packaging\annotshot.iss'

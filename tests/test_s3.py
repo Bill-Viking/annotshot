@@ -3,6 +3,7 @@ permission road, the hint), Clear and the empty hint, the right-click menu,
 the shortcuts the user sets with the capture hotkey, and quick capture.
 Everything runs offscreen; no real dialog or menu is ever shown."""
 from annotshot.keywords import key_words
+from annotshot import hotkey
 import importlib
 import sys
 
@@ -372,7 +373,7 @@ def test_ctrl_s_follows_the_saves_own_key(window):
 
 def test_the_capture_key_round_trips(window, fake_hotkey, private_settings):
     from annotshot.mainwindow import MainWindow
-    assert window.hotkey_sequence() == QKeySequence("Shift+Alt+Space")
+    assert window.hotkey_sequence() == QKeySequence(hotkey.DEFAULT)
     assert not window.hotkey_off()
     assert window.set_hotkey(QKeySequence("Ctrl+Alt+P"), off=False) is None
     assert fake_hotkey.registered[-1] == "Ctrl+Alt+P"
@@ -389,7 +390,7 @@ def test_the_capture_key_may_not_be_an_actions_key(window, fake_hotkey):
     from annotshot import hotkey
     problem = window.set_hotkey(QKeySequence("Ctrl+N"), off=False)
     assert problem and "Capture" in problem
-    assert window.hotkey_sequence() == QKeySequence("Shift+Alt+Space")
+    assert window.hotkey_sequence() == QKeySequence(hotkey.DEFAULT)
     # and an action may not take the capture key
     problem = window.set_shortcut("copy", QKeySequence(hotkey.DEFAULT))
     assert problem and "Capture from anywhere" in problem

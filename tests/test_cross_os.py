@@ -92,8 +92,9 @@ def test_check_entry_prints_ok():
     lines = done.stdout.strip().splitlines()
     assert lines[0] == "office export OK"
     assert lines[1].startswith("manual OK (") and lines[1].endswith(" lines)")
-    assert lines[2] == "font OK (VT323)"
-    assert lines[3:] == [f"Annotshot {annotshot.__version__} OK"]
+    assert lines[2].startswith("privacy OK (") and lines[2].endswith(" images)")
+    assert lines[3] == "font OK (VT323)"
+    assert lines[4:] == [f"Annotshot {annotshot.__version__} OK"]
     assert annotshot.__version__ == "0.4.4"
 
 

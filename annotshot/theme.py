@@ -68,7 +68,7 @@ DERIVED = {
     "placeholder": "text-dim", "bright-text": "accent-text",
     "select": "accent", "handle-fill": "surface",
     "icon-disabled": "text-disabled",
-    "capture-icon": "accent-text", "capture-icon-disabled": "accent-soft-border",
+    "capture-icon": "link", "capture-icon-disabled": "icon-disabled",
     "copy-icon": "link", "mark-ink": "icon-checked",
     "font-separator": "border",
     "thumb-ground": "canvas", "time-ink": "text-dim",
@@ -125,7 +125,7 @@ THEMES = {
         "placeholder": "#86909A", "bright-text": "#FFFFFF",
         "select": "#1E88E5", "handle-fill": "#FFFFFF",
         "icon-disabled": "#A7B1BB",
-        "capture-icon": "#FFFFFF", "capture-icon-disabled": "#DCE9F5",
+        "capture-icon": "#0866AC", "capture-icon-disabled": "#A7B1BB",
         "copy-icon": "#0866AC", "mark-ink": "#1267A7",
         "font-separator": "#D7DDE4",
         "thumb-ground": "#E9EDF1", "time-ink": "#7A8591",
@@ -183,9 +183,9 @@ QToolBar#tools QToolButton { color: @tool-text; padding: 3px 0px 3px 2px; }
 QToolBar#tools QToolButton[iconOnly="true"] { padding: 3px 3px; }
 /* the rows' 8 px side insets (a toolbar's padding is one value) */
 QToolBar#main QToolButton#primary, QToolBar#tools QToolButton#first {
-    margin-left: 8px; }
+    margin-left: 0px; }
 QToolBar#main QToolButton#last, QToolBar#tools QToolButton#last {
-    margin-right: 8px; }
+    margin-right: 0px; }
 QToolBar#main QToolButton:hover, QToolBar#tools QToolButton:hover {
     background: @hover; }
 QToolBar#main QToolButton:pressed, QToolBar#tools QToolButton:pressed {
@@ -194,15 +194,20 @@ QToolBar#main QToolButton:disabled, QToolBar#tools QToolButton:disabled {
     color: @text-disabled; }
 QToolBar#tools QToolButton:checked {
     color: @checked-text; background: @accent-soft; border-color: @accent-soft-border; }
+QToolBar#tools QToolButton:checked:pressed { background: @pressed; }
 QToolBar#main QToolButton#primary {
-    color: @accent-text; background: @accent; border-color: @accent-border;
+    color: @button-text; background: transparent; border-left: 2px solid @link;
     font-weight: 600; padding: 3px 10px; }
-QToolBar#main QToolButton#primary:hover { background: @accent-hover; }
-QToolBar#main QToolButton#primary:pressed { background: @accent-pressed; }
+QToolBar#main QToolButton#primary:hover { background: @hover; }
+QToolBar#main QToolButton#primary:pressed { background: @pressed; }
 QToolBar#main QToolButton#outline {
-    color: @link; background: @outline-bg; border-color: @outline-border;
+    color: @copy-icon; background: transparent; border: 2px solid @copy-icon;
     font-weight: 600; }
-QToolBar#main QToolButton#outline:hover { background: @outline-hover; }
+QToolBar#main QToolButton#outline:hover { background: @hover; }
+QToolBar#main QToolButton#outline:pressed { background: @pressed; }
+QToolBar#main QToolButton#closePicture { border: 1px solid @icon; }
+QToolBar#main QFrame#barDivider { background: @separator; }
+/* _BarButton paints a separate inset dotted focus and a 12 x 2 checked mark. */
 /* the overflow chevron a row shows when the window is too narrow */
 QToolBar#main QToolButton#qt_toolbar_ext_button,
 QToolBar#tools QToolButton#qt_toolbar_ext_button {

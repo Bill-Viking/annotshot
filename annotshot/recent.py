@@ -16,17 +16,27 @@ status line.
 from __future__ import annotations
 
 import os
+import ctypes
+import hashlib
+import json
+import time
+from contextlib import contextmanager, ExitStack
 import re
+import stat
+import sys
+import threading
+import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from types import SimpleNamespace
 
 from PySide6.QtCore import (QDateTime, QEvent, QObject, QRect, QRunnable, QSize, Qt,
                             QThreadPool, QUrl, Signal)
 from PySide6.QtGui import (QDesktopServices, QFont, QIcon, QImage,
                            QImageReader, QPainter, QPixmap)
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDockWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QDockWidget,
                                QLabel, QListWidget, QListWidgetItem, QMenu,
                                QMessageBox, QStyle, QVBoxLayout,
                                QWidget)
@@ -37,6 +47,10 @@ KEEP = 12
 TITLE = "Recent captures"
 SETTING = "recent/keep"                 # QSettings key: file each capture
 KEEP_TEXT = f"Keep the last {KEEP} captures in the Recent pane"
+COUNT_SETTING = "recent/count-v1"
+FIRST_WELCOME = "recent/first-welcome-v1"
+COUNT_ERROR = "Enter a whole number from 0 to 100."
+PAUSED_TEXT = "Recent keeping is paused. Choose a count to start again."
 THUMB = QSize(160, 90)                  # 16:9, letterboxed
 THUMB_GROUND = "#E9EDF1"                # Light's; the theme's "thumb-ground"
 TIME_INK = "#7A8591"                    # Light's; the theme's "time-ink"
@@ -50,11 +64,211 @@ CLEAR_QUESTION = ("Remove every capture from Recent captures? The pictures "
 # other .png name still shows, timed by its modification time.
 NAME_FORMAT = "yyyy-MM-ddTHH-mm-ss-zzz"
 NAME_RE = re.compile(
-    r"^(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3})(?:-\d+)?\.(?:png|annotshot)$")
+    r"^(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3})(?:-\d+)?\.(?:png|annotshot)$", re.IGNORECASE)
 EDITABLE = ".annotshot"
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
           "Oct", "Nov", "Dec")
+
+
+def _count(value) -> int | None:
+    if type(value) is int:
+        return value if 0 <= value <= 100 else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,3}", value.strip()):
+        number = int(value)
+        return number if number <= 100 else None
+    return None
+
+
+def write_count(settings, number: int) -> None:
+    if type(number) is not int or _count(number) is None:
+        raise ValueError(COUNT_ERROR)
+    settings.setValue(COUNT_SETTING, number)
+    settings.setValue(SETTING, number == KEEP)  # real Boolean for 0.4.4
+    settings.sync()
+
+
+def read_count(settings) -> int | None:
+    """A malformed numeric key wins over the old Boolean: pause, don't guess."""
+    if not callable(getattr(settings, 'sync', None)):
+        # Read-only preference views (the build check) expose reads only.
+        # Migration belongs to a writable profile, not that inspection.
+        if settings.contains(COUNT_SETTING):
+            return _count(settings.value(COUNT_SETTING))
+        return KEEP if settings.value(SETTING, True, type=bool) else 0
+    settings.sync()
+    if not settings.contains(COUNT_SETTING):
+        number = KEEP if settings.value(SETTING, True, type=bool) else 0
+        write_count(settings, number)
+        return number
+    stored_count = settings.value(COUNT_SETTING)
+    number = _count(stored_count)
+    if number is None:
+        settings.setValue(SETTING, False)
+        settings.sync()
+        return None
+    stored_legacy = settings.value(SETTING, number == KEEP)
+    legacy = settings.value(SETTING, number == KEEP, type=bool)
+    if legacy != (number == KEEP):
+        number = KEEP if legacy else 0
+        write_count(settings, number)
+    elif (not settings.contains(SETTING) or type(stored_legacy) is not bool
+          or type(stored_count) is not int):
+        # INI settings lose scalar types across processes. Normalize the
+        # valid loaded choice with typed writes; never coerce a bad count.
+        write_count(settings, number)
+    return number
+
+
+def fresh_profile(settings, folder: Path) -> bool:
+    # ASSUMES: startup has not yet written defaults. An uncertain inventory
+    # is an established profile, never permission to offer setup or expire.
+    if not callable(getattr(settings, 'allKeys', None)) or settings.allKeys():
+        return False
+    try:
+        _root_identity(folder)
+        return not any(folder.iterdir())
+    except FileNotFoundError:
+        return not os.path.lexists(folder)
+    except OSError:
+        return False
+
+
+class CountSpinBox(QAbstractSpinBox):
+    """Keep the typed draft separate from the committed whole number.
+
+    QSpinBox's built-in fixup silently rounds/restores invalid drafts before
+    editingFinished. Here Return and blur validate the actual text first.
+    """
+    committed = Signal(int)
+    invalid = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = KEEP
+        self._draft_edited = False
+        self.setAccessibleName("Captures to keep")
+        self.lineEdit().installEventFilter(self)
+        self.lineEdit().textEdited.connect(self._edited)
+        self.display(KEEP)
+
+    def _edited(self, _text):
+        self._draft_edited = True
+
+    def value(self):
+        return self._value
+
+    def display(self, number):
+        self._value = number or 0
+        self.lineEdit().setText(str(number) if number else "Off")
+        self._draft_edited = False
+
+    def setValue(self, number):
+        if _count(number) is None or type(number) is not int:
+            raise ValueError(COUNT_ERROR)
+        self.display(number)
+        self.committed.emit(number)
+
+    def commit(self):
+        text = self.lineEdit().text().strip()
+        number = 0 if text.casefold() == "off" else _count(text)
+        if number is None:
+            self.display(self._value)
+            self.invalid.emit()
+        else:
+            self.setValue(number)
+
+    def stepBy(self, steps):
+        text = self.lineEdit().text().strip()
+        number = 0 if text.casefold() == 'off' else _count(text)
+        if number is None:
+            self.commit()           # restore the last choice and name the error
+            return
+        self.setValue(max(0, min(100, number + steps)))
+
+    def stepEnabled(self):
+        flags = QAbstractSpinBox.StepNone
+        if self._value < 100:
+            flags |= QAbstractSpinBox.StepUpEnabled
+        if self._value > 0:
+            flags |= QAbstractSpinBox.StepDownEnabled
+        return flags
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit() and event.type() == QEvent.FocusOut:
+            self._commit_on_blur()
+        return super().eventFilter(obj, event)
+
+    def _commit_on_blur(self):
+        expected = str(self._value) if self._value else 'Off'
+        if self._draft_edited or self.lineEdit().text() != expected:
+            self.commit()
+
+    def focusOutEvent(self, event):
+        # QAbstractSpinBox itself owns focus on the shipped Qt platforms;
+        # its line edit alone does not receive every real focus transfer.
+        self._commit_on_blur()
+        super().focusOutEvent(event)
+
+    def event(self, event):
+        if event.type() == QEvent.ShortcutOverride and event.key() in (
+                Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.commit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class CaptureCountControl(QWidget):
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self.window_ = window
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+        self.caption = QLabel("Captures to keep", self)
+        self.caption.setWordWrap(True)
+        self.spin = CountSpinBox(self)
+        self.spin.setObjectName("captureCount")
+        self.caption.setBuddy(self.spin)
+        self.note = QLabel(self)
+        self.error = QLabel(self)
+        for label in (self.note, self.error):
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+        for widget in (self.caption, self.spin, self.note, self.error):
+            box.addWidget(widget)
+        self.spin.committed.connect(window.set_capture_count)
+        self.spin.invalid.connect(self._invalid)
+        window.captureCountChanged.connect(self.refresh)
+        self.refresh()
+
+    def _invalid(self):
+        self.error.setText(COUNT_ERROR)
+        self.error.show()
+
+    def refresh(self):
+        number = self.window_.capture_count()
+        self.spin.display(number)
+        self.error.clear()
+        self.error.hide()
+        self.note.setText(PAUSED_TEXT if number is None else
+                          "New captures won’t be kept." if number == 0 else
+                          f"Recent keeps the newest {number} captures. When the next "
+                          "capture is saved to Recent, older ones without edits are removed.")
+        self.spin.setAccessibleDescription(self.note.text())
+
+    def commit(self):
+        # Do not turn a paused or untouched field into an explicit Off pick.
+        expected = str(self.spin.value()) if self.spin.value() else "Off"
+        if self.spin.lineEdit().text() != expected:
+            self.spin.commit()
 
 
 def stamp_name(when: QDateTime) -> str:
@@ -108,6 +322,852 @@ def time_label(when: QDateTime, now: QDateTime | None = None) -> str:
     return text if d.year() == now.date().year() else f"{text} {d.year()}"
 
 
+def _version(info):
+    return (_identity(info), info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _identity(info):
+    return (info.st_dev, info.st_ino)
+
+
+def _root_identity(folder, *, create=False):
+    """Never follow a linked Recent root, including Windows reparse points."""
+    if _HOST_WINDOWS:
+        with _WindowsRoot(folder, create=create) as root:
+            return root.identity
+    try:
+        info = folder.lstat()
+    except FileNotFoundError:
+        if not create:
+            raise
+        folder.mkdir(parents=True, exist_ok=True)
+        info = folder.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & 0x400):
+        raise OSError("Recent must be an ordinary folder, not a link or junction")
+    return _identity(info)
+
+
+_DIR_FUNCTIONS = (os.open, os.stat, os.unlink, os.link, os.rename, os.mkdir, os.rmdir)
+# The backend belongs to the real host, not sys.platform (also used for UI tests).
+_HOST_WINDOWS = os.name == 'nt'
+
+
+def _require_handles():
+    # Check capabilities, not a platform guess. There is no pathname fallback
+    # after admission: checks alone cannot close a root-exchange race.
+    if _HOST_WINDOWS:
+        _windows_native()           # missing APIs fail before any mutation
+        return
+    if (not all(fn in os.supports_dir_fd for fn in _DIR_FUNCTIONS)
+            or not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'O_DIRECTORY')
+            or _native_rename is None):
+        raise OSError('Safe Recent directory handles are unavailable; edits remain unsaved')
+
+
+def _load_rename():
+    if os.name != 'posix':
+        return None
+    library = ctypes.CDLL(None, use_errno=True)
+    name = 'renameatx_np' if sys.platform == 'darwin' else 'renameat2'
+    function = getattr(library, name, None)
+    if function is not None:
+        function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                             ctypes.c_char_p, ctypes.c_uint)
+        function.restype = ctypes.c_int
+    return function
+
+
+_native_rename = _load_rename()
+_RENAME_EXCLUSIVE = 4 if sys.platform == 'darwin' else 1
+
+
+def _rename_noreplace(source, src, destination, dst):
+    """Move one entry, including a symlink itself, without replacing anything."""
+    _require_handles()
+    source._name(src)
+    destination._name(dst)
+    if isinstance(source, _WindowsRoot):
+        source.rename(src, destination, dst)
+        return
+    # Native flags belong to the host selected at import, even in tests that
+    # simulate another platform's UI by changing sys.platform.
+    if _native_rename(source.fd, os.fsencode(src), destination.fd, os.fsencode(dst), _RENAME_EXCLUSIVE):
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), str(destination.folder / dst))
+
+
+class _Root:
+    """Pin a validated directory for metadata/publication/unlink operations.
+
+    ASSUMES: a root may be exchanged after reservation. Identity checks
+    refuse the exchange; POSIX dir_fd operations cannot follow its new link.
+    A platform without these handles refuses before mutation.
+    """
+    def __new__(cls, *args, **kwargs):
+        if cls is _Root and _HOST_WINDOWS:
+            return object.__new__(_WindowsRoot)
+        return object.__new__(cls)
+
+    def __init__(self, folder, expected=None, *, create=False):
+        self.folder, self.fd = Path(folder), None
+        _require_handles()
+        self.identity = _root_identity(self.folder, create=create)
+        if expected is not None and self.identity != expected:
+            raise OSError("Recent folder changed since reservation")
+        self.fd = os.open(self.folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if _identity(os.fstat(self.fd)) != self.identity:
+                raise OSError("Recent folder changed while opening it")
+            self.check()
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        if _root_identity(self.folder) != self.identity:
+            raise OSError("Recent folder changed")
+
+    @classmethod
+    def held(cls, hold):
+        """Duplicate the directory admitted by this editor, never its pathname."""
+        if isinstance(hold.fd, _WindowsHandle):
+            return _WindowsRoot.held(hold)
+        _require_handles()
+        root = cls.__new__(cls)
+        root.folder = hold.folder
+        root.fd = os.dup(hold.fd)
+        root.identity = _identity(os.fstat(root.fd))
+        if root.identity != hold.directory:
+            root.close()
+            raise OSError('Recent directory hold changed')
+        return root
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    @staticmethod
+    def _name(name):
+        if Path(name).name != str(name):
+            raise OSError("Recent entry must be a single name")
+
+    def _args(self, name):
+        self._name(name)
+        return name, {'dir_fd': self.fd}
+
+    def names(self):
+        return os.listdir(self.fd)
+
+    def stat(self, name):
+        path, kw = self._args(name)
+        return os.stat(path, follow_symlinks=False, **kw)
+
+    @contextmanager
+    def pin(self, name):
+        path, kw = self._args(name)
+        before = self.stat(name)
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError("Recent record is not a regular file")
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), **kw)
+        with os.fdopen(fd, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if _version(info) != _version(before):
+                raise OSError("Recent record changed while opening it")
+            data = source.read()
+            if _version(os.fstat(source.fileno())) != _version(info):
+                raise OSError("Recent entry changed while reading")
+            if _version(self.stat(name)) != _version(info):
+                raise OSError("Recent entry changed while reading")
+            yield data, info, source.fileno()
+
+    def read(self, name):
+        with self.pin(name) as (data, info, _):
+            return data, info
+
+    @contextmanager
+    def temporary(self, name, data, mode=0o600):
+        path, kw = self._args(name)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600, **kw)
+        try:
+            with os.fdopen(fd, 'wb', closefd=False) as output:
+                if output.write(data) != len(data):
+                    raise OSError('Recent record write was incomplete')
+                output.flush()
+                os.fsync(fd)
+            os.fchmod(fd, mode)
+            yield fd
+        finally:
+            os.close(fd)
+
+    def create(self, name, data=b''):
+        path, kw = self._args(name)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, **kw)
+        with os.fdopen(fd, 'wb') as output:
+            if output.write(data) != len(data):
+                raise OSError("Recent record write was incomplete")
+            output.flush()
+            os.fsync(output.fileno())
+            return _identity(os.fstat(output.fileno()))
+
+    def unlink(self, name, identity=None):
+        path, kw = self._args(name)
+        if identity is not None and _identity(self.stat(name)) != identity:
+            raise OSError("Recent entry changed before cleanup")
+        os.unlink(path, **kw)
+
+    def publish(self, temporary, name, source=None):
+        source = source or self
+        source._name(temporary)
+        self._name(name)
+        os.link(temporary, name, src_dir_fd=source.fd, dst_dir_fd=self.fd,
+                follow_symlinks=False)
+
+class _PosixStage(_Root):
+    """Private operation directory; only explicitly owned work is cleaned.
+
+    Unknown or recovered entries are never swept. A failed restoration stays
+    here, with its path in the notice, rather than risking another file.
+    """
+    def __init__(self, root):
+        self.parent = root
+        self.name = '.annotshot-stage-' + uuid.uuid4().hex
+        self.folder = root.folder / self.name
+        self.fd = None
+        os.mkdir(self.name, 0o700, dir_fd=root.fd)
+        self.fd = os.open(self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=root.fd)
+        self.identity = _identity(os.fstat(self.fd))
+
+    def __exit__(self, *_):
+        self.close()
+        try:
+            if _identity(self.parent.stat(self.name)) == self.identity:
+                os.rmdir(self.name, dir_fd=self.parent.fd)  # empty only
+        except OSError:
+            pass
+
+
+class _WindowsNative:
+    """The native call boundary. Every child name is relative to an open folder.
+
+    NtCreateFile's OPEN_REPARSE_POINT applies to the final entry, including
+    junctions. NtSetInformationFile takes the verified *source handle* and a
+    pinned destination directory, with ReplaceIfExists FALSE. No pathname
+    delete/replace fallback is permitted. Unsupported filesystems refuse.
+    """
+    def __init__(self):
+        from ctypes import wintypes as w
+        self.w = w
+        self.nt = ctypes.WinDLL('ntdll', use_last_error=True)
+        self.k = ctypes.WinDLL('kernel32', use_last_error=True)
+
+        class Unicode(ctypes.Structure):
+            _fields_ = [('length', w.USHORT), ('maximum', w.USHORT), ('buffer', w.LPWSTR)]
+        class Attributes(ctypes.Structure):
+            _fields_ = [('length', w.ULONG), ('root', w.HANDLE),
+                        ('name', ctypes.POINTER(Unicode)), ('attributes', w.ULONG),
+                        ('security', w.LPVOID), ('quality', w.LPVOID)]
+        class IO(ctypes.Structure):
+            _fields_ = [('status', ctypes.c_void_p), ('information', ctypes.c_size_t)]
+        class Info(ctypes.Structure):
+            _fields_ = [('attributes', w.DWORD), ('created', w.FILETIME),
+                        ('accessed', w.FILETIME), ('written', w.FILETIME),
+                        ('volume', w.DWORD), ('size_high', w.DWORD), ('size_low', w.DWORD),
+                        ('links', w.DWORD), ('index_high', w.DWORD), ('index_low', w.DWORD)]
+        class Rename(ctypes.Structure):
+            _fields_ = [('replace', w.ULONG), ('root', w.HANDLE),
+                        ('length', w.ULONG), ('name', w.WCHAR * 1)]
+        class FileID(ctypes.Structure):
+            _fields_ = [('volume', ctypes.c_ulonglong), ('file', ctypes.c_ubyte * 16)]
+        self.Unicode, self.Attributes, self.IO = Unicode, Attributes, IO
+        self.Info, self.Rename, self.FileID = Info, Rename, FileID
+        signatures = [
+            (self.nt.NtCreateFile, [ctypes.POINTER(w.HANDLE), w.DWORD,
+                ctypes.POINTER(Attributes), ctypes.POINTER(IO), w.LPVOID,
+                w.ULONG, w.ULONG, w.ULONG, w.ULONG, w.LPVOID, w.ULONG], ctypes.c_long),
+            (self.nt.NtSetInformationFile, [w.HANDLE, ctypes.POINTER(IO),
+                w.LPVOID, w.ULONG, w.ULONG], ctypes.c_long),
+            (self.nt.RtlNtStatusToDosError, [ctypes.c_long], w.ULONG),
+            (self.k.GetFileInformationByHandle, [w.HANDLE, ctypes.POINTER(Info)], w.BOOL),
+            (self.k.GetFileInformationByHandleEx, [w.HANDLE, ctypes.c_int,
+                w.LPVOID, w.DWORD], w.BOOL),
+            (self.k.ReadFile, [w.HANDLE, w.LPVOID, w.DWORD, ctypes.POINTER(w.DWORD), w.LPVOID], w.BOOL),
+            (self.k.WriteFile, [w.HANDLE, w.LPCVOID, w.DWORD, ctypes.POINTER(w.DWORD), w.LPVOID], w.BOOL),
+            (self.k.SetFilePointerEx, [w.HANDLE, ctypes.c_longlong, w.LPVOID, w.DWORD], w.BOOL),
+            (self.k.FlushFileBuffers, [w.HANDLE], w.BOOL),
+            (self.k.SetFileTime, [w.HANDLE, ctypes.POINTER(w.FILETIME),
+                ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME)], w.BOOL),
+            (self.k.CloseHandle, [w.HANDLE], w.BOOL),
+            (self.k.GetCurrentProcess, [], w.HANDLE),
+            (self.k.DuplicateHandle, [w.HANDLE, w.HANDLE, w.HANDLE,
+                ctypes.POINTER(w.HANDLE), w.DWORD, w.BOOL, w.DWORD], w.BOOL),
+            (self.k.GetDriveTypeW, [w.LPCWSTR], w.UINT),
+        ]
+        for function, args, result in signatures:
+            function.argtypes, function.restype = args, result
+
+    def _ok(self, ok):
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def _status(self, status):
+        if status < 0:
+            raise ctypes.WinError(self.nt.RtlNtStatusToDosError(status))
+
+    def open(self, parent, name, *, directory=False, create=False,
+             mutable=False, write=False, metadata=False, listing=False):
+        if parent is None:
+            # ASSUMES: Recent is on a local volume. Network/device paths do
+            # not inherit this proof. Open only the volume root by full name.
+            if self.k.GetDriveTypeW(str(name)) not in (2, 3, 6):
+                raise OSError('Recent needs an ordinary local volume')
+            name = '\\??\\' + str(name)
+        buffer = ctypes.create_unicode_buffer(str(name))
+        length = len(str(name).encode('utf-16-le'))
+        unicode = self.Unicode(length, length + 2, ctypes.cast(buffer, self.w.LPWSTR))
+        attributes = self.Attributes(ctypes.sizeof(self.Attributes), parent,
+                                     ctypes.pointer(unicode), 0x40, None, None)
+        handle, io = self.w.HANDLE(), self.IO()
+        access = 0x100000 | 0x80  # SYNCHRONIZE | FILE_READ_ATTRIBUTES
+        if directory:
+            # IopOpenLinkOrRenameTarget opens the destination directory
+            # internally. A persistent LIST_DIRECTORY/DELETE handle can
+            # conflict with that open. Admission needs TRAVERSE/ATTRIBUTES;
+            # enumeration gets its own short-lived LIST_DIRECTORY handle.
+            access |= 0x20 | (1 if listing else 0)
+        elif not metadata:
+            access |= 0x80000000
+        if mutable:
+            access |= 0x10000   # DELETE, held before verification
+        if write:
+            access |= 0x40000000
+        options = 0x200000 | 0x20 | (1 if directory else 0x40)
+        # Directory handles disallow renaming/removal of the admitted path.
+        # File handles deny competing writes AND deletes, not just root swaps.
+        share = 3 if directory else (7 if metadata else 1)
+        self._status(self.nt.NtCreateFile(ctypes.byref(handle), access,
+            ctypes.byref(attributes), ctypes.byref(io), None, 0,
+            share, 2 if create else 1, options, None, 0))
+        return handle.value
+
+    def info(self, handle):
+        info = self.Info()
+        self._ok(self.k.GetFileInformationByHandle(handle, ctypes.byref(info)))
+        file_id = self.FileID()
+        self._ok(self.k.GetFileInformationByHandleEx(handle, 18,
+            ctypes.byref(file_id), ctypes.sizeof(file_id)))  # FileIdInfo
+        inode = int.from_bytes(bytes(file_id.file), 'little')
+        if not inode:
+            raise OSError('Recent cannot prove a stable Windows file ID')
+        def ns(value):
+            return (((value.dwHighDateTime << 32) | value.dwLowDateTime)
+                    - 116444736000000000) * 100
+        mode = stat.S_IFDIR if info.attributes & 0x10 else stat.S_IFREG
+        if info.attributes & 0x400:
+            mode = stat.S_IFLNK
+        mode |= 0o444 if info.attributes & 1 else 0o666
+        return SimpleNamespace(st_dev=file_id.volume, st_ino=inode, st_mode=mode,
+            st_size=(info.size_high << 32) | info.size_low,
+            st_mtime_ns=ns(info.written), st_ctime_ns=ns(info.created),
+            st_file_attributes=info.attributes)
+
+    def close(self, handle):
+        self._ok(self.k.CloseHandle(handle))
+
+    def duplicate(self, handle):
+        process, duplicate = self.k.GetCurrentProcess(), self.w.HANDLE()
+        self._ok(self.k.DuplicateHandle(process, handle, process,
+            ctypes.byref(duplicate), 0, False, 2))
+        return duplicate.value
+
+    def names(self, handle):
+        listing = self.open(handle, '.', directory=True, listing=True)
+        try:
+            return self._names(listing)
+        finally:
+            self.close(listing)
+
+    def _names(self, handle):
+        # FILE_ID_BOTH_DIR_INFO: the WCHAR name starts at byte 104.
+        # Restart once per inventory; subsequent batches continue this handle.
+        result, kind = [], 11  # FileIdBothDirectoryRestartInfo
+        while True:
+            buffer = ctypes.create_string_buffer(65536)
+            if not self.k.GetFileInformationByHandleEx(handle, kind, buffer, len(buffer)):
+                error = ctypes.get_last_error()
+                if error == 18:  # ERROR_NO_MORE_FILES
+                    return result
+                raise ctypes.WinError(error)
+            kind, offset = 10, 0
+            while True:
+                following = int.from_bytes(buffer[offset:offset + 4], 'little')
+                length = int.from_bytes(buffer[offset + 60:offset + 64], 'little')
+                if length % 2 or offset + 104 + length > len(buffer):
+                    raise OSError('Incomplete Windows Recent inventory')
+                name = buffer[offset + 104:offset + 104 + length].decode('utf-16-le')
+                if name not in ('.', '..'):
+                    result.append(name)
+                if following == 0:
+                    break
+                if following < 104 or offset + following >= len(buffer):
+                    raise OSError('Incomplete Windows Recent inventory')
+                offset += following
+
+    def case_sensitive(self, handle):
+        flags = self.w.ULONG()
+        self._ok(self.k.GetFileInformationByHandleEx(handle, 23,
+            ctypes.byref(flags), ctypes.sizeof(flags)))  # FileCaseSensitiveInfo
+        return bool(flags.value & 1)
+
+    def read(self, handle):
+        self._ok(self.k.SetFilePointerEx(handle, 0, None, 0))
+        chunks = []
+        while True:
+            data, read = ctypes.create_string_buffer(1024 * 1024), self.w.DWORD()
+            self._ok(self.k.ReadFile(handle, data, len(data), ctypes.byref(read), None))
+            if not read.value:
+                return b''.join(chunks)
+            chunks.append(data.raw[:read.value])
+
+    def write(self, handle, data):
+        for offset in range(0, len(data), 1024 * 1024):
+            chunk, written = data[offset:offset + 1024 * 1024], self.w.DWORD()
+            self._ok(self.k.WriteFile(handle, chunk, len(chunk), ctypes.byref(written), None))
+            if written.value != len(chunk):
+                raise OSError('Recent record write was incomplete')
+        self._ok(self.k.FlushFileBuffers(handle))
+
+    def seal(self, handle, mode):
+        # Explicit last-write time, then suppress deferred close-time updates
+        # on this writing handle. Receipts can be bound before it closes.
+        ticks = time.time_ns() // 100 + 116444736000000000
+        stamp = self.w.FILETIME(ticks & 0xffffffff, ticks >> 32)
+        frozen = self.w.FILETIME(0xffffffff, 0xffffffff)
+        self._ok(self.k.SetFileTime(handle, None, None, ctypes.byref(stamp)))
+        self._ok(self.k.SetFileTime(handle, None, ctypes.byref(frozen), ctypes.byref(frozen)))
+
+    def _move_info(self, handle, parent, name, kind):
+        # Native FILE_RENAME_INFORMATION / FILE_LINK_INFORMATION share this
+        # prefix. ReplaceIfExists stays FALSE, even on recovery collisions.
+        encoded = name.encode('utf-16-le')
+        size = ctypes.sizeof(self.Rename) + len(encoded)
+        buffer = ctypes.create_string_buffer(size)
+        info = self.Rename.from_buffer(buffer)
+        info.replace, info.root, info.length = False, parent, len(encoded)
+        ctypes.memmove(ctypes.addressof(buffer) + self.Rename.name.offset, encoded, len(encoded))
+        io = self.IO()
+        self._status(self.nt.NtSetInformationFile(handle, ctypes.byref(io), buffer, size, kind))
+
+    def link(self, handle, parent, name):
+        self._move_info(handle, parent, name, 11)  # FileLinkInformation
+
+    def rename(self, handle, parent, name):
+        self._move_info(handle, parent, name, 10)  # FileRenameInformation
+
+    def delete(self, handle):
+        if self.info(handle).st_file_attributes & 1:
+            raise PermissionError('Recent file is read-only')
+        io, delete = self.IO(), self.w.BOOLEAN(True)
+        self._status(self.nt.NtSetInformationFile(handle, ctypes.byref(io),
+            ctypes.byref(delete), ctypes.sizeof(delete), 13))  # FileDispositionInformation
+
+
+_WINDOWS_NATIVE = None
+
+
+def _windows_native():
+    global _WINDOWS_NATIVE
+    if _WINDOWS_NATIVE is None:
+        try:
+            _WINDOWS_NATIVE = _WindowsNative()
+        except (AttributeError, OSError) as error:
+            raise OSError('Safe Windows Recent primitives are unavailable; edits remain unsaved') from error
+    return _WINDOWS_NATIVE
+
+
+_WINDOWS_LEASES = {}
+_WINDOWS_LEASE_LOCK = threading.RLock()
+
+
+class _WindowsHandle:
+    def __init__(self, api, raw):
+        self.api, self.raw, self.closed = api, raw, False
+        self.references = 1
+        self.owner = threading.get_ident()
+        self.io_lock = threading.RLock()
+        self.after_close = []
+
+
+def _fd_info(fd):
+    return fd.api.info(fd.raw) if isinstance(fd, _WindowsHandle) else os.fstat(fd)
+
+
+def _dup_handle(fd):
+    return (_WindowsHandle(fd.api, fd.api.duplicate(fd.raw))
+            if isinstance(fd, _WindowsHandle) else os.dup(fd))
+
+
+def _close_handle(fd):
+    if not isinstance(fd, _WindowsHandle):
+        os.close(fd)
+        return
+    with _WINDOWS_LEASE_LOCK:
+        if not fd.closed:
+            fd.references -= 1
+            if fd.references:
+                return
+            fd.api.close(fd.raw)
+            fd.closed = True
+            for key, value in list(_WINDOWS_LEASES.items()):
+                if value is fd:
+                    del _WINDOWS_LEASES[key]
+            for callback in fd.after_close:
+                callback()
+
+
+class _WindowsRoot(_Root):
+    """Pin every component on admission; all later child use is handle-relative."""
+    def __init__(self, folder, expected=None, *, create=False):
+        self.folder, self.fd, self.chain = Path(folder), None, []
+        self.api = _windows_native()
+        absolute = Path(_without_extended_prefix(os.path.abspath(folder)))
+        try:
+            parent = None
+            for index, name in enumerate(absolute.parts):
+                if index:
+                    self._name(name)
+                try:
+                    raw = self.api.open(parent, name, directory=True)
+                except FileNotFoundError:
+                    if not create or index == 0:
+                        raise
+                    try:
+                        raw = self.api.open(parent, name, directory=True, create=True)
+                    except FileExistsError:
+                        raw = self.api.open(parent, name, directory=True)
+                handle = _WindowsHandle(self.api, raw)
+                self.chain.append(handle)
+                self._directory(_fd_info(handle))
+                parent = raw
+            self.fd = self.chain[-1]
+            self.identity = _identity(_fd_info(self.fd))
+            if expected is not None and expected != self.identity:
+                raise OSError('Recent folder changed since reservation')
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _directory(info):
+        if not stat.S_ISDIR(info.st_mode) or info.st_file_attributes & 0x400:
+            raise OSError('Recent must be an ordinary folder, not a link or junction')
+
+    @staticmethod
+    def _name(name):
+        name = str(name)
+        if (not name or name in ('.', '..') or any(c in name for c in '/\\:')
+                or name[-1] in '. ' or '\x00' in name):
+            raise OSError('Recent entry must be a single ordinary name')
+
+    def check(self):
+        self._directory(_fd_info(self.fd))
+        with _WindowsRoot(self.folder, self.identity):
+            pass
+
+    @classmethod
+    def held(cls, hold):
+        root = object.__new__(cls)
+        root.folder, root.fd, root.chain = hold.folder, None, []
+        root.api = hold.fd.api
+        try:
+            for handle in hold.fd.chain:
+                root.chain.append(_dup_handle(handle))
+            root.fd = root.chain[-1]
+            root.identity = _identity(_fd_info(root.fd))
+            if root.identity != hold.directory:
+                raise OSError('Recent directory hold changed')
+            return root
+        except BaseException:
+            root.close()
+            raise
+
+    def duplicate(self):
+        handle = _dup_handle(self.fd)
+        handle.chain = []
+        try:
+            for ancestor in self.chain[:-1]:
+                handle.chain.append(_dup_handle(ancestor))
+            handle.chain.append(handle)
+            return handle
+        except BaseException:
+            for h in handle.chain:
+                _close_handle(h)
+            _close_handle(handle)
+            raise
+
+    def close(self):
+        for handle in reversed(self.chain):
+            _close_handle(handle)
+        self.chain, self.fd = [], None
+
+    def names(self):
+        self._directory(_fd_info(self.fd))
+        names = self.api.names(self.fd.raw)
+        for name in names:
+            self._name(name)
+        return names
+
+    def _key(self, name):
+        self._name(name)
+        return id(self.api), self.identity, str(name).casefold()
+
+    @contextmanager
+    def _lease(self, name, *, metadata=False, create=False, write=False):
+        key = self._key(name)
+        with _WINDOWS_LEASE_LOCK:
+            handle = _WINDOWS_LEASES.get(key)
+            if handle is not None:
+                if create:
+                    raise FileExistsError(str(self.folder / name))
+                if not metadata and handle.owner != threading.get_ident():
+                    # Another worker must not bypass the native sharing
+                    # denial by borrowing this worker's DELETE-capable handle.
+                    raise PermissionError('Recent capture is busy; work remains protected')
+                handle.references += 1
+            else:
+                handle = _WindowsHandle(self.api, self.api.open(self.fd.raw, name,
+                    metadata=metadata, mutable=not metadata, create=create, write=write))
+                if not metadata:
+                    _WINDOWS_LEASES[key] = handle
+        try:
+            yield handle
+        finally:
+            _close_handle(handle)
+
+    def stat(self, name):
+        with self._lease(name, metadata=True) as handle:
+            return _fd_info(handle)
+
+    @contextmanager
+    def pin(self, name):
+        with self._lease(name) as handle:
+            # A borrowed native handle has one file pointer. Retain the
+            # handle and serialize that pointer through the entire pin.
+            with handle.io_lock:
+                info = _fd_info(handle)
+                if not stat.S_ISREG(info.st_mode) or info.st_file_attributes & 0x400:
+                    raise OSError('Recent record is not a regular file')
+                data = self.api.read(handle.raw)
+                if _version(_fd_info(handle)) != _version(info):
+                    raise OSError('Recent entry changed while reading')
+                yield data, info, handle
+
+    @contextmanager
+    def temporary(self, name, data, mode=0o600):
+        with self._lease(name, create=True, write=True) as handle:
+            with handle.io_lock:
+                self.api.write(handle.raw, data)
+                self.api.seal(handle.raw, mode)
+                yield handle
+
+    def create(self, name, data=b''):
+        with self.temporary(name, data) as handle:
+            return _identity(_fd_info(handle))
+
+    def unlink(self, name, identity=None):
+        with self._lease(name) as handle:
+            info = _fd_info(handle)
+            if identity is not None and _identity(info) != identity:
+                raise OSError('Recent entry changed before cleanup')
+            self.api.delete(handle.raw)
+            if isinstance(self, _WindowsStage):
+                self.pending.append(handle)
+            with _WINDOWS_LEASE_LOCK:
+                _WINDOWS_LEASES.pop(self._key(name), None)
+
+    def publish(self, temporary, name, source=None):
+        source = source or self
+        with source._lease(temporary) as handle:
+            self._name(name)
+            self.api.link(handle.raw, self.fd.raw, name)
+            with _WINDOWS_LEASE_LOCK:
+                _WINDOWS_LEASES[self._key(name)] = handle
+
+    def rename(self, name, destination, target):
+        with self._lease(name) as handle:
+            info = _fd_info(handle)
+            if info.st_file_attributes & 1 or not info.st_mode & 0o222:
+                raise PermissionError('Recent file is read-only')
+            destination._name(target)
+            self.api.rename(handle.raw, destination.fd.raw, target)
+            with _WINDOWS_LEASE_LOCK:
+                _WINDOWS_LEASES.pop(self._key(name), None)
+                _WINDOWS_LEASES[destination._key(target)] = handle
+
+
+class _WindowsStage(_WindowsRoot):
+    def __init__(self, root):
+        self.parent, self.api = root, root.api
+        self.name = '.annotshot-stage-' + uuid.uuid4().hex
+        self.folder, self.chain, self.pending = root.folder / self.name, [], []
+        self.parent_handle = None
+        self.fd = _WindowsHandle(self.api, self.api.open(root.fd.raw, self.name,
+            directory=True, create=True))
+        self.chain = [self.fd]
+        try:
+            self._directory(_fd_info(self.fd))
+            self.identity = _identity(_fd_info(self.fd))
+            self.parent_handle = _dup_handle(root.fd)
+        except BaseException:
+            self.close()
+            raise
+
+    def __exit__(self, *_):
+        # Windows removes a marked link at last handle close. A proven inode
+        # may still be pinned by the caller. Keep this directory handle until
+        # those closes; remove only the same, now-empty directory, by handle.
+        def finish():
+            if self.fd is not None and all(h.closed for h in self.pending):
+                try:
+                    empty = not self.api.names(self.fd.raw)
+                except OSError:
+                    empty = False
+                if not empty:
+                    # A retained file is already at the reported location.
+                    # Do not drop its directory pin to attempt any cleanup.
+                    self.close()
+                    _close_handle(self.parent_handle)
+                    self.parent_handle = None
+                    return
+                # Drop the non-delete admission handle before opening our
+                # empty directory for deletion. Reopen relative to the held
+                # parent and verify its ID; an exchanged entry stays intact.
+                # Deletion itself still uses that verified exclusive handle.
+                self.close()
+                cleanup = None
+                try:
+                    cleanup = _WindowsHandle(self.api, self.api.open(
+                        self.parent_handle.raw, self.name, directory=True, mutable=True))
+                    info = _fd_info(cleanup)
+                    self._directory(info)
+                    if _identity(info) == self.identity:
+                        self.api.delete(cleanup.raw)
+                except OSError:
+                    pass           # retained recovery work is never swept
+                finally:
+                    if cleanup is not None:
+                        _close_handle(cleanup)
+                    _close_handle(self.parent_handle)
+                    self.parent_handle = None
+        for handle in self.pending:
+            if not handle.closed:
+                handle.after_close.append(finish)
+        finish()
+
+
+def _Stage(root):
+    return _WindowsStage(root) if isinstance(root, _WindowsRoot) else _PosixStage(root)
+
+
+@contextmanager
+def _expiry_guard(root, path):
+    """Hold companion absence through Windows expiry, not just its scan.
+
+    ASSUMES: a peer can create an editable after the inventory. FILE_CREATE
+    either observes it (keep the PNG) or owns an empty, delete-pending entry
+    that denies competing writes/deletes until expiry finishes. The handle
+    removes only its own placeholder on close, including process death.
+    Case-sensitive directories cannot exclude every companion spelling this
+    way, so they keep the original. Missing case-query support also keeps it.
+    """
+    if not isinstance(root, _WindowsRoot):
+        yield
+        return
+    if root.api.case_sensitive(root.fd.raw):
+        raise OSError(f'Recent cannot prove companion absence in this case-sensitive folder; file kept at {path}')
+    name = editable_for(path).name
+    try:
+        with root.temporary(name, b'') as handle:
+            # Mark deletion while still holding the exclusive handle. No
+            # check-by-path cleanup, and no crash-left fake editable.
+            root.unlink(name, _identity(_fd_info(handle)))
+            names = root.names()
+            companions = [n for n in names if Path(n).stem.casefold() == path.stem.casefold()
+                          and Path(n).suffix.lower() in ('.png', EDITABLE)
+                          and n.casefold() != name.casefold()]
+            if (companions != [path.name]
+                    or any(n.split('.pending-', 1)[0].casefold() == path.stem.casefold()
+                           for n in names if '.pending-' in n)):
+                raise OSError(f'Recent companions changed; file kept at {path}')
+            yield
+    except FileExistsError as error:
+        raise OSError(f'Recent companion appeared; file kept at {path}') from error
+
+
+def _moved_matches(name, data, info, expected):
+    actual = _fingerprint(name, data, info)
+    return (stat.S_ISREG(info.st_mode) and
+            all(actual[key] == value for key, value in expected.items() if key != 'ctime_ns'))
+
+
+def _restore(stage, staged, root, name):
+    """No check-then-replace: a competing occupant always keeps its entry."""
+    try:
+        _rename_noreplace(stage, staged, root, name)
+        return name
+    except FileExistsError:
+        for _ in range(8):
+            recovery = Path(name).stem + '-recovered-' + uuid.uuid4().hex + Path(name).suffix
+            try:
+                _rename_noreplace(stage, staged, root, recovery)
+                return recovery
+            except FileExistsError:
+                continue
+            except OSError as error:
+                raise OSError(f'{error}; retained file: {stage.folder / staged}') from error
+    except OSError as error:
+        raise OSError(f'{error}; retained file: {stage.folder / staged}') from error
+    raise OSError(f'Could not restore; retained file: {stage.folder / staged}')
+
+
+def _receipt_name(path):
+    return '.' + Path(path).name + '.filed-v1'
+
+
+def _fingerprint(name, data, info):
+    return {'name': name, 'device': info.st_dev, 'inode': info.st_ino,
+            'size': info.st_size, 'mtime_ns': info.st_mtime_ns, 'ctime_ns': info.st_ctime_ns,
+            'sha256': hashlib.sha256(data).hexdigest()}
+
+
+def _claim_name(path):
+    # All spellings of a stem use the same bounded portable filename.
+    key = hashlib.sha256(Path(path).stem.casefold().encode('utf-8')).hexdigest()
+    return '.' + key + '.claim-v1'
+
+
+@dataclass
+class _Claim:
+    name: str
+    identity: tuple
+
+    def release(self, root):
+        root.unlink(self.name, self.identity)
+
+
+def _claim(root, path):
+    name = _claim_name(path)
+    return _Claim(name, root.create(name))
+
+
 class RecentStore:
     """The Recent folder on disk. `folder` is read at every call, so a test
     (or a changed setting) can point it elsewhere."""
@@ -125,17 +1185,84 @@ class RecentStore:
         `.annotshot` alone when its PNG is gone (the editable carries the
         base). None when the folder is not there."""
         try:
-            found = [p for p in self.folder.iterdir()
-                     if p.suffix.lower() in (".png", EDITABLE) and p.is_file()]
+            groups = self._inventory()
+            found = [next((p for p in entries if p.suffix.lower() == '.png'
+                           and p.is_file()),
+                          next((p for p in entries if p.is_file()), None))
+                     for entries in groups.values()]
         except OSError:
             return []
-        by_stem: dict[str, Path] = {}
-        for p in found:
-            if p.suffix.lower() == ".png" or p.stem not in by_stem:
-                by_stem[p.stem] = p
-        return sorted(by_stem.values(),
+        return sorted((p for p in found if p is not None),
                       key=lambda p: (taken_at(p).toMSecsSinceEpoch(), p.stem),
                       reverse=True)
+
+    def _inventory(self) -> dict[str, list[Path]]:
+        """Actual names, including links: errors propagate to expiry."""
+        groups: dict[str, list[Path]] = {}
+        with ExitStack() as stack:
+            root = stack.enter_context(_Root(self.folder)) if _HOST_WINDOWS else None
+            entries = ([root.folder / name for name in root.names()
+                        if Path(name).suffix.lower() in ('.png', EDITABLE)]
+                       if root else self.source_entries())
+            for path in sorted(entries):
+                mode = root.stat(path.name).st_mode if root else path.lstat().st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                    raise OSError(f"uncertain Recent entry: {path.name}")
+                groups.setdefault(path.stem.casefold(), []).append(path)
+        return groups
+
+    def companions(self, path) -> tuple[Path, Path]:
+        """Use actual names on case-sensitive volumes too."""
+        entries = self._inventory().get(Path(path).stem.casefold(), [])
+        png = next((p for p in entries if p.suffix.lower() == '.png'), png_for(path))
+        editable = next((p for p in entries if p.suffix.lower() == EDITABLE), editable_for(path))
+        return png, editable
+
+    def source_entries(self) -> list[Path]:
+        """Actual source names for the Save guard; listing errors propagate.
+
+        Do not use the thumbnail inventory: it merges companions and treats
+        an unreadable directory as empty. Missing Recent has no sources yet.
+        """
+        folder = self.folder
+        try:
+            if _HOST_WINDOWS:
+                with _Root(folder) as root:
+                    return [folder / name for name in root.names()
+                            if Path(name).suffix.lower() in ('.png', EDITABLE)]
+            _root_identity(folder)
+            return [p for p in folder.iterdir()
+                    if p.suffix.lower() in (".png", EDITABLE)]
+        except FileNotFoundError:
+            if os.path.lexists(folder):
+                raise
+            return []
+
+    def contains_destination(self, path) -> bool:
+        """Save-dialog copies must live outside Recent and its descendants."""
+        # ASSUMES: spelling a folder through a link does not make a copy safe
+        # from Recent's cleanup. Resolve the destination before containment.
+        resolved_folder = self.folder.resolve()
+        folder = os.path.normcase(str(resolved_folder))
+        # ASSUMES: the destination may itself be a link. The writer replaces
+        # the link, not its target, so the folder that HOLDS the entry counts
+        # as much as the folder its target is in.
+        for resolved_parent in (Path(path).resolve().parent,
+                                Path(path).parent.resolve()):
+            # normcase alone does not fold case on a case-insensitive Mac volume.
+            for ancestor in (resolved_parent, *resolved_parent.parents):
+                try:
+                    if os.path.samefile(ancestor, resolved_folder):
+                        return True
+                except FileNotFoundError:
+                    pass               # a new folder, or Recent not made yet
+            parent = os.path.normcase(str(resolved_parent))
+            try:
+                if os.path.commonpath((parent, folder)) == folder:
+                    return True
+            except ValueError:         # different Windows drives
+                pass
+        return False
 
     def owns(self, path) -> bool:
         """True when `path` is a capture's file in the Recent folder."""
@@ -152,64 +1279,615 @@ class RecentStore:
             return False
 
     def reserve(self, when: QDateTime | None = None) -> Path:
-        """A new capture's PNG path, unused (two in one millisecond get
-        -1, -2 …); nothing is written yet, so the window knows the path
-        before the filer lands the picture."""
-        folder = self.folder
-        name = stamp_name(when or QDateTime.currentDateTime())
-        path, n = folder / name, 1
-        while path.exists() or editable_for(path).exists() or \
-                str(path) in _RESERVED:
-            path = folder / f"{name[:-4]}-{n}.png"
-            n += 1
+        """Reserve a fresh path in a validated ordinary Recent directory."""
+        with _IO_LOCK, _Root(self.folder, create=True) as root:
+            name = stamp_name(when or QDateTime.currentDateTime())
+            path, n = self.folder / name, 1
+            while True:
+                try:
+                    self._reserve_path(path, root)
+                    return path
+                except FileExistsError:
+                    path = self.folder / f"{name[:-4]}-{n}.png"
+                    n += 1
+
+    def _reserve_path(self, path, root):
+        if not self.owns(path) or Path(path).suffix != '.png':
+            raise OSError("capture destination is outside Recent")
+        if path.stem.casefold() in self._inventory() or str(path) in _RESERVED:
+            raise FileExistsError(str(path))
+        marker = '.' + path.name + '.reserve'
+        identity = root.create(marker)
         _RESERVED.add(str(path))
-        return path
+        _RESERVATIONS[str(path)] = (self, marker, identity, root.identity)
+
+    def release(self, path):
+        with _IO_LOCK:
+            record = _RESERVATIONS.get(str(path))
+            if record is None or record[0] is not self:
+                return
+            _, marker, identity, directory = _RESERVATIONS.pop(str(path))[:4]
+            _RESERVED.discard(str(path))
+            try:
+                with _Root(self.folder, directory) as root:
+                    root.unlink(marker, identity)
+            except OSError:
+                pass  # Never clean through an exchanged root.
 
     def file(self, image: QImage, when: QDateTime | None = None,
-             path: Path | None = None) -> Path:
-        """Write `image` as a full PNG (at `path`, else a new stamp) and drop
-        the oldest unedited captures beyond `keep`. Raises OSError naming
-        what went wrong."""
-        folder = self.folder
+             path: Path | None = None, *, keep: int | None = None) -> Path:
+        """Publish PNG then its exact receipt; only complete filing rotates."""
+        count = self.keep if keep is None else keep
+        if type(count) is not int or not 1 <= count <= 100:
+            raise OSError("Recent keeping is paused or off")
         path = Path(path) if path is not None else self.reserve(when)
         try:
-            folder.mkdir(parents=True, exist_ok=True)
-            if not image.save(str(path), "PNG"):
-                path.unlink(missing_ok=True)
-                raise OSError(f"could not write {path.name} in {folder}")
+            with _IO_LOCK, _Root(self.folder, create=True) as root:
+                record = _RESERVATIONS.get(str(path))
+                if record is None:
+                    self._reserve_path(path, root)
+                    record = _RESERVATIONS[str(path)]
+                if record[0] is not self:
+                    raise OSError("capture belongs to another reservation")
+                if record[3] != root.identity:
+                    raise OSError("Recent folder changed since reservation")
+                # Validate records even on a write with nothing to expire.
+                self._expiry_order()
+                from .scene import png_bytes
+                pixels = png_bytes(image)
+                with _Stage(root) as stage:
+                    try:
+                        with stage.temporary('capture.tmp', pixels) as fd:
+                            if path.stem.casefold() in self._inventory():
+                                raise OSError(f"capture destination is occupied: {path.name}")
+                            root.check()
+                            root.publish('capture.tmp', path.name, stage)
+                            stage.unlink('capture.tmp', _identity(_fd_info(fd)))
+                            # Link removal changes ctime. Fingerprint our encoded
+                            # bytes and the still-open fd after that last change.
+                            info = _fd_info(fd)
+                            if _version(root.stat(path.name)) != _version(info):
+                                raise OSError('published PNG was substituted')
+                            receipt = _fingerprint(path.name, pixels, info)
+                            root.create(_receipt_name(path), json.dumps(receipt).encode('utf-8'))
+                            if _version(root.stat(path.name)) != _version(_fd_info(fd)):
+                                raise OSError('published PNG changed during receipt creation')
+                            if len(record) > 4:
+                                state = record[4]
+                                state.original = (path.name, receipt)
+                                state.capture = None
+                    except OSError as error:
+                        raise OSError(f'incomplete filing: {error}; retained work, if any: {stage.folder}') from error
+                root.check()
+                self.prune(keep=count, arrival=path, strict=True,
+                           directory_identity=root.identity)
+            return path
         finally:
-            _RESERVED.discard(str(path))
-        self.prune()
-        return path
+            self.release(path)
 
-    def prune(self) -> list[Path]:
-        """Drop the unedited captures beyond the last `keep`; a capture with
-        an `.annotshot` beside it is work, and is never thrown away."""
+    def _proven(self, root, path):
+        """Missing/stale records grant nothing; unreadable records fail closed."""
+        try:
+            data, _ = root.read(_receipt_name(path))
+        except FileNotFoundError:
+            return False
+        try:
+            receipt = json.loads(data)
+        except (ValueError, UnicodeError) as error:
+            raise OSError("unreadable Recent filing record") from error
+        try:
+            pixels, info = root.read(path.name)
+        except PermissionError:
+            return False           # a busy picture grants no expiry authority
+        return receipt == _fingerprint(path.name, pixels, info)
+
+    def _expiry_order(self):
+        """Usual discovery order, restricted to stems with proof on disk."""
+        with _Root(self.folder) as root:
+            groups = self._inventory()
+            # A damaged record anywhere makes the inventory uncertain, even
+            # if its PNG has gone. Never silently turn a bad record into proof.
+            for entry in ([root.folder / n for n in root.names()] if _HOST_WINDOWS
+                          else self.folder.iterdir()):
+                if entry.name.startswith('.') and entry.name.endswith('.filed-v1'):
+                    data, _ = root.read(entry.name)
+                    try:
+                        record = json.loads(data)
+                        if not isinstance(record, dict) or set(record) != {
+                                'name', 'device', 'inode', 'size', 'mtime_ns', 'ctime_ns', 'sha256'}:
+                            raise ValueError('bad fields')
+                    except (ValueError, UnicodeError) as error:
+                        raise OSError("unreadable Recent filing record") from error
+            ordered = []
+            for entries in groups.values():
+                modes = [root.stat(p.name).st_mode for p in entries]
+                regular = [p for p, mode in zip(entries, modes) if stat.S_ISREG(mode)]
+                pngs = [p for p in regular if p.suffix.lower() == '.png']
+                edits = [p for p in regular if p.suffix.lower() == EDITABLE]
+                if edits:
+                    ordered.append(pngs[0] if pngs else edits[0])
+                elif pngs and any(self._proven(root, p) for p in pngs):
+                    ordered.append(pngs[0])
+            return sorted(ordered, key=lambda p: (
+                taken_at(p).toMSecsSinceEpoch(), p.stem), reverse=True)
+
+    def _expiry_candidate(self, root, old, expected):
+        """Final check under the stem claim. Caller holds it through unlink."""
+        entries = self._inventory().get(old.stem.casefold(), [])
+        if entries != [old] or not stat.S_ISREG(root.stat(old.name).st_mode):
+            return False
+        if _version(root.stat(old.name)) != _version(expected) or not self._proven(root, old):
+            return False
+        names = root.names() if _HOST_WINDOWS else [p.name for p in self.folder.iterdir()]
+        return not any(n.split('.pending-', 1)[0].casefold() == old.stem.casefold()
+                       for n in names if '.pending-' in n)
+
+    def prune(self, *, keep: int | None = None, arrival: Path | None = None,
+              strict=False, directory_identity=None) -> list[Path]:
+        count = self.keep if keep is None else keep
+        if type(count) is not int or not 1 <= count <= 100:
+            return []
         gone = []
-        for old in self.files()[self.keep:]:
-            if editable_for(old).exists():
-                continue
-            try:
-                old.unlink()
-                gone.append(old)
-            except OSError:
-                pass
+        notices = []
+        try:
+            with _IO_LOCK, _Root(self.folder, directory_identity) as root:
+                ordered = self._expiry_order()
+                if arrival is not None:
+                    # Only this filing promotes the actual arrival, never its
+                    # clock or suffix. Discovery itself is left unchanged.
+                    ordered = [arrival] + [p for p in ordered if p != arrival]
+                selected = [(p, root.stat(p.name)) for p in ordered[count:]]
+                for old, expected in selected:
+                    claim = None
+                    try:
+                        claim = _claim(root, old)  # exclusive across processes
+                        if self._expiry_candidate(root, old, expected):
+                            # Hold the proven inode open until the moved entry
+                            # has been verified and erased in private staging.
+                            with root.pin(old.name) as (data, info, _):
+                                with root.pin(_receipt_name(old)) as (proof, receipt_info, _), _expiry_guard(root, old):
+                                    receipt = json.loads(proof)
+                                    if receipt != _fingerprint(old.name, data, info):
+                                        continue
+                                    with _Stage(root) as stage:
+                                        _rename_noreplace(root, old.name, stage, 'expired')
+                                        try:
+                                            moved, moved_info = stage.read('expired')
+                                            match = _moved_matches(old.name, moved, moved_info, receipt)
+                                        except OSError:
+                                            match = False
+                                        if match:
+                                            try:
+                                                stage.unlink('expired', _identity(info))
+                                            except OSError:
+                                                restored = _restore(stage, 'expired', root, old.name)
+                                                raise OSError(f'Expiry incomplete; file kept at {root.folder / restored}')
+                                            gone.append(old)
+                                            root.unlink(_receipt_name(old), _identity(receipt_info))
+                                        else:
+                                            restored = _restore(stage, 'expired', root, old.name)
+                                            raise OSError(f'Recent entry changed; file kept at {root.folder / restored}')
+                    except FileExistsError:
+                        continue  # busy stem, never steal its claim
+                    except OSError as error:
+                        notices.append(str(error))
+                    finally:
+                        if claim is not None:
+                            try:
+                                claim.release(root)
+                            except OSError:
+                                pass
+        except OSError:
+            if strict:
+                raise
+        for notice in notices:
+            warnings.warn(notice, RuntimeWarning)
+        if notices and strict:
+            raise OSError('; '.join(notices))
         return gone
 
     def delete(self, path: Path) -> None:
-        """Both files of a capture: the PNG and its editable."""
-        writer().waitForDone()          # an autosave still on its way
-        png_for(path).unlink(missing_ok=True)
-        editable_for(path).unlink(missing_ok=True)
+        """Explicit deletion, including this entry's private receipt."""
+        writer().waitForDone()
+        with _Root(self.folder) as root:
+            if not self.owns(path):
+                raise OSError("capture destination is outside Recent")
+            for entry in (*self.companions(path), self.folder / _receipt_name(png_for(path))):
+                try:
+                    root.unlink(entry.name)
+                except FileNotFoundError:
+                    pass
 
     def clear(self) -> None:
         for p in self.files():
             self.delete(p)
 
 
-# Paths handed out by reserve() whose PNG is not on disk yet.
 _RESERVED: set[str] = set()
+_RESERVATIONS: dict[str, tuple] = {}
+_IO_LOCK = threading.RLock()
 _WRITER: QThreadPool | None = None
+
+
+class RecentConflict(OSError):
+    """The editor's loaded revision no longer owns in-place publication."""
+
+
+@dataclass
+class _EditState:
+    directory: tuple
+    original: tuple | None
+    companion: tuple | None
+    capture: str | None = None
+    hold: object = None
+    conflicted: bool = False
+    lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
+
+
+@dataclass
+class _EditHold:
+    folder: Path
+    directory: tuple
+    state: _EditState
+    marker: str | None
+    marker_identity: tuple | None
+    claim: _Claim | None
+    fd: int | _WindowsHandle | None
+    users: int = 1
+
+    def __del__(self):
+        if self.fd is not None:
+            _close_hold_handle(self.fd)
+            self.fd = None
+
+
+def _close_hold_handle(fd):
+    if isinstance(fd, _WindowsHandle):
+        for handle in reversed(fd.chain):
+            _close_handle(handle)
+    else:
+        os.close(fd)
+
+
+def _edit_entries(root, path):
+    names = sorted(n for n in root.names()
+                   if Path(n).stem.casefold() == Path(path).stem.casefold()
+                   and Path(n).suffix.lower() in ('.png', EDITABLE))
+    pngs = [n for n in names if Path(n).suffix.lower() == '.png']
+    edits = [n for n in names if Path(n).suffix.lower() == EDITABLE]
+    if len(pngs) > 1 or len(edits) > 1:
+        raise RecentConflict('Save conflict: Recent has ambiguous companions; use Save As')
+    if any(not stat.S_ISREG(root.stat(n).st_mode) for n in names):
+        raise RecentConflict('Save conflict: Recent entry is not a regular file; use Save As')
+    return (pngs or [None])[0], (edits or [None])[0]
+
+
+def _read_revision(root, name):
+    if name is None:
+        return None, None
+    data, info = root.read(name)
+    return (name, _fingerprint(name, data, info)), data
+
+
+def _read_edit(root, path):
+    png, edit = _edit_entries(root, path)
+    original, pixels = _read_revision(root, png)
+    companion, archive = _read_revision(root, edit)
+    return _EditState(root.identity, original, companion), pixels, archive
+
+
+def edit_source(path):
+    """Read both actual companions under the stem claim, never just the PNG."""
+    path = Path(path)
+    with _IO_LOCK, _Root(path.parent) as root:
+        claim = _claim(root, path)
+        try:
+            state, _, _ = _read_edit(root, path)
+            if state.original is None and state.companion is None:
+                raise FileNotFoundError('That capture is no longer in Recent')
+            return state
+        finally:
+            claim.release(root)
+
+
+def load_edit(path, *, fallback=True):
+    """Bind the baseline to the exact bytes the editor loads, under one claim."""
+    from .scene import Document
+    path = Path(path)
+    with _IO_LOCK, _Root(path.parent) as root:
+        claim = _claim(root, path)
+        try:
+            state, pixels, archive = _read_edit(root, path)
+            if pixels is None and archive is None:
+                raise FileNotFoundError('That capture is no longer in the Recent folder')
+            doc = None
+            if archive is not None:
+                try:
+                    with warnings.catch_warnings():
+                        if fallback:
+                            warnings.simplefilter('ignore')
+                        doc = Document.load_bytes(archive, root.folder / state.companion[0])
+                except Exception:
+                    if not fallback:
+                        raise
+                    pass  # raw fallback still binds the actual companion revision
+            if doc is None:
+                if not fallback:
+                    raise FileNotFoundError(str(path))
+                img = QImage.fromData(pixels or b'', 'PNG')
+                if img.isNull():
+                    raise OSError('That capture could not be read')
+                doc = Document(img)
+            name = state.companion[0] if state.companion else editable_for(path).name
+            doc.path = str(root.folder / name)
+            doc._recent_source = state
+            root.check()
+            return doc
+        finally:
+            claim.release(root)
+
+
+def capture_source(path):
+    """A reserved capture starts with explicit companion absence.
+
+    The filer supplies its own final fd revision to this same lineage. An
+    editor never discovers a different writer's revision by a later read.
+    """
+    path = Path(path)
+    with _IO_LOCK, _Root(path.parent) as root:
+        record = _RESERVATIONS[str(path)]
+        state = _EditState(record[3], None, None, capture=path.name)
+        _RESERVATIONS[str(path)] = (*record[:4], state)
+        return state
+
+
+def _compare_edit(root, path, state, *, admission=False):
+    if state.conflicted:
+        raise RecentConflict('Save conflict: another editor saved this capture; use Save As')
+    if root.identity != state.directory:
+        raise RecentConflict('Save conflict: Recent folder changed; use Save As')
+    actual, _, _ = _read_edit(root, path)
+    if state.capture is not None:
+        # Admission may precede the asynchronous filer. Publication cannot.
+        if not admission or actual.original is not None:
+            raise OSError('The capture has not finished filing; edits remain unsaved')
+    elif actual.original != state.original:
+        raise RecentConflict('Save conflict: the original changed; use Save As')
+    if actual.companion != state.companion:
+        raise RecentConflict('Save conflict: another editor saved this capture; use Save As')
+    if state.capture is None and state.original is None and state.companion is None:
+        raise RecentConflict('Save conflict: that capture is no longer in Recent; use Save As')
+
+
+def pending_edit(path, expected=None) -> _EditHold:
+    """Admission precedes debounce. One editor's queued snapshots share lineage."""
+    path = Path(path)
+    with _IO_LOCK, _Root(path.parent) as root:
+        state = expected
+        if state is not None and state.conflicted:
+            raise RecentConflict('Save conflict: another editor saved this capture; use Save As')
+        if state is not None:
+            with state.lock:
+                if state.hold is not None:
+                    hold = state.hold
+                    if root.identity != hold.directory:
+                        raise RecentConflict('Save conflict: Recent folder changed; use Save As')
+                    # One editor's marker protects all its queued generations.
+                    name, identity = ((hold.marker, hold.marker_identity) if hold.marker is not None
+                                      else (hold.claim.name, hold.claim.identity))
+                    if _identity(root.stat(name)) != identity:
+                        raise RecentConflict('Save conflict: this editor lost its protection; use Save As')
+                    hold.users += 1
+                    return hold
+        claim = _claim(root, path)
+        try:
+            if state is None:
+                state, _, _ = _read_edit(root, path)
+            _compare_edit(root, path, state, admission=True)
+        except BaseException:
+            claim.release(root)
+            raise
+        try:
+            hold = _EditHold(path.parent, root.identity, state, None, None, claim,
+                root.duplicate() if isinstance(root, _WindowsRoot) else os.dup(root.fd))
+        except BaseException:
+            claim.release(root)
+            raise
+        state.hold = hold
+        marker = path.stem + '.pending-' + uuid.uuid4().hex
+        try:
+            hold.marker_identity = root.create(marker)
+            hold.marker = marker
+        except OSError:
+            return hold  # durable claim intentionally survives failure/crash
+        claim.release(root)
+        hold.claim = None
+        return hold
+
+
+@contextmanager
+def _editing(path, holds):
+    """Compare the loaded revision under the claim held through publication."""
+    holds = tuple(holds)
+    if not holds:
+        yield None
+        return
+    first = holds[0]
+    if first.state.conflicted:
+        raise RecentConflict('Save conflict: another editor saved this capture; use Save As')
+    with _Root.held(first) as root:
+        _check_edit_root(root)
+        claim = next((h.claim for h in holds if h.claim is not None), None)
+        owned = claim is not None
+        if owned:
+            if _identity(root.stat(claim.name)) != claim.identity:
+                raise OSError('Recent edit claim changed')
+        else:
+            deadline = time.monotonic() + 0.5
+            while True:
+                try:
+                    claim = _claim(root, Path(path))
+                    break
+                except FileExistsError:
+                    if time.monotonic() >= deadline:
+                        raise OSError('Recent capture is busy; edits remain unsaved')
+                    time.sleep(0.01)
+        try:
+            with ExitStack() as pins:
+                if isinstance(root, _WindowsRoot):
+                    # Keep both loaded revisions locked through install and
+                    # rollback. A folder lock cannot protect either child.
+                    for expected in (first.state.original, first.state.companion):
+                        if expected is not None:
+                            pins.enter_context(_optional_pin(root, expected))
+                _compare_edit(root, path, first.state)
+                yield root
+        finally:
+            if not owned:
+                claim.release(root)
+
+
+def finish_edits(path, markers, root=None, *, abandon=False):
+    if not markers:
+        return
+    if root is None:
+        active = [hold for hold in markers if hold.users and hold.fd is not None]
+        if not active:
+            return
+        with _Root.held(active[0]) as held_root:
+            finish_edits(path, active, held_root, abandon=abandon)
+        return
+    for hold in markers:
+        with hold.state.lock:
+            _finish_hold(root, hold, abandon)
+
+
+def _finish_hold(root, hold, abandon):
+    if hold.users == 0:
+        return
+    if not abandon and hold.users > 1:
+        hold.users -= 1
+        return
+    if hold.marker is not None:
+        try:
+            root.unlink(hold.marker, hold.marker_identity)
+        except FileNotFoundError:
+            pass
+    if hold.claim is not None:
+        hold.claim.release(root)
+        hold.claim = None
+    hold.users = 0
+    hold.state.hold = None
+    if hold.fd is not None:
+        _close_hold_handle(hold.fd)
+        hold.fd = None
+
+
+def _check_edit_root(root):
+    try:
+        root.check()
+    except OSError as error:
+        raise RecentConflict('Save conflict: Recent folder changed; use Save As') from error
+
+
+class _EditableTarget(str):
+    """A path-shaped pinned sink keeps ordinary writer call seams intact."""
+    def __new__(cls, path, root, state):
+        self = super().__new__(cls, str(path))
+        self.root, self.state = root, state
+        return self
+
+    def write_encoded(self, data):
+        from .scene import _NEW_FILE_MODE
+        root, state = self.root, self.state
+        name = Path(self).name
+        expected = state.companion
+        with _Stage(root) as stage:
+            staged_old = False
+            old_data = old_info = old_fd = None
+            # Keep the old inode pinned even through rollback. Its ctime can
+            # change on moves; a restored baseline comes from this fd only.
+            with _optional_pin(root, expected) as pinned:
+                if pinned is not None:
+                    old_data, old_info, old_fd = pinned
+                mode = stat.S_IMODE(old_info.st_mode) if old_info else _NEW_FILE_MODE
+                try:
+                    with stage.temporary('editable.tmp', data, mode) as fd:
+                        _check_edit_root(root)
+                        if expected is not None:
+                            _rename_noreplace(root, name, stage, 'previous')
+                            staged_old = True
+                            moved, info = stage.read('previous')
+                            if not _moved_matches(name, moved, info, expected[1]):
+                                raise RecentConflict('Save conflict: companion changed at publication; use Save As')
+                        try:
+                            root.publish('editable.tmp', name, stage)
+                        except FileExistsError as error:
+                            raise RecentConflict('Save conflict: companion appeared at publication; use Save As') from error
+                        stage.unlink('editable.tmp', _identity(_fd_info(fd)))
+                        info = _fd_info(fd)
+                        if _version(root.stat(name)) != _version(info):
+                            raise RecentConflict('Save conflict: published companion changed; use Save As')
+                        # Commit from our own encoded bytes and final fd, never
+                        # from whatever a later UI callback sees by pathname.
+                        revision = (name, _fingerprint(name, data, info))
+                        state.companion = revision
+                        if staged_old:
+                            stage.unlink('previous', _identity(old_info))
+                            staged_old = False
+                        _check_edit_root(root)
+                        return revision
+                except BaseException as error:
+                    if staged_old:
+                        restored = _restore(stage, 'previous', root, name)
+                        if restored != name:
+                            raise RecentConflict(f'Save conflict; previous file kept at {root.folder / restored}; use Save As') from error
+                        if old_fd is not None and _moved_matches(name, old_data, _fd_info(old_fd), expected[1]):
+                            state.companion = (name, _fingerprint(name, old_data, _fd_info(old_fd)))
+                        elif not isinstance(error, RecentConflict):
+                            error = RecentConflict('Save conflict: companion changed; use Save As')
+                    raise error
+                finally:
+                    # Only this private temp may be removed. Failed recovery
+                    # work is retained, never swept by later operations.
+                    try:
+                        stage.unlink('editable.tmp')
+                    except FileNotFoundError:
+                        pass
+                    except OSError as error:
+                        warnings.warn(f'Unfinished editable retained at {stage.folder / "editable.tmp"}: {error}', RuntimeWarning)
+
+
+@contextmanager
+def _optional_pin(root, expected):
+    if expected is None:
+        yield None
+    else:
+        with root.pin(expected[0]) as pinned:
+            data, info, _ = pinned
+            if _fingerprint(expected[0], data, info) != expected[1]:
+                raise RecentConflict('Save conflict: companion changed before publication; use Save As')
+            yield pinned
+
+
+def _write_editable(path, meta, base, holds):
+    from .scene import write_project
+    try:
+        with _editing(path, holds) as root:
+            if root is None:
+                return write_project(path, meta, base)
+            target = _EditableTarget(path, root, holds[0].state)
+            revision = write_project(target, meta, base)
+            finish_edits(path, holds, root)
+            return revision
+    except RecentConflict:
+        for hold in holds:
+            hold.state.conflicted = True
+        try:
+            finish_edits(path, holds, abandon=True)
+        except OSError as error:
+            warnings.warn(f'Could not release this editor protection in {Path(path).parent}: {error}', RuntimeWarning)
+        raise
 
 
 def writer() -> QThreadPool:
@@ -229,15 +1907,16 @@ class _Filer(QObject):
 
 class _FileJob(QRunnable):
     def __init__(self, store: RecentStore, image: QImage, signals: _Filer,
-                 path: Path | None = None):
+                 path: Path | None = None, keep: int | None = None):
         super().__init__()
         self.store, self.image, self.signals = store, image, signals
         self.path = path
+        self.keep = store.keep if keep is None else keep
 
     def run(self) -> None:
         try:
             try:
-                path = self.store.file(self.image, path=self.path)
+                path = self.store.file(self.image, path=self.path, keep=self.keep)
             except Exception as e:      # noqa: BLE001 - never fail a capture
                 self.signals.failed.emit(str(e))
                 return
@@ -272,6 +1951,7 @@ class _Saver(QObject):
 @dataclass
 class WriteOutcome:
     error: str | None = None
+    markers: tuple = ()
 
 
 class _SaveJob(QRunnable):
@@ -288,7 +1968,7 @@ class _SaveJob(QRunnable):
         from .scene import write_project
         try:
             try:
-                write_project(self.path, self.meta, self.base)
+                _write_editable(self.path, self.meta, self.base, self.outcome.markers)
             except Exception as e:      # noqa: BLE001 - never raise on a thread
                 self.outcome.error = _one_line(e)
                 self.signals.failed.emit(self.doc, self.gen, self.path,
@@ -309,7 +1989,10 @@ def thumbnail(path: Path, size: QSize = THUMB, dpr: float = 1.0) -> QPixmap:
     from its `.annotshot` (with the edits) when there is one, else the PNG;
     an empty pixmap when neither can be read."""
     box = QSize(round(size.width() * dpr), round(size.height() * dpr))
-    editable = editable_for(path)
+    try:
+        _, editable = RecentStore(lambda: Path(path).parent).companions(path)
+    except OSError:
+        return QPixmap()
     img = rendered(editable) if editable.is_file() else QImage()
     if not img.isNull():
         img = img.scaled(box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -359,6 +2042,7 @@ class RecentPane(QDockWidget):
     capture; the window decides (the discard question first)."""
 
     openRequested = Signal(str)
+    saveRequested = Signal(str)
     filingFailed = Signal(str)
     # The captures deleted from the pane (their PNG paths), so the window
     # can let go of the one it is showing.
@@ -413,20 +2097,20 @@ class RecentPane(QDockWidget):
 
     # -- filing ---------------------------------------------------------------
     def file_capture(self, image: QImage, wait: bool = False,
-                     path: Path | None = None) -> None:
+                     path: Path | None = None, *, keep: int | None = None) -> None:
         """Keep `image` in the Recent folder (at `path`, from reserve()) on a
         worker thread (at once with wait=True, for tests); the pane
         refreshes when it lands."""
         if wait:
             try:
-                self.store.file(image, path=path)
+                self.store.file(image, path=path, keep=keep)
             except Exception as e:      # noqa: BLE001
                 self._failed(str(e))
                 return
             self.refresh()
             return
         QThreadPool.globalInstance().start(
-            _FileJob(self.store, image.copy(), self._filer, path))
+            _FileJob(self.store, image.copy(), self._filer, path, keep))
 
     def _failed(self, why: str) -> None:
         self.filingFailed.emit(f"Could not keep the capture in Recent "
@@ -522,14 +2206,18 @@ class RecentPane(QDockWidget):
         menu = QMenu(self)
         path = item.data(Qt.UserRole) if item is not None else None
         a_open = menu.addAction("Open")
-        a_delete = menu.addAction("Delete")
+        a_save = menu.addAction("Save…")
         a_show = menu.addAction("Show in folder")
+        menu.addSeparator()
+        a_delete = menu.addAction("Delete")
         menu.addSeparator()
         a_clear = menu.addAction("Clear recent captures")
         a_open.setEnabled(path is not None)
+        a_save.setEnabled(path is not None)
         a_delete.setEnabled(path is not None)
         a_clear.setEnabled(self.list.count() > 0)
         a_open.triggered.connect(lambda: self.openRequested.emit(path))
+        a_save.triggered.connect(lambda: self.saveRequested.emit(path))
         a_delete.triggered.connect(lambda: self.delete(path))
         a_show.triggered.connect(self.show_folder)
         a_clear.triggered.connect(self.clear)
@@ -583,7 +2271,11 @@ def _mtime(path: Path) -> int:
 def _thumb_key(path: Path) -> tuple | None:
     """A thumbnail is drawn again only when one of the capture's two files
     changed (the editable's mtime moves with every autosave)."""
-    png, editable = _mtime(png_for(path)), _mtime(editable_for(path))
+    try:
+        source, companion = RecentStore(lambda: Path(path).parent).companions(path)
+    except OSError:
+        return None
+    png, editable = _mtime(source), _mtime(companion)
     if not png and not editable:
         return None
     return (str(path), png, editable)
