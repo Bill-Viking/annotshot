@@ -493,12 +493,13 @@ def test_r30_partial_failure_or_changed_current_keeps_scene(window, qapp, monkey
         return QMessageBox.Yes
     monkeypatch.setattr(recent.QMessageBox, 'question', answer)
     if fault == 'unlink':
-        original = recent._Root.unlink
+        root_class = recent._WindowsRoot if recent._HOST_WINDOWS else recent._Root
+        original = root_class.unlink
         def fail(root, name, *args):
             if name.startswith('removed-'):
                 raise PermissionError('fixture removal denied')
             return original(root, name, *args)
-        monkeypatch.setattr(recent._Root, 'unlink', fail)
+        monkeypatch.setattr(root_class, 'unlink', fail)
     assert window.recent.clear() is False
     settle(qapp, window.recent)
     assert a.exists() and window.doc is doc and failures

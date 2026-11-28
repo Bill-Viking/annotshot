@@ -1,11 +1,12 @@
 """Application setup (name, icon, Fusion style, the look) and main()."""
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject
+from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -50,12 +51,31 @@ def set_app_id(app_id: str) -> None:
         win32.set_app_id(app_id)
 
 
+def collect_on_this_thread(app: QApplication) -> None:
+    """Keep cycle collection on the application's thread, away from workers."""
+    if app.findChild(QTimer, "annotshotCollector") is not None:
+        return
+    gc.disable()
+    timer = QTimer(app)
+    timer.setObjectName("annotshotCollector")
+
+    def collect():
+        c = gc.get_count()
+        t = gc.get_threshold()
+        if c[0] > t[0]:
+            gc.collect(2 if c[2] > t[2] else 1 if c[1] > t[1] else 0)
+
+    timer.timeout.connect(collect)
+    timer.start(1000)
+
+
 def make_app(argv=None) -> QApplication:
     """The QApplication (reused if one exists), set up for Annotshot."""
     app = QApplication.instance()
     if app is None:
         set_app_id("Annotshot.Annotshot")
         app = QApplication(sys.argv if argv is None else argv)
+    collect_on_this_thread(app)
     app.setApplicationName("Annotshot")
     app.setOrganizationName("Annotshot")
     app.setApplicationVersion(__version__)

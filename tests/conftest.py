@@ -38,8 +38,10 @@ def private_settings(monkeypatch, tmp_path):
 
 @pytest.fixture(scope="session")
 def qapp():
+    from annotshot.app import collect_on_this_thread
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
+    collect_on_this_thread(app)
     yield app
 
 
