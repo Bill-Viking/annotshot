@@ -33,12 +33,12 @@ from typing import Callable
 from types import SimpleNamespace
 
 from PySide6.QtCore import (QDateTime, QEvent, QObject, QRect, QRunnable, QSize, Qt,
-                            QThreadPool, QUrl, Signal)
+                            QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QDesktopServices, QFont, QIcon, QImage,
-                           QImageReader, QPainter, QPixmap)
+                           QImageReader, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QDockWidget,
                                QLabel, QListWidget, QListWidgetItem, QMenu,
-                               QMessageBox, QStyle, QVBoxLayout,
+                               QMessageBox, QStyle, QStyledItemDelegate, QVBoxLayout,
                                QWidget)
 
 from . import theme
@@ -52,6 +52,9 @@ FIRST_WELCOME = "recent/first-welcome-v1"
 COUNT_ERROR = "Enter a whole number from 0 to 100."
 PAUSED_TEXT = "Recent keeping is paused. Choose a count to start again."
 THUMB = QSize(160, 90)                  # 16:9, letterboxed
+CURRENT_ROLE = Qt.UserRole + 1
+DOCK_EDGES = (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea, Qt.BottomDockWidgetArea)
+EDGE_NAMES = dict(zip(DOCK_EDGES, ('left', 'right', 'bottom')))
 THUMB_GROUND = "#E9EDF1"                # Light's; the theme's "thumb-ground"
 TIME_INK = "#7A8591"                    # Light's; the theme's "time-ink"
 EMPTY_TEXT = "Your captures appear here."
@@ -595,6 +598,8 @@ class _WindowsNative:
                 w.ULONG, w.ULONG, w.ULONG, w.ULONG, w.LPVOID, w.ULONG], ctypes.c_long),
             (self.nt.NtSetInformationFile, [w.HANDLE, ctypes.POINTER(IO),
                 w.LPVOID, w.ULONG, w.ULONG], ctypes.c_long),
+            (self.nt.NtQueryInformationFile, [w.HANDLE, ctypes.POINTER(IO),
+                w.LPVOID, w.ULONG, w.ULONG], ctypes.c_long),
             (self.nt.RtlNtStatusToDosError, [ctypes.c_long], w.ULONG),
             (self.k.GetFileInformationByHandle, [w.HANDLE, ctypes.POINTER(Info)], w.BOOL),
             (self.k.GetFileInformationByHandleEx, [w.HANDLE, ctypes.c_int,
@@ -623,7 +628,7 @@ class _WindowsNative:
             raise ctypes.WinError(self.nt.RtlNtStatusToDosError(status))
 
     def open(self, parent, name, *, directory=False, create=False,
-             mutable=False, write=False, metadata=False, listing=False):
+             mutable=False, write=False, metadata=False, listing=False, hidden=False):
         if parent is None:
             # ASSUMES: Recent is on a local volume. Network/device paths do
             # not inherit this proof. Open only the volume root by full name.
@@ -649,13 +654,23 @@ class _WindowsNative:
             access |= 0x10000   # DELETE, held before verification
         if write:
             access |= 0x40000000
+        if create:
+            access |= 0x100     # FILE_WRITE_ATTRIBUTES, on our new entry only
         options = 0x200000 | 0x20 | (1 if directory else 0x40)
         # Directory handles disallow renaming/removal of the admitted path.
         # File handles deny competing writes AND deletes, not just root swaps.
         share = 3 if directory else (7 if metadata else 1)
         self._status(self.nt.NtCreateFile(ctypes.byref(handle), access,
-            ctypes.byref(attributes), ctypes.byref(io), None, 0,
+            ctypes.byref(attributes), ctypes.byref(io), None, 2 if hidden else 0,
             share, 2 if create else 1, options, None, 0))
+        if directory and create and hidden:
+            try:
+                # Directory creation may ignore FileAttributes. Set HIDDEN
+                # immediately through the handle of the directory we created.
+                self.set_hidden(handle.value, True)
+            except BaseException:
+                self.close(handle.value)
+                raise
         return handle.value
 
     def info(self, handle):
@@ -689,7 +704,9 @@ class _WindowsNative:
         return duplicate.value
 
     def names(self, handle):
-        listing = self.open(handle, '.', directory=True, listing=True)
+        # ASSUMES: an empty relative UNICODE_STRING reopens RootDirectory
+        # itself. NT does not accept the Win32 path components '.' or '..'.
+        listing = self.open(handle, '', directory=True, listing=True)
         try:
             return self._names(listing)
         finally:
@@ -722,10 +739,29 @@ class _WindowsNative:
                 offset += following
 
     def case_sensitive(self, handle):
-        flags = self.w.ULONG()
-        self._ok(self.k.GetFileInformationByHandleEx(handle, 23,
-            ctypes.byref(flags), ctypes.sizeof(flags)))  # FileCaseSensitiveInfo
+        flags, io = self.w.ULONG(), self.IO()
+        status = self.nt.NtQueryInformationFile(handle, ctypes.byref(io),
+            ctypes.byref(flags), ctypes.sizeof(flags), 71)  # FileCaseSensitiveInformation
+        # Before Win10 1803 (or on a filesystem without this class), ordinary
+        # Windows names are case-insensitive. Access/I/O failures prove nothing.
+        if (status & 0xffffffff) in (0xc0000003, 0xc000000d, 0xc00000bb):
+            return False  # INVALID_INFO_CLASS, INVALID_PARAMETER, NOT_SUPPORTED
+        self._status(status)
         return bool(flags.value & 1)
+
+    def set_hidden(self, handle, hidden):
+        class Basic(ctypes.Structure):
+            _fields_ = [('created', ctypes.c_longlong), ('accessed', ctypes.c_longlong),
+                        ('written', ctypes.c_longlong), ('changed', ctypes.c_longlong),
+                        ('attributes', self.w.ULONG)]
+        # Zero timestamps preserve them. NORMAL must stand alone and zero
+        # attributes would mean "do not change", rather than "clear HIDDEN".
+        attributes = self.info(handle).st_file_attributes & ~0x80
+        attributes = (attributes | 2) if hidden else (attributes & ~2)
+        basic, io = Basic(), self.IO()
+        basic.attributes = attributes or 0x80
+        self._status(self.nt.NtSetInformationFile(handle, ctypes.byref(io),
+            ctypes.byref(basic), ctypes.sizeof(basic), 4))  # FileBasicInformation
 
     def read(self, handle):
         self._ok(self.k.SetFilePointerEx(handle, 0, None, 0))
@@ -932,21 +968,35 @@ class _WindowsRoot(_Root):
     @contextmanager
     def _lease(self, name, *, metadata=False, create=False, write=False):
         key = self._key(name)
-        with _WINDOWS_LEASE_LOCK:
-            handle = _WINDOWS_LEASES.get(key)
-            if handle is not None:
-                if create:
-                    raise FileExistsError(str(self.folder / name))
-                if not metadata and handle.owner != threading.get_ident():
-                    # Another worker must not bypass the native sharing
-                    # denial by borrowing this worker's DELETE-capable handle.
-                    raise PermissionError('Recent capture is busy; work remains protected')
-                handle.references += 1
-            else:
-                handle = _WindowsHandle(self.api, self.api.open(self.fd.raw, name,
-                    metadata=metadata, mutable=not metadata, create=create, write=write))
-                if not metadata:
-                    _WINDOWS_LEASES[key] = handle
+        deadline = time.monotonic() + 0.25
+        while True:
+            try:
+                with _WINDOWS_LEASE_LOCK:
+                    handle = _WINDOWS_LEASES.get(key)
+                    if handle is not None:
+                        if create:
+                            raise FileExistsError(str(self.folder / name))
+                        if not metadata and handle.owner != threading.get_ident():
+                            # Never borrow a peer's DELETE-capable handle.
+                            error = PermissionError('Recent capture is busy; work remains protected')
+                            error.winerror = 32
+                            raise error
+                        handle.references += 1
+                    else:
+                        handle = _WindowsHandle(self.api, self.api.open(self.fd.raw, name,
+                            metadata=metadata, mutable=not metadata, create=create,
+                            write=write, hidden=create))
+                        if not metadata:
+                            _WINDOWS_LEASES[key] = handle
+                break
+            except OSError as error:
+                remaining = deadline - time.monotonic()
+                if (metadata or create or write or getattr(error, 'winerror', None) != 32
+                        or remaining <= 0):
+                    raise
+                # ASSUMES: thumbnail/AV read handles can briefly deny DELETE
+                # sharing. Retry only that refusal, outside the lease lock.
+                time.sleep(min(0.025, remaining))
         try:
             yield handle
         finally:
@@ -997,7 +1047,16 @@ class _WindowsRoot(_Root):
         source = source or self
         with source._lease(temporary) as handle:
             self._name(name)
-            self.api.link(handle.raw, self.fd.raw, name)
+            # HIDDEN belongs to the inode, including every hard link. Clear
+            # it on our temp before publication so the person's PNG/editable
+            # is visible from its first instant. Failed temps stay in a hidden
+            # operation directory; no existing picture's attributes are set.
+            self.api.set_hidden(handle.raw, False)
+            try:
+                self.api.link(handle.raw, self.fd.raw, name)
+            except OSError:
+                self.api.set_hidden(handle.raw, True)
+                raise
             with _WINDOWS_LEASE_LOCK:
                 _WINDOWS_LEASES[self._key(name)] = handle
 
@@ -1020,7 +1079,7 @@ class _WindowsStage(_WindowsRoot):
         self.folder, self.chain, self.pending = root.folder / self.name, [], []
         self.parent_handle = None
         self.fd = _WindowsHandle(self.api, self.api.open(root.fd.raw, self.name,
-            directory=True, create=True))
+            directory=True, create=True, hidden=True))
         self.chain = [self.fd]
         try:
             self._directory(_fd_info(self.fd))
@@ -1086,7 +1145,8 @@ def _expiry_guard(root, path):
     that denies competing writes/deletes until expiry finishes. The handle
     removes only its own placeholder on close, including process death.
     Case-sensitive directories cannot exclude every companion spelling this
-    way, so they keep the original. Missing case-query support also keeps it.
+    way, so they keep the original. Only explicitly unsupported case queries
+    imply ordinary Windows names; other query failures keep the original.
     """
     if not isinstance(root, _WindowsRoot):
         yield
@@ -2018,11 +2078,61 @@ def thumbnail(path: Path, size: QSize = THUMB, dpr: float = 1.0) -> QPixmap:
     return pm
 
 
+class _ThumbDelegate(QStyledItemDelegate):
+    """The picture's frame and keyboard focus have independent perimeters.
+
+    Gutters belong to every cell; neither cue paints on the thumbnail,
+    including the letterbox pixels already present in its icon.
+    """
+
+    @staticmethod
+    def image_rect(cell: QRect) -> QRect:
+        return QRect(cell.left() + (cell.width() - THUMB.width()) // 2,
+                     cell.top() + 4, THUMB.width(), THUMB.height())
+
+    def paint(self, painter, option, index):
+        painter.save()
+        cell = option.rect
+        painter.setClipRect(cell)
+        painter.fillRect(cell, theme.color('surface'))
+        image = self.image_rect(cell)
+        icon = index.data(Qt.DecorationRole)
+        if icon:
+            icon.paint(painter, image)
+        if index.data(CURRENT_ROLE):
+            # Filled strips give exactly two logical pixels, outside the image.
+            ink = theme.color('accent')
+            painter.fillRect(QRect(image.left() - 2, image.top() - 2,
+                                   image.width() + 4, 2), ink)
+            painter.fillRect(QRect(image.left() - 2, image.bottom() + 1,
+                                   image.width() + 4, 2), ink)
+            painter.fillRect(QRect(image.left() - 2, image.top(), 2, image.height()), ink)
+            painter.fillRect(QRect(image.right() + 1, image.top(), 2, image.height()), ink)
+        caption = QRect(cell.left() + 3, image.bottom() + 4,
+                        cell.width() - 6, cell.bottom() - image.bottom() - 5)
+        painter.setFont(index.data(Qt.FontRole) or option.font)
+        selected = bool(option.state & QStyle.State_Selected)
+        if selected:
+            painter.fillRect(caption, theme.color('accent-soft'))
+        painter.setPen(theme.color('time-ink'))
+        painter.drawText(caption, Qt.AlignHCenter | Qt.AlignVCenter, index.data(Qt.DisplayRole))
+        if option.state & QStyle.State_HasFocus:
+            painter.setPen(QPen(theme.color('text'), 1, Qt.DotLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(cell.adjusted(1, 1, -2, -2))
+        painter.restore()
+
+
 class _ThumbList(QListWidget):
     """The column of thumbnails: as wide as one thumbnail and its scroll
     bar, so the docked pane takes no more of the canvas than it needs."""
 
+    canvasRequested = Signal()
+
     def event(self, event):
+        if event.type() == QEvent.ShortcutOverride and event.key() == Qt.Key_Escape:
+            event.accept()
+            return True
         if (event.type() == QEvent.ShortcutOverride
                 and not event.modifiers() & (Qt.ControlModifier
                                              | Qt.AltModifier | Qt.MetaModifier)
@@ -2031,10 +2141,35 @@ class _ThumbList(QListWidget):
             return True  # QListWidget receives the ordinary search KeyPress
         return super().event(event)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            event.accept()
+            self.canvasRequested.emit()
+            return
+        super().keyPressEvent(event)
+
+    def wheelEvent(self, event):
+        if self.flow() != QListWidget.LeftToRight:
+            return super().wheelEvent(event)
+        # Both a horizontal trackpad gesture and an ordinary wheel travel the row.
+        pixels, angle = event.pixelDelta(), event.angleDelta()
+        delta = pixels.x() or pixels.y()
+        if not delta:
+            delta = (angle.x() or angle.y()) / 120 * self.horizontalScrollBar().singleStep() * 3
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - round(delta))
+        event.accept()
+
     def sizeHint(self) -> QSize:
         bar = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        if self.flow() == QListWidget.LeftToRight:
+            return QSize(super().sizeHint().width(), self.row_height())
         return QSize(self.gridSize().width() + 2 * self.frameWidth() + bar + 4,
                      super().sizeHint().height())
+
+    def row_height(self):
+        return (self.gridSize().height() + 2 * self.frameWidth()
+                + 2 * self.spacing() + self.style().pixelMetric(QStyle.PM_ScrollBarExtent))
 
 
 class RecentPane(QDockWidget):
@@ -2044,6 +2179,8 @@ class RecentPane(QDockWidget):
     openRequested = Signal(str)
     saveRequested = Signal(str)
     filingFailed = Signal(str)
+    filingFinished = Signal(str)
+    redockRequested = Signal()
     # The captures deleted from the pane (their PNG paths), so the window
     # can let go of the one it is showing.
     deleted = Signal(list)
@@ -2051,11 +2188,16 @@ class RecentPane(QDockWidget):
     def __init__(self, store: RecentStore, parent=None):
         super().__init__(TITLE, parent)
         self.setObjectName("recentPane")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                             | Qt.BottomDockWidgetArea)
         self.setFeatures(QDockWidget.DockWidgetClosable
                          | QDockWidget.DockWidgetMovable
                          | QDockWidget.DockWidgetFloatable)
         self.store = store
+        self.last_edge = Qt.RightDockWidgetArea
+        self.direction = 'vertical'
+        self._bound_stem = None
+        self._layout_epoch = 0
         self._thumbs: dict[tuple[str, int], QPixmap] = {}
         self._last_click: tuple[str, int] | None = None
         self.opening_thumbnail = False
@@ -2069,6 +2211,7 @@ class RecentPane(QDockWidget):
         self.empty.setStyleSheet(f"color: {theme.color('time-ink').name()};")
         self.list = _ThumbList(body)
         self.list.setObjectName("recentList")
+        self.list.setItemDelegate(_ThumbDelegate(self.list))
         self.list.setViewMode(QListWidget.IconMode)
         self.list.setFlow(QListWidget.TopToBottom)
         self.list.setWrapping(False)
@@ -2079,6 +2222,8 @@ class RecentPane(QDockWidget):
         self.list.setSpacing(2)
         self.list.setUniformItemSizes(True)
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._menu_at)
@@ -2089,11 +2234,124 @@ class RecentPane(QDockWidget):
         self.setWidget(body)
         self.setMinimumWidth(THUMB.width() + 36)
         self._filer = _Filer(self)
-        self._filer.filed.connect(lambda _p: self.refresh())
+        self._filer.filed.connect(self._filed)
         self._filer.failed.connect(self._failed)
         self.visibilityChanged.connect(
             lambda shown: self.refresh() if shown else None)
+        self.dockLocationChanged.connect(self._dock_location)
+        self.topLevelChanged.connect(self._floating_changed)
         self.refresh()
+
+    def _dock_location(self, area):
+        if area in DOCK_EDGES:
+            self.last_edge = area
+            if not self.isFloating():
+                self.set_direction('horizontal' if area == Qt.BottomDockWidgetArea else 'vertical')
+
+    def _floating_changed(self, floating):
+        self.setMaximumHeight(16777215)
+        if floating:
+            self._float_direction(self.size())
+        else:
+            self._dock_location(self.last_edge)
+
+    def _float_direction(self, size):
+        # ASSUMES: these are the CLIENT dimensions, before list/scrollbar layout.
+        w, h = size.width(), size.height()
+        if w * 5 >= h * 6:
+            self.set_direction('horizontal')
+        elif h * 5 >= w * 6:
+            self.set_direction('vertical')
+
+    def resizeEvent(self, event):
+        if hasattr(self, 'list') and self.isFloating():
+            self._float_direction(event.size())
+        super().resizeEvent(event)
+
+    def closeEvent(self, event):
+        parent = self.parentWidget()
+        if (self.isFloating() and getattr(parent, 'state_name', None) == 'editor'
+                and not getattr(parent, '_quitting', False)):
+            event.ignore()
+            self.redockRequested.emit()
+            return
+        super().closeEvent(event)
+
+    def _view_state(self):
+        items = [self.list.item(i) for i in range(self.list.count())]
+        stems = [os.path.normcase(Path(i.data(Qt.UserRole)).stem) for i in items]
+        visible = [n for n, i in enumerate(items)
+                   if self.list.visualItemRect(i).intersects(self.list.viewport().rect())]
+        start = visible[0] if visible else 0
+        current = self.list.currentItem()
+        return (stems[start:] + stems[:start],
+                os.path.normcase(Path(current.data(Qt.UserRole)).stem) if current else None,
+                bool(current and current.isSelected()))
+
+    def _restore_view(self, state):
+        order, current, selected = state
+        items = {os.path.normcase(Path(self.list.item(i).data(Qt.UserRole)).stem): self.list.item(i)
+                 for i in range(self.list.count())}
+        if current in items:
+            self.list.setCurrentItem(items[current])
+            items[current].setSelected(selected)
+        anchor = next((items[s] for s in order if s in items), None)
+        self.list.doItemsLayout()
+        if anchor is not None:
+            self.list.scrollToItem(anchor, QAbstractItemView.PositionAtTop)
+
+    def _settle_view(self, state):
+        self._layout_epoch += 1
+        epoch = self._layout_epoch
+        self._restore_view(state)
+        # QMainWindow assigns dock space after the flow changes. Restore once
+        # more on that layout, without allowing an old resize to win a later one.
+        QTimer.singleShot(0, self, lambda: self._restore_view(state)
+                          if epoch == self._layout_epoch else None)
+
+    def set_direction(self, direction):
+        direction = direction if direction in ('horizontal', 'vertical') else 'vertical'
+        state = self._view_state()
+        changed = direction != self.direction
+        self.direction = direction
+        horizontal = direction == 'horizontal'
+        self.list.setFlow(QListWidget.LeftToRight if horizontal else QListWidget.TopToBottom)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded if horizontal else Qt.ScrollBarAlwaysOff)
+        self.list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff if horizontal else Qt.ScrollBarAsNeeded)
+        self.list.setMinimumHeight(self.list.row_height() if horizontal and not self.isFloating() else 0)
+        self.setMaximumHeight(16777215)
+        self.list.updateGeometry()
+        self.widget().layout().invalidate()
+        if horizontal and not self.isFloating():
+            self.setMaximumHeight(self.sizeHint().height())
+        self.updateGeometry()
+        if changed:
+            self._settle_view(state)
+
+    def set_document_path(self, path):
+        """The bound scene owns this identity; list selection never does.
+
+        Folder membership uses the store's existing per-platform road. This
+        stage adds no file operation to the store or its safety machinery.
+        """
+        stem = os.path.normcase(Path(path).stem) if path and self.store.owns(path) else None
+        self._bound_stem = stem
+        for i in range(self.list.count()):
+            self._mark(self.list.item(i))
+
+    def _mark(self, item):
+        current = self._bound_stem is not None and os.path.normcase(
+            Path(item.data(Qt.UserRole)).stem) == self._bound_stem
+        item.setData(CURRENT_ROLE, current)
+        item.setData(Qt.AccessibleTextRole, ('Current, ' if current else '') + item.text())
+
+    def is_document_path(self, path):
+        return bool(path and self._bound_stem is not None and self.store.owns(path)
+                    and os.path.normcase(Path(path).stem) == self._bound_stem)
+
+    def _filed(self, path):
+        self.refresh()
+        self.filingFinished.emit(path)
 
     # -- filing ---------------------------------------------------------------
     def file_capture(self, image: QImage, wait: bool = False,
@@ -2107,7 +2365,7 @@ class RecentPane(QDockWidget):
             except Exception as e:      # noqa: BLE001
                 self._failed(str(e))
                 return
-            self.refresh()
+            self._filed(str(path or ''))
             return
         QThreadPool.globalInstance().start(
             _FileJob(self.store, image.copy(), self._filer, path, keep))
@@ -2134,6 +2392,7 @@ class RecentPane(QDockWidget):
         files = self.store.files()
         dpr = max(1.0, self.devicePixelRatioF())
         now = QDateTime.currentDateTime()
+        state = self._view_state()
         self.list.clear()
         keep = {}
         small = QFont(self.list.font())
@@ -2153,8 +2412,10 @@ class RecentPane(QDockWidget):
             item.setFont(small)
             item.setTextAlignment(Qt.AlignHCenter)
             self.list.addItem(item)
+            self._mark(item)
         self._thumbs = keep
         self.empty.setVisible(self.list.count() == 0)
+        self._settle_view(state)
 
     def refresh_one(self, path) -> None:
         """Draw one capture's thumbnail again (after an autosave of it),

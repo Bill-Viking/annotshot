@@ -1097,8 +1097,17 @@ class MainWindow(QMainWindow):
             size = (self.normalGeometry().size() if self.isMaximized()
                     or self.isFullScreen() else self.size())
             self._editor_state = self.saveState()
-            self.settings.setValue("window/size", size)
-            self.settings.setValue("window/state", self._editor_state)
+            try:
+                self.settings.setValue("window/size", size)
+                self.settings.setValue("window/state", self._editor_state)
+                self.settings.setValue('recent/edge-v1', recent.EDGE_NAMES.get(
+                    self.recent.last_edge, 'right'))
+                self.settings.setValue('recent/direction-v1', self.recent.direction)
+                self.settings.sync()
+                if self.settings.status() != self.settings.Status.NoError:
+                    raise OSError('settings could not be saved')
+            except (OSError, RuntimeError) as error:
+                self.statusBar().showMessage(f'Could not remember Recent placement: {error}', 6000)
 
     def _picture_actions(self, enabled):
         for shortcut in self._welcome_keys:
@@ -1116,6 +1125,7 @@ class MainWindow(QMainWindow):
     def show_welcome(self):
         self._save_editor_geometry()
         self.state_name = "welcome"
+        self.recent.set_document_path(None)
         self.pages.setCurrentWidget(self.welcome)
         for toolbar in self.findChildren(QToolBar):
             toolbar.hide()
@@ -1153,6 +1163,7 @@ class MainWindow(QMainWindow):
         self.statusBar().show()
         saved = self.settings.value("window/size", START_SIZE, type=QSize)
         self._place(saved if saved.isValid() else START_SIZE, area)
+        self._restore_recent_layout()
         self._picture_actions(True)
         self._sync_undo()
         self.view.setFocus()
@@ -1176,13 +1187,138 @@ class MainWindow(QMainWindow):
         self.recent.filingFailed.connect(self._filing_failed)
         self.recent.deleted.connect(self._recent_deleted)
         self.recent._filer.filed.connect(self._refresh_welcome_recent)
-        self.a_recent = self.recent.toggleViewAction()
-        self.a_recent.setText(recent.TITLE)
-        self.a_recent.setToolTip("Show or hide the Recent captures pane")
+        self.recent.list.canvasRequested.connect(self._focus_canvas)
+        self.recent.redockRequested.connect(self._redock_recent)
+        self.recent.filingFinished.connect(self._recent_filed)
+        self.a_recent = self._act(recent.TITLE, self._reveal_recent,
+                                  tip="Show Recent captures")
+        edge = self.settings.value('recent/edge-v1', 'right')
+        self.recent.last_edge = next((e for e, n in recent.EDGE_NAMES.items()
+                                     if n == edge), Qt.RightDockWidgetArea)
+        direction = self.settings.value('recent/direction-v1', 'vertical')
         state = self.settings.value("window/state", QByteArray(),
                                     type=QByteArray)
-        if state is not None and not state.isEmpty():
-            self.restoreState(state)
+        restored = state is not None and not state.isEmpty() and self.restoreState(state)
+        if not restored:
+            self.recent.setFloating(False)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.recent)
+            self.recent.show()
+        if self.recent.isFloating():
+            self.recent.set_direction(direction)
+            self.recent._float_direction(self.recent.size())
+        else:
+            self.recent._dock_location(self.dockWidgetArea(self.recent))
+
+    def _restore_recent_layout(self):
+        if self.recent.isFloating():
+            direction = self.settings.value('recent/direction-v1', self.recent.direction)
+            self.recent.set_direction(direction)
+            self.recent._float_direction(self.recent.size())
+            if not self._recent_placement_valid():
+                self._redock_recent()
+        else:
+            self.recent._dock_location(self.dockWidgetArea(self.recent))
+        self.recent.set_document_path(self.doc.path)
+
+    def _redock_recent(self):
+        """Recover the existing dock, visibly, and remember the recovery."""
+        pane = self.recent
+        edge = pane.last_edge if pane.last_edge in recent.DOCK_EDGES else Qt.RightDockWidgetArea
+        pane.setFloating(False)
+        self.addDockWidget(edge, pane)
+        pane.show()
+        pane._dock_location(edge)
+        self._save_editor_geometry()
+
+    def _recent_screen_areas(self):
+        return [screen.availableGeometry() for screen in QGuiApplication.screens()]
+
+    def _recent_visible_rects(self):
+        """Visible title and client, in logical desktop coordinates.
+
+        Native frame margins include invisible resize borders. Their lower
+        inset is excluded from the title's top inset; shadows never enter
+        either rectangle. A platform without a provable title fails closed
+        to the visible dock (including restricted Wayland placement).
+        """
+        if QGuiApplication.platformName().lower().startswith('wayland'):
+            return None
+        pane = self.recent
+        handle = pane.windowHandle()
+        if handle is None:
+            return None
+        margins = handle.frameMargins()
+        title_height = margins.top() - margins.bottom()
+        if title_height <= 0:
+            return None
+        client = QRect(pane.mapToGlobal(pane.rect().topLeft()), pane.size())
+        title = QRect(client.left(), client.top() - title_height,
+                      client.width(), title_height)
+        return title, client
+
+    def _recent_placement_valid(self):
+        rects = self._recent_visible_rects()
+        if rects is None or any(not r.isValid() for r in rects):
+            return False
+        return any(all(area.contains(r) for r in rects)
+                   for area in self._recent_screen_areas())
+
+    def _raise_recent(self):
+        """Request native activation; verify its asynchronous result next."""
+        self.recent.showNormal()
+        self.recent.raise_()
+        self.recent.activateWindow()
+        return None
+
+    def _reveal_recent(self):
+        if self.state_name != 'editor':
+            return
+        pane = self.recent
+        if pane.isFloating():
+            if not self._recent_placement_valid():
+                self._redock_recent()
+            else:
+                raised = self._raise_recent()
+                if raised is None:
+                    QTimer.singleShot(100, self, self._recent_raise_finished)
+                    return
+                if not raised:
+                    self._redock_recent()
+        pane.show()
+        if not pane.isFloating():
+            self.activateWindow()
+        pane.list.setFocus(Qt.ShortcutFocusReason)
+
+    def _recent_raise_finished(self):
+        if self.state_name != 'editor' or self._quitting:
+            return
+        if self.recent.isFloating() and (not self._recent_placement_valid()
+                                        or not self.recent.isActiveWindow()):
+            self._redock_recent()
+        self.recent.show()
+        if not self.recent.isFloating():
+            self.activateWindow()
+        self.recent.list.setFocus(Qt.ShortcutFocusReason)
+
+    def _focus_canvas(self):
+        if self.state_name == 'editor':
+            self.raise_()
+            self.activateWindow()
+            self.view.setFocus(Qt.ShortcutFocusReason)
+
+    def _recent_filed(self, *_):
+        # A successful stage-3 rotation can expire an unedited open picture.
+        # Detach only actual absence; filtered membership says nothing about
+        # ownership, and an accepted capture may still be awaiting its filer.
+        source = getattr(self.doc, '_recent_source', None)
+        if self.is_recent_doc() and getattr(source, 'capture', None) is None:
+            try:
+                png, editable = self.recent_store.companions(self.doc.path)
+                if not png.is_file() and not editable.is_file():
+                    self.doc.path = None
+                    self.update_title()
+            except OSError:
+                pass  # Unprovable absence never detaches a pending edit.
 
     def _refresh_welcome_recent(self, *_):
         if hasattr(self, "welcome") and self.state_name == "welcome":
@@ -1218,13 +1354,15 @@ class MainWindow(QMainWindow):
         # open, list search or programmatic refresh cannot hand off focus.
         thumbnail = self.recent.opening_thumbnail
         if self.open_recent(path) and thumbnail:
-            self.view.setFocus()
+            self._focus_canvas()
 
     def open_recent(self, path: str, quiet: bool = False) -> bool:
         """Open a kept capture as the current picture, with its edits: its
         `.annotshot` when there is one, else the PNG (unedited). The
         current picture's edits are kept first. A capture gone from the
         folder only drops from the pane."""
+        if self.state_name == 'editor' and self.recent.is_document_path(path):
+            return True  # continue the live scene, including its caret and undo
         self.end_key_interaction()
         if self._capture is not None or self._opening:
             return False
@@ -1999,6 +2137,7 @@ class MainWindow(QMainWindow):
         self.refresh_props()
 
     def update_title(self, *_) -> None:
+        self.recent.set_document_path(self.doc.path if self.state_name == 'editor' else None)
         if self.is_recent_doc():        # a Recent capture: its stamp
             name = Path(self.doc.path).stem
         else:

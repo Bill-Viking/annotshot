@@ -1,4 +1,5 @@
 # Temporary: runs the Recent tests on a real Windows machine. This branch is deleted after the probe.
+# The public cut clears this file each time: copy it back to .github/workflows/ after every cut.
 name: probe Recent on Windows
 
 on:
@@ -12,7 +13,7 @@ jobs:
   recent_windows:
     name: Recent tests (windows)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
@@ -28,13 +29,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "PySide6-Essentials==6.12.0" "python-docx==1.2.0" "python-pptx==1.0.2" "lxml==6.1.3" "pillow==13.0.0" "typing_extensions==4.16.0" "xlsxwriter==3.3.1" pytest
       - name: Windows version
-        run: python -c "import sys, platform; print(sys.version); print(platform.platform())"
+        run: python -c "import sys, platform; print(sys.version); print(platform.platform())" | tee out-version.txt
       - name: New Windows file
         if: always()
-        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s57_windows_recent.py
+        timeout-minutes: 8
+        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s57_windows_recent.py 2>&1 | tee out-s57.txt
       - name: Stage 3 file
         if: always()
-        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage3_count.py
-      - name: Stage 1 and old Recent callers
+        timeout-minutes: 10
+        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage3_count.py 2>&1 | tee out-s54.txt
+      - name: Old Recent callers
         if: always()
-        run: python -m pytest -q --tb=short -p no:cacheprovider tests/test_s52_stage1_save_kept.py tests/test_s5b.py tests/test_s3b2.py tests/test_s3b3.py tests/test_s10_welcome.py
+        timeout-minutes: 12
+        run: python -m pytest -q --tb=short -x -p no:cacheprovider tests/test_s5b.py tests/test_s3b2.py tests/test_s3b3.py tests/test_s10_welcome.py 2>&1 | tee out-callers.txt
+      - name: Keep the outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-outputs
+          path: out-*.txt

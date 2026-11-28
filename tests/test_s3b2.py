@@ -360,7 +360,8 @@ def test_the_pane_docks_right_and_its_place_is_remembered(window, private_settin
     window.show_editor()
     pane = window.recent
     assert window.dockWidgetArea(pane) == Qt.RightDockWidgetArea
-    assert pane.allowedAreas() == Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+    assert pane.allowedAreas() == (Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                                   | Qt.BottomDockWidgetArea)
     f = pane.features()
     assert f & QDockWidget.DockWidgetFloatable and f & QDockWidget.DockWidgetClosable
     assert not pane.isHidden()                     # shown the first time
@@ -388,15 +389,15 @@ def test_the_menu_entry_shows_and_hides_the_pane(window, qapp):
     window.show()                       # offscreen: the entry follows a shown pane
     qapp.processEvents()
     a = window.a_recent
-    assert a.isChecked()
-    assert a.text() == "Recent captures" and a.isCheckable()
+    assert a.text() == "Recent captures" and not a.isCheckable()
     assert a in window.menu_actions(False)
     assert window.menu_actions(False).index(a) == \
         window.menu_actions(False).index(window.a_capture) + 1
-    a.trigger()
-    assert window.recent.isHidden()
-    a.trigger()
-    assert not window.recent.isHidden() and a.isChecked()
+    window.recent.hide()
+    for _ in range(2):
+        a.trigger()
+        assert not window.recent.isHidden()
+        assert window.recent.list.hasFocus()
     window.hide()
 
 

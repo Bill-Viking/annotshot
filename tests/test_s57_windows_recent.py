@@ -3,7 +3,9 @@
 Native Windows runs use the real implementation as well (including peers).
 The fake models identities, no-follow opens, sharing, and absent destinations.
 """
+import ctypes
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +25,34 @@ class NativeCalls:
         self.births = {}
         self.busy = set()
         self.hook = lambda *args: None
+        self.attributes = {}
+        self.created = []
+        self.hidden_changes = []
+        self.opens = []
+        self.case_status = 0
+        self.case_flags = 0
+        self.case_queries = []
+        self.w = SimpleNamespace(ULONG=ctypes.c_uint32)
+        self.IO = ctypes.c_size_t  # unused output in the query boundary model
+        self.nt = SimpleNamespace(NtQueryInformationFile=self._query)
+
+    def _query(self, handle, io, buffer, size, kind):
+        assert self.handles[handle].directory and kind == 71 and size == 4
+        self.case_queries.append((handle, kind))
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint32))[0] = self.case_flags
+        return ctypes.c_int32(self.case_status).value
+
+    def _status(self, status):
+        if status < 0:
+            error = OSError('native query failed: ' + hex(status & 0xffffffff))
+            error.winerror = 5
+            raise error
+
+    @staticmethod
+    def sharing(path):
+        error = PermissionError('sharing conflict: ' + str(path))
+        error.winerror = 32
+        return error
 
     @staticmethod
     def spelling(path):
@@ -35,7 +65,12 @@ class NativeCalls:
         return path
 
     def open(self, parent, name, *, directory=False, create=False,
-             mutable=False, write=False, metadata=False, listing=False):
+             mutable=False, write=False, metadata=False, listing=False, hidden=False):
+        self.opens.append((parent, name, directory, listing))
+        if directory and name in ('.', '..'):
+            error = OSError('invalid native directory name: ' + name)
+            error.winerror = 123
+            raise error
         path = Path(name) if parent is None else self.handles[parent].path / name
         if parent is not None:
             admitted = self.handles[parent]
@@ -47,7 +82,7 @@ class NativeCalls:
         if create and directory:
             path.mkdir()
         if not directory and not metadata and str(path) in self.busy:
-            raise PermissionError('sharing conflict: ' + str(path))
+            raise self.sharing(path)
         if create and not directory:
             with path.open('xb'):
                 pass
@@ -58,12 +93,17 @@ class NativeCalls:
             for h in self.handles.values():
                 if (not h.directory and not h.metadata and
                         (h.info.st_dev, h.info.st_ino) == (info.st_dev, info.st_ino)):
-                    raise PermissionError('sharing conflict: ' + str(path))
+                    raise self.sharing(path)
+        if create:
+            self.attributes[(info.st_dev, info.st_ino)] = 2 if hidden else 0
+            self.created.append((path, directory, hidden))
         self.births.setdefault((info.st_dev, info.st_ino), info.st_ctime_ns)
         self.serial += 1
         self.handles[self.serial] = SimpleNamespace(path=path, info=info,
             directory=directory, deleted=False, metadata=metadata,
             mutable=mutable, write=write)
+        if directory and create and hidden:
+            self.set_hidden(self.serial, True)
         return self.serial
 
     def info(self, handle):
@@ -74,6 +114,8 @@ class NativeCalls:
             st_mode=info.st_mode, st_size=info.st_size, st_mtime_ns=info.st_mtime_ns,
             st_ctime_ns=self.births[(info.st_dev, info.st_ino)],
             st_file_attributes=(0x400 if h.path.is_symlink() else 0)
+                | (0x10 if h.directory else 0)
+                | self.attributes.get((info.st_dev, info.st_ino), 0)
                 | (0 if info.st_mode & 0o222 else 1))
 
     def close(self, handle):
@@ -90,13 +132,25 @@ class NativeCalls:
         self.handles[self.serial] = SimpleNamespace(**vars(h))
         return self.serial
 
-    def names(self, handle):
+    names = recent._WindowsNative.names
+
+    def _names(self, handle):
         path = self.handles[handle].path
         self.hook('names', path)
         return os.listdir(path)
 
-    def case_sensitive(self, handle):
-        return False
+    case_sensitive = recent._WindowsNative.case_sensitive
+
+    def set_hidden(self, handle, hidden):
+        h = self.handles[handle]
+        key = h.info.st_dev, h.info.st_ino
+        flags = self.attributes.get(key, 0)
+        self.attributes[key] = (flags | 2) if hidden else (flags & ~2)
+        self.hidden_changes.append((h.path, hidden))
+
+    def hidden(self, path):
+        info = path.stat()
+        return bool(self.attributes.get((info.st_dev, info.st_ino), 0) & 2)
 
     def read(self, handle):
         h = self.handles[handle]
@@ -349,6 +403,8 @@ def test_windows_restore_is_exclusive_and_failure_names_retained_file(w, win, co
     store.folder.mkdir(parents=True, exist_ok=True)
     occupant = store.folder / 'picture.png'
     occupant.write_bytes(b'original-name occupant')
+    previous = store.folder / 'previous.png'
+    previous.write_bytes(b'displaced substitute')
     attempted = []
     def collide(event, target):
         if event != 'rename':
@@ -358,10 +414,12 @@ def test_windows_restore_is_exclusive_and_failure_names_retained_file(w, win, co
         if collision and 'recovered-' in target.name and not attempted:
             attempted.append(target)
             target.write_bytes(b'recovery-name occupant')
-    win.hook = collide
     with recent._Root(store.folder) as root:
         with recent._Stage(root) as stage:
-            stage.create('previous', b'displaced substitute')
+            # A recovery is an existing picture moved to staging, not a newly
+            # created bookkeeping temp (which would correctly be hidden).
+            root.rename(previous.name, stage, 'previous')
+            win.hook = collide
             retained = stage.folder / 'previous'
             if fail:
                 with pytest.raises(OSError) as notice:
@@ -371,6 +429,7 @@ def test_windows_restore_is_exclusive_and_failure_names_retained_file(w, win, co
                 name = recent._restore(stage, 'previous', root, occupant.name)
                 assert 'recovered-' in name
                 assert (store.folder / name).read_bytes() == b'displaced substitute'
+                assert not win.hidden(store.folder / name)
     assert occupant.read_bytes() == b'original-name occupant'
     if fail:
         assert retained.read_bytes() == b'displaced substitute'
@@ -551,7 +610,241 @@ def test_windows_empty_stage_cleanup_reopens_by_identity_and_keeps_substitute(w,
     assert (exchanged[0] / 'sentinel.png').read_bytes() == b'cleanup substitute sentinel'
 
 
+@pytest.mark.parametrize('name', ['.', '..'])
+def test_windows_model_refuses_dot_directory_names_and_reopens_empty(w, win, name):
+    folder = w.recent_store.folder
+    folder.mkdir(parents=True, exist_ok=True)
+    with recent._Root(folder) as root:
+        with pytest.raises(OSError) as failure:
+            win.open(root.fd.raw, name, directory=True)
+        assert failure.value.winerror == 123
+        before = set(win.handles)
+        assert root.names() == []
+        assert set(win.handles) == before, 'listing handle must close'
+        assert win.opens[-1] == (root.fd.raw, '', True, True)
+        with recent._Stage(root) as stage:
+            staged = stage.folder
+        assert not staged.exists(), 'empty-stage cleanup must enumerate too'
+
+
+@pytest.mark.parametrize('busy_for', [0.1, None])
+def test_windows_read_pin_retries_sharing_for_250ms_then_keeps(w, win, monkeypatch, busy_for):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    newer = store.file(picture(), when(2021), keep=100)
+    original = old.read_bytes()
+    elapsed, attempts, sleeps = [0.0], [], []
+    def sleep(seconds):
+        assert 0 < seconds <= 0.025
+        sleeps.append(seconds)
+        elapsed[0] += seconds
+    # Deterministic elapsed time at the actual production retry seam.
+    monkeypatch.setattr(recent, 'time', SimpleNamespace(
+        monotonic=lambda: elapsed[0], sleep=sleep, time_ns=time.time_ns))
+    def sharing(event, path):
+        if event == 'open' and path == old:
+            # Metadata opens do not invoke this refusal in the native model;
+            # busy is checked only when acquiring a real read pin.
+            if busy_for is None or elapsed[0] < busy_for:
+                win.busy.add(str(old))
+            else:
+                win.busy.discard(str(old))
+            attempts.append(elapsed[0])
+    win.hook = sharing
+    gone = store.prune(keep=1)
+    assert newer.exists() and sleeps and len(attempts) > 1
+    if busy_for is None:
+        assert gone == [] and old.read_bytes() == original
+        assert 0.25 <= elapsed[0] <= 0.251
+    else:
+        assert gone == [old] and not old.exists()
+        assert 0.1 <= elapsed[0] < 0.25
+
+
+def test_windows_read_pin_does_not_retry_other_errors(w, win, monkeypatch):
+    png = w.recent_store.file(picture(), when(2020), keep=100)
+    original = png.read_bytes()
+    calls = []
+    def denied(event, path):
+        if event == 'open' and path == png:
+            calls.append(path)
+            error = PermissionError('access denied')
+            error.winerror = 5
+            raise error
+    win.hook = denied
+    with recent._Root(png.parent) as root:
+        with pytest.raises(PermissionError, match='access denied'):
+            root.read(png.name)
+    assert len(calls) == 1 and png.read_bytes() == original
+
+
+@pytest.mark.parametrize('status,flags,expires', [
+    (0, 0, True), (0, 1, False),
+    (0xc0000003, 0, True),   # STATUS_INVALID_INFO_CLASS
+    (0xc000000d, 0, True),   # STATUS_INVALID_PARAMETER
+    (0xc00000bb, 0, True),   # STATUS_NOT_SUPPORTED
+    (0xc0000022, 0, False),  # STATUS_ACCESS_DENIED
+    (0xc0000185, 0, False),  # STATUS_IO_DEVICE_ERROR
+    (0xc0000004, 0, False),  # STATUS_INFO_LENGTH_MISMATCH is not unsupported
+])
+def test_windows_class71_only_unsupported_allows_expiry(w, win, status, flags, expires):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    newer = store.file(picture(), when(2021), keep=100)
+    original = old.read_bytes()
+    win.case_status, win.case_flags = status, flags
+    if expires:
+        assert store.prune(keep=1) == [old]
+        assert not old.exists()
+    else:
+        with pytest.warns(RuntimeWarning):
+            assert store.prune(keep=1) == []
+        assert old.read_bytes() == original
+    assert newer.exists() and win.case_queries
+
+
+def test_windows_private_creations_hidden_publication_and_recovery_visible(w, qapp, win):
+    from annotshot.items import RectItem
+    store = w.recent_store
+    reserved = store.reserve(when(2019))
+    marker = store.folder / ('.' + reserved.name + '.reserve')
+    assert win.hidden(marker)
+    store.release(reserved)
+    png = store.file(picture(), when(2020), keep=100)
+    receipt = store.folder / recent._receipt_name(png)
+    assert win.hidden(receipt) and not win.hidden(png)
+    with recent._Root(store.folder) as root:
+        claim = recent._claim(root, png)
+        try:
+            assert win.hidden(store.folder / claim.name)
+            with recent._expiry_guard(root, png):
+                assert win.hidden(png.with_suffix('.annotshot'))
+        finally:
+            root.unlink(claim.name, claim.identity)
+        with recent._Stage(root) as stage:
+            assert win.hidden(stage.folder)
+            with stage.temporary('capture.tmp', b'retained temp'):
+                assert win.hidden(stage.folder / 'capture.tmp')
+            stage.unlink('capture.tmp')
+    assert w.open_recent(str(png))
+    w.doc.add_items([RectItem()])
+    pending = list(store.folder.glob('*.pending-*'))
+    assert pending and all(win.hidden(path) for path in pending)
+    assert w.autosave_now()
+    settle(qapp)
+    editable = png.with_suffix('.annotshot')
+    assert editable.exists() and not win.hidden(editable) and not win.hidden(png)
+    # Force a genuine displaced editable down the recovery road.
+    original = editable.read_bytes()
+    with recent._Root(store.folder) as root:
+        with recent._Stage(root) as stage:
+            root.rename(editable.name, stage, 'previous')
+            editable.write_bytes(b'new occupant')
+            restored = recent._restore(stage, 'previous', root, editable.name)
+            recovery = store.folder / restored
+            assert '-recovered-' in restored and recovery.read_bytes() == original
+            assert not win.hidden(recovery)
+    private = [(path, directory, hidden) for path, directory, hidden in win.created
+               if path.is_relative_to(store.folder) and path != store.folder]
+    assert private and all(hidden for _, _, hidden in private)
+    names = [path.name for path, _, _ in private]
+    assert all(any(check(name) for name in names) for check in (
+        lambda n: n.endswith('.reserve'), lambda n: n.endswith('.filed-v1'),
+        lambda n: n.endswith('.claim-v1'), lambda n: '.pending-' in n,
+        lambda n: n.endswith('.annotshot'), lambda n: n == 'capture.tmp',
+        lambda n: n == 'editable.tmp', lambda n: n.startswith('.annotshot-stage-')))
+    assert not any(hidden and path in (png, editable, recovery)
+                   for path, hidden in win.hidden_changes)
+
+
+def test_windows_old_unhidden_receipts_remain_readable(w, win):
+    store = w.recent_store
+    old = store.file(picture(), when(2020), keep=100)
+    newer = store.file(picture(), when(2021), keep=100)
+    receipt = store.folder / recent._receipt_name(old)
+    info = receipt.stat()
+    win.attributes[(info.st_dev, info.st_ino)] &= ~2
+    assert not win.hidden(receipt)
+    assert store.prune(keep=1) == [old] and newer.exists()
+
+
+def test_windows_native_boundary_empty_unicode_hidden_create_and_attribute_update(monkeypatch):
+    """Run production packing/access logic; replace only the DLL entry points."""
+    class Function:
+        def __init__(self, call=lambda *args: 1):
+            self.call = call
+        def __call__(self, *args):
+            return self.call(*args)
+    class DLL:
+        def __getattr__(self, name):
+            function = Function()
+            setattr(self, name, function)
+            return function
+    nt, kernel = DLL(), DLL()
+    monkeypatch.setattr(ctypes, 'WinDLL',
+        lambda name, **kw: nt if name == 'ntdll' else kernel, raising=False)
+    native = recent._WindowsNative()
+    created, changes, attributes = [], [], [0]
+    def create(handle, access, obj, io, allocation, flags, share, disposition, options, ea, length):
+        obj = obj._obj
+        name = obj.name.contents
+        created.append((obj.root, name.length, name.maximum,
+                        name.buffer, access, flags, share, disposition, options))
+        attributes[0] = flags | (0x10 if options & 1 else 0)
+        handle._obj.value = 123
+        return 0
+    def change(handle, io, value, size, kind):
+        value = value._obj
+        assert handle == 123 and kind == 4 and size == 40
+        assert (value.created, value.accessed, value.written, value.changed) == (0, 0, 0, 0)
+        changes.append(value.attributes)
+        attributes[0] = value.attributes
+        return 0
+    nt.NtCreateFile.call, nt.NtSetInformationFile.call = create, change
+    monkeypatch.setattr(native, 'info', lambda handle:
+        SimpleNamespace(st_file_attributes=attributes[0]))
+    # File HIDDEN is set in NtCreateFile, without modifying a public path.
+    handle = native.open(7, 'private.tmp', create=True, write=True, mutable=True, hidden=True)
+    assert created[-1][5:8] == (2, 1, 2)  # HIDDEN, share-read, FILE_CREATE
+    assert created[-1][4] & 0x100  # FILE_WRITE_ATTRIBUTES
+    native.set_hidden(handle, False)
+    assert changes == [0x80], 'zero attributes would leave the temp hidden'
+    # Directories also receive the immediate handle-based set after creation.
+    native.open(7, '.annotshot-stage-test', directory=True, create=True, hidden=True)
+    assert created[-1][5] == 2 and changes[-1] == 0x12
+    monkeypatch.setattr(native, '_names', lambda listing: [])
+    assert native.names(7) == []
+    assert created[-1][:4] == (7, 0, 2, '')
+    assert created[-1][4] & 1, 'reopened directory must have LIST_DIRECTORY'
+
+
 native_windows = pytest.mark.skipif(os.name != 'nt', reason='requires real Windows NT handles; Mac native-call models are not native proof')
+
+
+@native_windows
+def test_native_windows_private_attributes_and_public_names(w, qapp):
+    from annotshot.items import RectItem
+    store = w.recent_store
+    reserved = store.reserve(when(2019))
+    marker = store.folder / ('.' + reserved.name + '.reserve')
+    assert marker.stat().st_file_attributes & 2
+    store.release(reserved)
+    png = store.file(picture(), when(2020), keep=100)
+    assert not png.stat().st_file_attributes & 2
+    assert (store.folder / recent._receipt_name(png)).stat().st_file_attributes & 2
+    with recent._Root(store.folder) as root:
+        with recent._Stage(root) as stage:
+            assert stage.folder.stat().st_file_attributes & 2
+            with stage.temporary('private.tmp', b'private'):
+                assert (stage.folder / 'private.tmp').stat().st_file_attributes & 2
+            stage.unlink('private.tmp')
+    assert w.open_recent(str(png))
+    w.doc.add_items([RectItem()])
+    assert all(p.stat().st_file_attributes & 2 for p in store.folder.glob('*.pending-*'))
+    assert w.autosave_now()
+    settle(qapp)
+    assert not png.with_suffix('.annotshot').stat().st_file_attributes & 2
+    assert not png.stat().st_file_attributes & 2
 
 
 @native_windows
