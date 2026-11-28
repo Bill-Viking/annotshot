@@ -30,28 +30,14 @@ jobs:
           python -m pip install "PySide6-Essentials==6.12.0" "python-docx==1.2.0" "python-pptx==1.0.2" "lxml==6.1.3" "pillow==13.0.0" "typing_extensions==4.16.0" "xlsxwriter==3.3.1" pytest
       - name: Windows version
         run: python -c "import sys, platform; print(sys.version); print(platform.platform())" | tee out-version.txt
-      - name: Collector off, pass A
+      - name: Find time, the hundred-capture test alone
         if: always()
-        timeout-minutes: 8
-        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider -p probe_gc tests/test_s54_stage5_find.py 2>&1 | tee out-gcoff-a.txt
-      - name: Collector off, pass B
+        timeout-minutes: 14
+        run: python -X faulthandler -m pytest -q -s --tb=short -p no:cacheprovider -p probe_gc -p probe_settle "tests/test_s54_stage5_find.py::test_r26_hundred_mixed_metadata_only_and_legacy" 2>&1 | tee out-time-r26.txt
+      - name: Find time, the whole file
         if: always()
-        timeout-minutes: 8
-        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider -p probe_gc tests/test_s54_stage5_find.py 2>&1 | tee out-gcoff-b.txt
-      - name: Collector off, pass C
-        if: always()
-        timeout-minutes: 8
-        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider -p probe_gc tests/test_s54_stage5_find.py 2>&1 | tee out-gcoff-c.txt
-      - name: Control, collector on
-        if: always()
-        timeout-minutes: 8
-        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider tests/test_s54_stage5_find.py 2>&1 | tee out-control.txt
-      - name: One test per process, collector on
-        if: always()
-        timeout-minutes: 15
-        run: |
-          python -m pytest --collect-only -q -p no:cacheprovider tests/test_s54_stage5_find.py < /dev/null | grep "::" > ids.txt
-          while read -r id; do python -X faulthandler -m pytest -q --tb=line -p no:cacheprovider "$id" > one.txt 2>&1 < /dev/null; echo "exit $? :: $id :: $(tail -1 one.txt)"; done < ids.txt 2>&1 | tee out-each.txt
+        timeout-minutes: 25
+        run: python -X faulthandler -m pytest -q -s --tb=short --durations=15 -p no:cacheprovider -p probe_gc -p probe_settle tests/test_s54_stage5_find.py 2>&1 | tee out-time-all.txt
       - name: Keep the outputs
         if: always()
         uses: actions/upload-artifact@v4
