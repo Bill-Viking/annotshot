@@ -30,26 +30,28 @@ jobs:
           python -m pip install "PySide6-Essentials==6.12.0" "python-docx==1.2.0" "python-pptx==1.0.2" "lxml==6.1.3" "pillow==13.0.0" "typing_extensions==4.16.0" "xlsxwriter==3.3.1" pytest
       - name: Windows version
         run: python -c "import sys, platform; print(sys.version); print(platform.platform())" | tee out-version.txt
-      - name: New Windows file
+      - name: Stage 5 first failure in full
+        if: always()
+        timeout-minutes: 6
+        run: python -X faulthandler -m pytest -x --tb=long -rs -p no:cacheprovider tests/test_s54_stage5_find.py 2>&1 | tee out-stage5-first.txt
+      - name: Stage 5 whole, pass A (first failure left out)
         if: always()
         timeout-minutes: 8
-        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s57_windows_recent.py 2>&1 | tee out-s57.txt
-      - name: Stage 3 file
+        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider --deselect "tests/test_s54_stage5_find.py::test_r26_hundred_mixed_metadata_only_and_legacy" tests/test_s54_stage5_find.py 2>&1 | tee out-stage5-a.txt
+      - name: Stage 5 whole, pass B (same command)
         if: always()
-        timeout-minutes: 10
-        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage3_count.py 2>&1 | tee out-s54.txt
-      - name: Old Recent callers
+        timeout-minutes: 8
+        run: python -X faulthandler -m pytest -q --tb=short -p no:cacheprovider --deselect "tests/test_s54_stage5_find.py::test_r26_hundred_mixed_metadata_only_and_legacy" tests/test_s54_stage5_find.py 2>&1 | tee out-stage5-b.txt
+      - name: Stage 5 one test per process
         if: always()
-        timeout-minutes: 12
-        run: python -m pytest -q --tb=short -x -p no:cacheprovider tests/test_s5b.py tests/test_s3b2.py tests/test_s3b3.py tests/test_s10_welcome.py 2>&1 | tee out-callers.txt
+        timeout-minutes: 15
+        run: |
+          python -m pytest --collect-only -q -p no:cacheprovider tests/test_s54_stage5_find.py | grep "::" > ids.txt
+          while read -r id; do python -X faulthandler -m pytest -q --tb=line -p no:cacheprovider "$id" > one.txt 2>&1; echo "exit $? :: $id :: $(tail -1 one.txt)"; grep -m1 -A8 "fatal exception" one.txt; done < ids.txt 2>&1 | tee out-stage5-each.txt
       - name: Stage 4 file
         if: always()
         timeout-minutes: 8
         run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage4_frame.py 2>&1 | tee out-stage4.txt
-      - name: Stage 5 file
-        if: always()
-        timeout-minutes: 8
-        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage5_find.py 2>&1 | tee out-stage5.txt
       - name: Keep the outputs
         if: always()
         uses: actions/upload-artifact@v4

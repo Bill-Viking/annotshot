@@ -2568,7 +2568,11 @@ class RecentPane(QDockWidget):
         self.last_edge = Qt.RightDockWidgetArea
         self.direction = 'vertical'
         self._bound_stem = None
+        self._reveal_stem = None
         self._layout_epoch = 0
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setSingleShot(True)
+        self._reveal_timer.timeout.connect(self._reveal_changed_document)
         self._thumbs: dict[tuple[str, int], QPixmap] = {}
         self._last_click: tuple[str, int] | None = None
         self.opening_thumbnail = False
@@ -2700,12 +2704,38 @@ class RecentPane(QDockWidget):
 
     def _settle_view(self, state):
         self._layout_epoch += 1
+        self._reveal_timer.stop()  # the settled layout will consume the request
         epoch = self._layout_epoch
         self._restore_view(state)
         # QMainWindow assigns dock space after the flow changes. Restore once
         # more on that layout, without allowing an old resize to win a later one.
-        QTimer.singleShot(0, self, lambda: self._restore_view(state)
-                          if epoch == self._layout_epoch else None)
+        def settled():
+            if epoch == self._layout_epoch:
+                self._restore_view(state)
+                self._reveal_changed_document()
+        QTimer.singleShot(0, self, settled)
+
+    def _reveal_changed_document(self):
+        # Only a changed picture requests this. Keep the request until a
+        # capture's asynchronous filing (or Find) supplies its cell.
+        if self._reveal_stem is None:
+            return
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if (item.data(CURRENT_ROLE)
+                    and Path(item.data(Qt.UserRole)).stem.casefold() == self._reveal_stem):
+                cell, viewport = self.list.visualItemRect(item), self.list.viewport().rect()
+                # QListWidget.EnsureVisible adds its spacing as a margin.
+                # Move only the pixels needed to expose the whole cell.
+                if self.direction == 'horizontal':
+                    bar = self.list.horizontalScrollBar()
+                    delta = min(0, cell.left()) + max(0, cell.right() - viewport.right())
+                else:
+                    bar = self.list.verticalScrollBar()
+                    delta = min(0, cell.top()) + max(0, cell.bottom() - viewport.bottom())
+                bar.setValue(bar.value() + delta)
+                self._reveal_stem = None
+                return
 
     def set_direction(self, direction):
         direction = direction if direction in ('horizontal', 'vertical') else 'vertical'
@@ -2733,9 +2763,16 @@ class RecentPane(QDockWidget):
         stage adds no file operation to the store or its safety machinery.
         """
         stem = Path(path).stem.casefold() if path and self.store.owns(path) else None
+        changed = stem != self._bound_stem
         self._bound_stem = stem
         for i in range(self.list.count()):
             self._mark(self.list.item(i))
+        if changed:
+            self._reveal_stem = stem
+            # Cancel an older layout restore, without re-anchoring the
+            # person's current pixel position before revealing the cell.
+            self._layout_epoch += 1
+            self._reveal_timer.start(0)
 
     def _mark(self, item):
         current = self._bound_stem is not None and (
@@ -2825,22 +2862,17 @@ class RecentPane(QDockWidget):
         state = self._view_state() if state is None else state
         self.list.clear()
         keep = dict(self._thumbs) if searching else {}
-        cached = {key[0]: pm for key, pm in self._thumbs.items()} if searching else {}
         small = QFont(self.list.font())
         small.setPixelSize(round(11 * theme.ui_scale()))
         for path in files:
-            if searching:
-                # Search never reads a picture, including a matched project's
-                # base. An uncached/unreadable thumbnail gets an empty icon.
-                pm = cached.get(str(path), QPixmap())
-            else:
-                key = _thumb_key(path)
-                if key is None:
-                    continue
-                pm = self._thumbs.get(key) or thumbnail(path, THUMB, dpr)
-                if pm.isNull():
-                    continue
+            # Matching is metadata-only; delivered results use the same
+            # preview and corrupt-base fallback as the ordinary list.
+            key = _thumb_key(path)
+            pm = (self._thumbs.get(key) or thumbnail(path, THUMB, dpr)) if key else QPixmap()
+            if not pm.isNull():
                 keep[key] = pm
+            elif not searching:
+                continue
             item = QListWidgetItem(pm, time_label(taken_at(path), now))
             item.setData(Qt.UserRole, str(path))
             item.setToolTip(path.name)
@@ -2876,7 +2908,12 @@ class RecentPane(QDockWidget):
         self._find_tasks.pop(epoch, None)
         if epoch == self._find_epoch and self._find_query:
             self.empty.setText(error or NO_MATCH_TEXT)
-            self._display_files(paths, searching=True, state=self._find_state)
+            # An autosave already refreshed its displayed tile. If matching
+            # kept the same rows, keep those items and their exact scroll.
+            if self.paths() != [str(path) for path in paths]:
+                self._display_files(paths, searching=True, state=self._find_state)
+            else:
+                self.empty.setVisible(self.list.count() == 0)
             self.skipped.setText(f'{skipped} capture' + ('s' if skipped != 1 else '') + ' could not be searched.')
             self.skipped.setVisible(skipped > 0)
         self._start_find()              # only the latest pending request survives
@@ -2888,8 +2925,6 @@ class RecentPane(QDockWidget):
             stem = Path(path).stem.casefold()
             self._thumbs = {k: pm for k, pm in self._thumbs.items()
                             if Path(k[0]).stem.casefold() != stem}
-            self.refresh()
-            return
         mine = {os.path.normcase(str(png_for(path))),
                 os.path.normcase(str(editable_for(path)))}
         dpr = max(1.0, self.devicePixelRatioF())
@@ -2906,6 +2941,13 @@ class RecentPane(QDockWidget):
                 del self._thumbs[old]
             self._thumbs[key] = pm
             item.setIcon(QIcon(pm))
+            if self._find_query:
+                # Recheck membership without blanking or rebuilding the
+                # displayed results while the worker reads the new text.
+                self.cancel_find()
+                self._find_state = self._view_state()
+                self._find_requested = self._find_epoch
+                self._find_timer.start(0)
             return
         self.refresh()
 

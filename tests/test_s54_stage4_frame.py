@@ -594,3 +594,66 @@ def test_recovery_corrupt_metadata_or_settings_failure_stays_visible(windows, qa
     settle(qapp)
     assert not w2.recent.isHidden() and not w2.recent.isFloating()
     assert w2.dockWidgetArea(w2.recent) in (RIGHT, BOTTOM)
+
+
+@pytest.mark.parametrize('scrolled', [False, True])
+def test_s57_new_capture_reveals_framed_cell_in_overflow(windows, qapp, scrolled):
+    w = windows()
+    seed(w, 25)
+    p = w.recent
+    p.setMinimumWidth(220)
+    settle(qapp)
+    bar = p.list.verticalScrollBar()
+    assert bar.maximum() > 0
+    if scrolled:
+        bar.setValue(bar.maximum() // 2)
+    pending = w.recent_store.reserve()
+    doc = Document(picture())
+    doc.path = str(recent.editable_for(pending))
+    doc._recent_source = recent.capture_source(pending)
+    w._bind(doc)  # capture binds before its PNG lands
+    p.file_capture(picture(), wait=True, path=pending, keep=100)
+    settle(qapp)
+    item = p.list.item(p.paths().index(str(pending)))
+    assert framed(w) == [pending.stem]
+    assert p.list.viewport().rect().contains(p.list.visualItemRect(item))
+
+
+@pytest.mark.parametrize('position', ['above', 'below', 'visible'])
+def test_s57_open_reveals_with_minimum_scroll_only_on_picture_change(windows, qapp, position):
+    w = windows()
+    seed(w, 25)
+    p = w.recent
+    p.setMinimumWidth(220)
+    settle(qapp)
+    bar = p.list.verticalScrollBar()
+    bar.setValue(bar.maximum() // 2 + 13)
+    viewport = p.list.viewport().rect()
+    candidates = [(p.list.item(i), p.list.visualItemRect(p.list.item(i)))
+                  for i in range(p.list.count())]
+    if position == 'above':
+        item, rect = next((i, r) for i, r in reversed(candidates) if r.top() < 0)
+    elif position == 'below':
+        item, rect = next((i, r) for i, r in candidates if r.bottom() > viewport.bottom())
+    else:
+        item, rect = next((i, r) for i, r in candidates if viewport.contains(r))
+    before = bar.value()
+    delta = min(0, rect.top()) + max(0, rect.bottom() - viewport.bottom())
+    assert w.open_recent(item.data(Qt.UserRole))
+    settle(qapp)
+    assert bar.value() == before + delta
+    assert viewport.contains(p.list.visualItemRect(item))
+    # R56: a later rebuild, resize, theme change or dock move keeps the
+    # person's anchor, even when that takes the open picture out of view.
+    p.list.scrollToItem(p.list.item(20), QListWidget.PositionAtTop)
+    settle(qapp)
+    opened = item.data(Qt.UserRole)
+    for change in (lambda: p.set_document_path(w.doc.path), p.refresh,
+                   lambda: w.resize(1000, 650), p.retheme,
+                   lambda: w.addDockWidget(LEFT, p),
+                   lambda: w.addDockWidget(BOTTOM, p)):
+        change()
+        settle(qapp)
+        current = p.list.item(p.paths().index(opened))
+        assert first(p) != opened
+        assert not p.list.visualItemRect(current).intersects(p.list.viewport().rect())

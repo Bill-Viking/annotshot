@@ -125,15 +125,53 @@ def test_r26_hundred_mixed_metadata_only_and_legacy(window, qapp, monkeypatch):
         if kind != 'png':
             expected.append(str(p))
     window.recent.refresh()
-    reads = []
+    reads, drawn = [], []
+    matching = threading.local()
+    delivered = False
+    pane = window.recent
+    worker = window.recent_store.find_annotations
+    display = pane._display_files
+    preview = recent.thumbnail
+    expected_set = set(expected)
+    # Compare the corrupt-base fallback with the ordinary full-list road.
+    fallbacks = {path: preview(Path(path)) for path in expected}
+    pane._thumbs.clear()
+    def match(*args):
+        matching.active = True
+        try:
+            return worker(*args)
+        finally:
+            matching.active = False
+    def display_results(files, **kwargs):
+        nonlocal delivered
+        if kwargs.get('searching'):
+            assert list(map(str, files)) == list(reversed(expected))
+            delivered = True
+        return display(files, **kwargs)
+    def draw(path, *args, **kwargs):
+        assert not getattr(matching, 'active', False), 'matching rendered pixels'
+        assert delivered, 'thumbnail drawn before results arrived'
+        assert str(path) in expected_set, 'non-result thumbnail drawn'
+        drawn.append(str(path))
+        return preview(path, *args, **kwargs)
     read = zipfile.ZipFile.open
     def opened(self, member, *args, **kwargs):
-        reads.append(member.filename if isinstance(member, zipfile.ZipInfo) else member)
+        if getattr(matching, 'active', False):
+            reads.append(member.filename if isinstance(member, zipfile.ZipInfo) else member)
         return read(self, member, *args, **kwargs)
     monkeypatch.setattr(zipfile.ZipFile, 'open', opened)
-    monkeypatch.setattr(recent, 'thumbnail', lambda *a, **k: pytest.fail('Find rendered pixels'))
+    monkeypatch.setattr(window.recent_store, 'find_annotations', match)
+    monkeypatch.setattr(pane, '_display_files', display_results)
+    monkeypatch.setattr(recent, 'thumbnail', draw)
     assert query(window, qapp, 'needle') == list(reversed(expected))
     assert reads == ['project.json'] * 67
+    assert drawn == list(reversed(expected))
+    for i, path in enumerate(reversed(expected)):
+        icon = pane.list.item(i).icon()
+        fallback = fallbacks[path]
+        assert icon.isNull() == fallback.isNull()
+        if not fallback.isNull():
+            assert icon.pixmap(fallback.size()).toImage() == fallback.toImage()
     assert window.recent.skipped.isHidden()
 
 
@@ -631,3 +669,81 @@ def test_float_find_escape_ends_live_typing_for_arrow(window, qapp):
     QTest.keyClick(window.view, Qt.Key_A)
     assert window.view.tool == Tool.ARROW and window.doc.editing_item is None
     assert t.props['text'] == 'live caret' and not p.isHidden()
+
+
+def editable_capture(w, index, text):
+    from annotshot.items import TextBoxItem
+    path = capture(w, index, kind='png')
+    doc = Document(picture(24, 16), w)
+    item = TextBoxItem()
+    item.props['text'] = text
+    item._props_changed()
+    doc.add_items([item])
+    doc.save(str(path.with_suffix('.annotshot')))
+    return path
+
+
+def test_s57_query_autosave_refreshes_tile_in_place_and_keeps_view(window, qapp):
+    paths = [editable_capture(window, i, 'needle') for i in range(18)]
+    p = window.recent
+    p.refresh()
+    assert query(window, qapp, 'needle') == list(map(str, reversed(paths)))
+    edited = paths[8]
+    assert window.open_recent(str(edited))
+    settle(qapp, p)
+    p.list.setCurrentRow(6)
+    p.list.scrollToItem(p.list.item(7), QListWidget.PositionAtTop)
+    p.list.verticalScrollBar().setValue(p.list.verticalScrollBar().value() + 13)
+    settle(qapp, p)
+    row = p.list.item(p.paths().index(str(edited)))
+    old_icon = row.icon().cacheKey()
+    before = (p.paths(), p.find.text(), marks(p), p.list.verticalScrollBar().value(),
+              p.list.currentItem())
+    text = window.doc.annotation_items()[0]
+    window.doc.set_props([text], {'text': 'needle edited'})
+    assert window.autosave_now()
+    assert recent.writer().waitForDone(5000)
+    settle(qapp, p)
+    after = (p.paths(), p.find.text(), marks(p), p.list.verticalScrollBar().value(),
+             p.list.currentItem())
+    assert not p.list.item(p.paths().index(str(edited))).icon().isNull()
+    assert after == before
+    assert p.list.item(p.paths().index(str(edited))) is row
+    assert not row.icon().isNull() and row.icon().cacheKey() != old_icon
+
+
+def test_s57_first_match_under_query_draws_its_missing_thumbnail(window, qapp):
+    path = editable_capture(window, 1, 'other')
+    p = window.recent
+    p.refresh()
+    assert window.open_recent(str(path))
+    assert query(window, qapp, 'needle') == []
+    text = window.doc.annotation_items()[0]
+    window.doc.set_props([text], {'text': 'needle'})
+    assert window.autosave_now()
+    assert recent.writer().waitForDone(5000)
+    settle(qapp, p)
+    assert p.paths() == [str(path)] and p.find.text() == 'needle'
+    assert not p.list.item(0).icon().isNull()
+    assert marks(p) == [path.stem]
+
+
+def test_s57_query_theme_change_redraws_all_result_icons(window, qapp, monkeypatch):
+    from annotshot import theme
+    paths = [editable_capture(window, i, 'needle') for i in range(3)]
+    p = window.recent
+    p.refresh()
+    expected = list(map(str, reversed(paths)))
+    assert query(window, qapp, 'needle') == expected
+    drawn = []
+    preview = recent.thumbnail
+    def draw(path, *args, **kwargs):
+        drawn.append(str(path))
+        return preview(path, *args, **kwargs)
+    monkeypatch.setattr(recent, 'thumbnail', draw)
+    theme.apply(qapp, 'Dark')
+    p.retheme()
+    settle(qapp, p)
+    assert p.paths() == expected and p.find.text() == 'needle'
+    assert drawn == expected
+    assert all(not p.list.item(i).icon().isNull() for i in range(3))
