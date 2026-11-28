@@ -397,7 +397,7 @@ def test_the_menu_entry_shows_and_hides_the_pane(window, qapp):
     for _ in range(2):
         a.trigger()
         assert not window.recent.isHidden()
-        assert window.recent.list.hasFocus()
+        assert window.recent.find.hasFocus()
     window.hide()
 
 
@@ -543,7 +543,7 @@ def test_the_right_click_menu(window, private_pictures, monkeypatch):
                         staticmethod(lambda *a, **k: asked.append(a[2]) or answers.pop(0)))
     assert pane.clear() is False and new.exists()   # asked, said Cancel
     assert pane.clear() is True and not new.exists()
-    assert asked == [recent.CLEAR_QUESTION] * 2
+    assert asked == [recent.CLEAR_QUESTION.format(count=1)] * 2
     assert pane.paths() == []
 
 

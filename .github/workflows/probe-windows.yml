@@ -13,7 +13,7 @@ jobs:
   recent_windows:
     name: Recent tests (windows)
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
@@ -42,6 +42,14 @@ jobs:
         if: always()
         timeout-minutes: 12
         run: python -m pytest -q --tb=short -x -p no:cacheprovider tests/test_s5b.py tests/test_s3b2.py tests/test_s3b3.py tests/test_s10_welcome.py 2>&1 | tee out-callers.txt
+      - name: Stage 4 file
+        if: always()
+        timeout-minutes: 8
+        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage4_frame.py 2>&1 | tee out-stage4.txt
+      - name: Stage 5 file
+        if: always()
+        timeout-minutes: 8
+        run: python -m pytest -q --tb=short -rs -p no:cacheprovider tests/test_s54_stage5_find.py 2>&1 | tee out-stage5.txt
       - name: Keep the outputs
         if: always()
         uses: actions/upload-artifact@v4

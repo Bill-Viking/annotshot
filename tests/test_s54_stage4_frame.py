@@ -233,7 +233,7 @@ def test_r44_bottom_close_frees_canvas_and_reveals_after_restart(windows, qapp):
         w2.a_recent.trigger()
         settle(qapp)
         assert not w2.recent.isHidden() and w2.dockWidgetArea(w2.recent) == BOTTOM
-        assert w2.recent.list.hasFocus()
+        assert w2.recent.find.hasFocus()
 
 
 @pytest.mark.parametrize('case,valid', [('flush', True), ('negative', True),
@@ -313,12 +313,12 @@ def test_r46_repeat_reveal_and_escape_handoff(windows, qapp, monkeypatch, floati
         w.a_recent.trigger()
         w._recent_raise_finished()  # deliver the controlled native result
         settle(qapp)
-        assert not p.isHidden() and p.list.hasFocus()
+        assert not p.isHidden() and p.find.hasFocus()
         assert w.doc is doc
     assert p.isFloating() == (floating and placement and raised)
     if floating and placement:
         assert raises and requested[:2] == ['raise', 'activate']
-    QTest.keyClick(p.list, Qt.Key_Escape)
+    QTest.keyClick(p.find, Qt.Key_Escape)
     settle(qapp)
     assert w.view.hasFocus() and not p.isHidden() and w.doc is doc
     QTest.keyClick(w.view, Qt.Key_A)

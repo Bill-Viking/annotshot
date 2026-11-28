@@ -1183,6 +1183,7 @@ class MainWindow(QMainWindow):
         self.recent = recent.RecentPane(self.recent_store, self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.recent)
         self.recent.openRequested.connect(self._open_recent_request)
+        self.recent.find.canvasRequested.connect(self._find_to_canvas)
         self.recent.saveRequested.connect(self.save_recent)
         self.recent.filingFailed.connect(self._filing_failed)
         self.recent.deleted.connect(self._recent_deleted)
@@ -1273,6 +1274,8 @@ class MainWindow(QMainWindow):
     def _reveal_recent(self):
         if self.state_name != 'editor':
             return
+        self._recent_focus_epoch = getattr(self, '_recent_focus_epoch', 0) + 1
+        epoch = self._recent_focus_epoch
         pane = self.recent
         if pane.isFloating():
             if not self._recent_placement_valid():
@@ -1280,14 +1283,15 @@ class MainWindow(QMainWindow):
             else:
                 raised = self._raise_recent()
                 if raised is None:
-                    QTimer.singleShot(100, self, self._recent_raise_finished)
+                    QTimer.singleShot(100, self, lambda: self._recent_raise_finished()
+                                      if epoch == self._recent_focus_epoch else None)
                     return
                 if not raised:
                     self._redock_recent()
         pane.show()
         if not pane.isFloating():
             self.activateWindow()
-        pane.list.setFocus(Qt.ShortcutFocusReason)
+        pane.find.setFocus(Qt.ShortcutFocusReason)
 
     def _recent_raise_finished(self):
         if self.state_name != 'editor' or self._quitting:
@@ -1298,10 +1302,18 @@ class MainWindow(QMainWindow):
         self.recent.show()
         if not self.recent.isFloating():
             self.activateWindow()
-        self.recent.list.setFocus(Qt.ShortcutFocusReason)
+        self.recent.find.setFocus(Qt.ShortcutFocusReason)
+
+    def _find_to_canvas(self):
+        # Escape leaves Find ready for tool letters, including when activating
+        # a float preserved a live text caret in the editor window.
+        self.doc.end_text_edit()
+        self._focus_canvas()
 
     def _focus_canvas(self):
         if self.state_name == 'editor':
+            # A queued native reveal must not reverse this newer handoff.
+            self._recent_focus_epoch = getattr(self, '_recent_focus_epoch', 0) + 1
             self.raise_()
             self.activateWindow()
             self.view.setFocus(Qt.ShortcutFocusReason)
@@ -1557,8 +1569,14 @@ class MainWindow(QMainWindow):
         the window lets go of it (its edits are not written back)."""
         if not self.is_recent_doc():
             return
-        mine = os.path.normcase(str(recent.png_for(self.doc.path)))
-        if mine in {os.path.normcase(p) for p in pngs}:
+        mine = Path(self.doc.path).stem.casefold()
+        if mine in {Path(p).stem.casefold() for p in pngs}:
+            try:
+                if any(c.path.stem.casefold() == mine
+                       for c in self.recent_store.library_snapshot().captures):
+                    return        # a peer arrival or failed removal still owns its scene
+            except OSError:
+                return            # unknown absence cannot clear the current picture
             self.doc.path = None
             self._bind(Document())
 
@@ -3504,6 +3522,7 @@ class MainWindow(QMainWindow):
                 return
         self._save_editor_geometry()
         self._leave_first_welcome()
+        self.recent.cancel_find()
         if not self._quitting and self.can_hide_on_close():
             self.hide()
             self._bind(Document())

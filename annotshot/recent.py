@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import ctypes
 import hashlib
+import io
 import json
 import time
 from contextlib import contextmanager, ExitStack
@@ -26,7 +27,9 @@ import stat
 import sys
 import threading
 import uuid
+import unicodedata
 import warnings
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -37,7 +40,7 @@ from PySide6.QtCore import (QDateTime, QEvent, QObject, QRect, QRunnable, QSize,
 from PySide6.QtGui import (QDesktopServices, QFont, QIcon, QImage,
                            QImageReader, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QDockWidget,
-                               QLabel, QListWidget, QListWidgetItem, QMenu,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
                                QMessageBox, QStyle, QStyledItemDelegate, QVBoxLayout,
                                QWidget)
 
@@ -58,9 +61,13 @@ EDGE_NAMES = dict(zip(DOCK_EDGES, ('left', 'right', 'bottom')))
 THUMB_GROUND = "#E9EDF1"                # Light's; the theme's "thumb-ground"
 TIME_INK = "#7A8591"                    # Light's; the theme's "time-ink"
 EMPTY_TEXT = "Your captures appear here."
-CLEAR_QUESTION = ("Remove every capture from Recent captures? The pictures "
+CLEAR_QUESTION = ("Remove all {count} captures from Recent captures, including captures outside the results? The pictures "
                   "in the Recent folder are deleted; files you saved "
                   "yourself are not touched.")
+FIND_SCOPE = "Search words you typed in Text or Callout."
+NO_MATCH_TEXT = "No annotations match. Find looks at words you typed with Text or Callout."
+MAX_FIND_META = 4 * 1024 * 1024
+MAX_FIND_DIRECTORY = 1024 * 1024
 # The file names: an ISO date and time with '-' for ':' (Windows refuses a
 # colon in a file name) and milliseconds, so names sort by time.
 # ASSUMES: the files in the folder are named by stamp_name(); a file with any
@@ -496,6 +503,24 @@ class _Root:
             return data, info
 
     @contextmanager
+    def stream(self, name):
+        """Seek through one admitted regular file, without loading its pixels."""
+        path, kw = self._args(name)
+        before = self.stat(name)
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError('Recent record is not a regular file')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW, **kw)
+        with os.fdopen(fd, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if _version(info) != _version(before):
+                raise OSError('Recent record changed while opening it')
+            yield source
+            if (_version(os.fstat(source.fileno())) != _version(info)
+                    or _version(self.stat(name)) != _version(info)):
+                raise OSError('Recent record changed while reading it')
+            self.check()
+
+    @contextmanager
     def temporary(self, name, data, mode=0o600):
         path, kw = self._args(name)
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600, **kw)
@@ -556,6 +581,37 @@ class _PosixStage(_Root):
                 os.rmdir(self.name, dir_fd=self.parent.fd)  # empty only
         except OSError:
             pass
+
+
+class _WindowsReadStream(io.RawIOBase):
+    """Seekable ZIP reader over the Windows road's held, serialized handle."""
+    def __init__(self, api, handle, size):
+        super().__init__()
+        self.api, self.handle, self.size, self.position = api, handle, size, 0
+
+    def seekable(self):
+        return True
+
+    def readable(self):
+        return True
+
+    def tell(self):
+        return self.position
+
+    def seek(self, offset, whence=0):
+        target = offset + (self.position if whence == 1 else self.size if whence == 2 else 0)
+        if target < 0 or whence not in (0, 1, 2):
+            raise OSError('Invalid archive seek')
+        self.position = target
+        return target
+
+    def read(self, size=-1):
+        size = max(0, min(self.size - self.position, size if size >= 0 else self.size))
+        if size > MAX_FIND_META + 65536:
+            raise OSError('Archive read is too large')
+        data = self.api.read_at(self.handle, self.position, size) if size else b''
+        self.position += len(data)
+        return data
 
 
 class _WindowsNative:
@@ -772,6 +828,12 @@ class _WindowsNative:
             if not read.value:
                 return b''.join(chunks)
             chunks.append(data.raw[:read.value])
+
+    def read_at(self, handle, offset, size):
+        self._ok(self.k.SetFilePointerEx(handle, offset, None, 0))
+        data, read = ctypes.create_string_buffer(size), self.w.DWORD()
+        self._ok(self.k.ReadFile(handle, data, size, ctypes.byref(read), None))
+        return data.raw[:read.value]
 
     def write(self, handle, data):
         for offset in range(0, len(data), 1024 * 1024):
@@ -1019,6 +1081,18 @@ class _WindowsRoot(_Root):
                 if _version(_fd_info(handle)) != _version(info):
                     raise OSError('Recent entry changed while reading')
                 yield data, info, handle
+
+    @contextmanager
+    def stream(self, name):
+        with self._lease(name) as handle, handle.io_lock:
+            info = _fd_info(handle)
+            if not stat.S_ISREG(info.st_mode) or info.st_file_attributes & 0x400:
+                raise OSError('Recent record is not a regular file')
+            with _WindowsReadStream(self.api, handle.raw, info.st_size) as source:
+                yield source
+            if _version(_fd_info(handle)) != _version(info):
+                raise OSError('Recent record changed while reading it')
+            self.check()
 
     @contextmanager
     def temporary(self, name, data, mode=0o600):
@@ -1288,6 +1362,57 @@ def _claim(root, path):
     return _Claim(name, root.create(name))
 
 
+@dataclass(frozen=True)
+class _CaptureFiles:
+    path: Path
+    entries: tuple                 # actual names and their admitted versions
+    receipts: tuple = ()
+
+
+@dataclass(frozen=True)
+class _LibrarySnapshot:
+    folder: Path
+    directory: tuple | None
+    captures: tuple[_CaptureFiles, ...]
+
+
+def _find_text(text):
+    return unicodedata.normalize('NFC', unicodedata.normalize('NFC', text).casefold())
+
+
+def _annotation_metadata(source):
+    # ASSUMES: an archive can be malformed or enormous. Bound the ZIP central
+    # directory BEFORE ZipFile allocates it, then bound decoded metadata too.
+    # _EndRecData reads only the bounded EOCD/ZIP64 tail from a seekable file.
+    end = zipfile._EndRecData(source)
+    if end is None or end[5] > MAX_FIND_DIRECTORY or end[4] > 4096:
+        raise ValueError('Unsearchable archive directory')
+    with zipfile.ZipFile(source) as archive:
+        member = archive.getinfo('project.json')
+        if member.file_size > MAX_FIND_META:
+            raise ValueError('Annotation metadata is too large')
+        with archive.open(member) as data:
+            raw = data.read(MAX_FIND_META + 1)
+        if len(raw) > MAX_FIND_META:
+            raise ValueError('Annotation metadata is too large')
+    from .scene import FORMAT, FORMAT_VERSION, LEGACY_FORMATS
+    meta = json.loads(raw.decode('utf-8'))
+    if not isinstance(meta, dict) or meta.get('format') not in (FORMAT, *LEGACY_FORMATS):
+        raise ValueError('Unsupported annotation format')
+    version = meta.get('version', 1)
+    if type(version) is not int or not 1 <= version <= FORMAT_VERSION:
+        raise ValueError('Unsupported annotation version')
+    items = meta.get('items')
+    if not isinstance(items, list):
+        raise ValueError('Invalid annotation items')
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError('Invalid annotation item')
+        if item.get('type') in ('text', 'callout') and not isinstance(item.get('text'), str):
+            raise ValueError('Invalid typed annotation')
+    return items
+
+
 class RecentStore:
     """The Recent folder on disk. `folder` is read at every call, so a test
     (or a changed setting) can point it elsewhere."""
@@ -1357,6 +1482,72 @@ class RecentStore:
             if os.path.lexists(folder):
                 raise
             return []
+
+    def library_snapshot(self) -> _LibrarySnapshot:
+        """Count on-disk stems, including unreadable captures; never guess empty.
+
+        Names, no-follow metadata and directory identity use the existing
+        platform road. A denied/inconsistent listing grants no Clear authority.
+        """
+        folder = self.folder
+        entries = self.source_entries()
+        try:
+            with _Root(folder) as root:
+                names = root.names()
+                actual = {n for n in names if Path(n).suffix.lower() in ('.png', EDITABLE)}
+                if actual != {p.name for p in entries}:
+                    raise OSError('Recent changed while counting captures')
+                groups = {}
+                for path in sorted(entries):
+                    info = root.stat(path.name)
+                    if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                        raise OSError('Recent membership is uncertain')
+                    groups.setdefault(path.stem.casefold(), []).append((path, _version(info)))
+                captures = []
+                for group in groups.values():
+                    path = next((p for p, v in group if p.suffix.lower() == '.png'), group[0][0])
+                    receipts = []
+                    for p, _ in group:
+                        name = _receipt_name(p)
+                        if p.suffix.lower() == '.png' and name in names:
+                            receipts.append((name, _version(root.stat(name))))
+                    captures.append(_CaptureFiles(path, tuple((p.name, v) for p, v in group), tuple(receipts)))
+                captures.sort(key=lambda c: (taken_at(c.path).toMSecsSinceEpoch(), c.path.stem), reverse=True)
+                root.check()
+                return _LibrarySnapshot(folder, root.identity, tuple(captures))
+        except FileNotFoundError:
+            if entries or os.path.lexists(folder):
+                raise
+            return _LibrarySnapshot(folder, None, ())
+
+    def annotation_match(self, snapshot, capture, query):
+        edits = [(name, version) for name, version in capture.entries
+                 if Path(name).suffix.lower() == EDITABLE]
+        if not edits:
+            return False             # PNG-only is an ordinary nonmatch
+        matched = False
+        with _Root(snapshot.folder, snapshot.directory) as root:
+            for name, version in edits:
+                if _version(root.stat(name)) != version:
+                    raise OSError('Editable changed during Find')
+                with root.stream(name) as source:
+                    items = _annotation_metadata(source)
+                matched |= any(query in _find_text(i['text']) for i in items
+                               if i.get('type') in ('text', 'callout'))
+        return matched
+
+    def find_annotations(self, query, cancelled):
+        snapshot = self.library_snapshot()
+        matches, skipped = [], 0
+        for capture in snapshot.captures:
+            if cancelled.is_set():
+                return [], 0
+            try:
+                if self.annotation_match(snapshot, capture, query):
+                    matches.append(capture.path)
+            except Exception:         # one malformed capture cannot abort the library
+                skipped += 1
+        return matches, skipped
 
     def contains_destination(self, path) -> bool:
         """Save-dialog copies must live outside Recent and its descendants."""
@@ -1610,21 +1801,86 @@ class RecentStore:
             raise OSError('; '.join(notices))
         return gone
 
-    def delete(self, path: Path) -> None:
+    def delete(self, path: Path, *, snapshot=None, capture=None) -> None:
         """Explicit deletion, including this entry's private receipt."""
         writer().waitForDone()
-        with _Root(self.folder) as root:
-            if not self.owns(path):
-                raise OSError("capture destination is outside Recent")
-            for entry in (*self.companions(path), self.folder / _receipt_name(png_for(path))):
-                try:
-                    root.unlink(entry.name)
-                except FileNotFoundError:
-                    pass
+        if not self.owns(path):
+            raise OSError('capture destination is outside Recent')
+        snapshot = snapshot or self.library_snapshot()
+        capture = capture or next((c for c in snapshot.captures
+                                   if c.path.stem.casefold() == Path(path).stem.casefold()), None)
+        if capture is None:
+            return
+        with _IO_LOCK, _Root(snapshot.folder, snapshot.directory) as root:
+            if snapshot.folder != self.folder:
+                raise OSError('Recent folder changed since confirmation')
+            claim = _claim(root, path)
+            try:
+                current = {n for n in root.names() if Path(n).stem.casefold() == capture.path.stem.casefold()
+                           and Path(n).suffix.lower() in ('.png', EDITABLE)}
+                if current != {n for n, _ in capture.entries}:
+                    raise OSError('Capture changed since confirmation; kept it')
+                for name, version in capture.entries:
+                    if _version(root.stat(name)) != version or not stat.S_ISREG(version[1]):
+                        raise OSError('Capture changed or is a link; kept it')
+                # ASSUMES: another process may exchange a name even after the
+                # check. Move without replacement, verify the actual moved
+                # entry, and restore on mismatch/failure, as expiry already does.
+                with _Stage(root) as stage:
+                    staged = []
+                    try:
+                        for index, (name, version) in enumerate(capture.entries):
+                            data, info = root.read(name)
+                            if _version(info) != version:
+                                raise OSError('Capture changed since confirmation; kept it')
+                            expected = _fingerprint(name, data, info)
+                            del data
+                            target = f'removed-{index}'
+                            _rename_noreplace(root, name, stage, target)
+                            staged.append((name, target))
+                            data, info = stage.read(target)
+                            matches = (_version(info)[:4] == version[:4]
+                                       and _moved_matches(name, data, info, expected))
+                            del data
+                            if not matches:
+                                raise OSError('Capture changed during removal; kept it')
+                        for name, target in list(staged):
+                            stage.unlink(target)
+                            staged.remove((name, target))
+                    finally:
+                        for name, target in staged:
+                            _restore(stage, target, root, name)
+                for name, version in capture.receipts:
+                    try:
+                        if _version(root.stat(name)) == version:
+                            root.unlink(name, version[0])
+                    except FileNotFoundError:
+                        pass
+            finally:
+                claim.release(root)
 
-    def clear(self) -> None:
-        for p in self.files():
-            self.delete(p)
+    def clear(self, snapshot=None) -> list[Path]:
+        snapshot = snapshot or self.library_snapshot()
+        gone, failures = [], []
+        for capture in snapshot.captures:
+            try:
+                self.delete(capture.path, snapshot=snapshot, capture=capture)
+            except OSError as error:
+                failures.append(str(error))
+            # Only proven absence of the ENTIRE stem can release its scene.
+            try:
+                with _Root(snapshot.folder, snapshot.directory) as root:
+                    survives = any(Path(n).stem.casefold() == capture.path.stem.casefold()
+                                   and Path(n).suffix.lower() in ('.png', EDITABLE) for n in root.names())
+                if not survives:
+                    gone.append(capture.path)
+            except OSError:
+                pass
+        if failures:
+            error = OSError('Could not remove all Recent captures: ' + '; '.join(failures))
+            error.removed = gone
+            raise error
+        return gone
 
 
 _RESERVED: set[str] = set()
@@ -2187,6 +2443,57 @@ class _ThumbDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+_FIND_POOL = None
+
+
+def find_pool():
+    global _FIND_POOL
+    if _FIND_POOL is None:
+        _FIND_POOL = QThreadPool()
+        _FIND_POOL.setMaxThreadCount(2)
+    return _FIND_POOL
+
+
+class _Finder(QObject):
+    finished = Signal(int, object, int, str)
+
+
+class _FindJob(QRunnable):
+    def __init__(self, store, query, epoch, cancel, signals):
+        super().__init__()
+        self.store, self.query, self.epoch = store, query, epoch
+        self.cancel, self.signals = cancel, signals
+
+    def run(self):
+        paths, skipped, error = [], 0, ''
+        try:
+            paths, skipped = self.store.find_annotations(self.query, self.cancel)
+        except Exception:  # no source text, titles or query in messages/logs
+            error = 'Recent captures could not be searched.'
+        try:
+            self.signals.finished.emit(self.epoch, paths if not self.cancel.is_set() else [], skipped, error)
+        except RuntimeError:
+            pass                # pane destroyed: neither delivery nor UI access
+
+
+class _FindField(QLineEdit):
+    canvasRequested = Signal()
+
+    def event(self, event):
+        if event.type() == QEvent.ShortcutOverride and event.key() == Qt.Key_Escape:
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.clear()
+            self.canvasRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class _ThumbList(QListWidget):
     """The column of thumbnails: as wide as one thumbnail and its scroll
     bar, so the docked pane takes no more of the canvas than it needs."""
@@ -2269,6 +2576,29 @@ class RecentPane(QDockWidget):
         box = QVBoxLayout(body)
         box.setContentsMargins(6, 6, 6, 6)
         box.setSpacing(4)
+        self.find = _FindField(body)
+        self.find.setObjectName('recentFind')
+        self.find.setPlaceholderText('Find annotations')
+        self.find.setAccessibleName('Find annotations')
+        self.find.setToolTip(FIND_SCOPE)
+        self.find.setAccessibleDescription(FIND_SCOPE)
+        self.find.setClearButtonEnabled(True)
+        self.skipped = QLabel(body)
+        self.skipped.setWordWrap(True)
+        self.skipped.hide()
+        self._find_epoch = 0
+        self._find_query = ''
+        self._find_state = None
+        self._find_tasks = {}
+        self._find_requested = None
+        self._find_pool = find_pool()
+        self._finder = _Finder(self)
+        self._finder.finished.connect(self._find_finished)
+        self._find_timer = QTimer(self)
+        self._find_timer.setSingleShot(True)
+        self._find_timer.timeout.connect(self._start_find)
+        tasks = self._find_tasks
+        self.destroyed.connect(lambda: [cancel.set() for cancel in tasks.values()])
         self.empty = QLabel(EMPTY_TEXT, body)
         self.empty.setObjectName("recentEmpty")
         self.empty.setWordWrap(True)
@@ -2293,7 +2623,9 @@ class RecentPane(QDockWidget):
         self.list.customContextMenuRequested.connect(self._menu_at)
         self.list.itemClicked.connect(self._clicked)
         self.list.itemDoubleClicked.connect(self._double_clicked)
+        box.addWidget(self.find)
         box.addWidget(self.empty)
+        box.addWidget(self.skipped)
         box.addWidget(self.list, 1)
         self.setWidget(body)
         self.setMinimumWidth(THUMB.width() + 36)
@@ -2304,6 +2636,7 @@ class RecentPane(QDockWidget):
             lambda shown: self.refresh() if shown else None)
         self.dockLocationChanged.connect(self._dock_location)
         self.topLevelChanged.connect(self._floating_changed)
+        self.find.textChanged.connect(self.refresh)
         self.refresh()
 
     def _dock_location(self, area):
@@ -2333,6 +2666,7 @@ class RecentPane(QDockWidget):
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        self.cancel_find()
         parent = self.parentWidget()
         if (self.isFloating() and getattr(parent, 'state_name', None) == 'editor'
                 and not getattr(parent, '_quitting', False)):
@@ -2343,18 +2677,18 @@ class RecentPane(QDockWidget):
 
     def _view_state(self):
         items = [self.list.item(i) for i in range(self.list.count())]
-        stems = [os.path.normcase(Path(i.data(Qt.UserRole)).stem) for i in items]
+        stems = [Path(i.data(Qt.UserRole)).stem.casefold() for i in items]
         visible = [n for n, i in enumerate(items)
                    if self.list.visualItemRect(i).intersects(self.list.viewport().rect())]
         start = visible[0] if visible else 0
         current = self.list.currentItem()
         return (stems[start:] + stems[:start],
-                os.path.normcase(Path(current.data(Qt.UserRole)).stem) if current else None,
+                Path(current.data(Qt.UserRole)).stem.casefold() if current else None,
                 bool(current and current.isSelected()))
 
     def _restore_view(self, state):
         order, current, selected = state
-        items = {os.path.normcase(Path(self.list.item(i).data(Qt.UserRole)).stem): self.list.item(i)
+        items = {Path(self.list.item(i).data(Qt.UserRole)).stem.casefold(): self.list.item(i)
                  for i in range(self.list.count())}
         if current in items:
             self.list.setCurrentItem(items[current])
@@ -2398,20 +2732,20 @@ class RecentPane(QDockWidget):
         Folder membership uses the store's existing per-platform road. This
         stage adds no file operation to the store or its safety machinery.
         """
-        stem = os.path.normcase(Path(path).stem) if path and self.store.owns(path) else None
+        stem = Path(path).stem.casefold() if path and self.store.owns(path) else None
         self._bound_stem = stem
         for i in range(self.list.count()):
             self._mark(self.list.item(i))
 
     def _mark(self, item):
-        current = self._bound_stem is not None and os.path.normcase(
-            Path(item.data(Qt.UserRole)).stem) == self._bound_stem
+        current = self._bound_stem is not None and (
+            Path(item.data(Qt.UserRole)).stem.casefold()) == self._bound_stem
         item.setData(CURRENT_ROLE, current)
         item.setData(Qt.AccessibleTextRole, ('Current, ' if current else '') + item.text())
 
     def is_document_path(self, path):
         return bool(path and self._bound_stem is not None and self.store.owns(path)
-                    and os.path.normcase(Path(path).stem) == self._bound_stem)
+                    and Path(path).stem.casefold() == self._bound_stem)
 
     def _filed(self, path):
         self.refresh()
@@ -2453,22 +2787,60 @@ class RecentPane(QDockWidget):
     def refresh(self) -> None:
         """Rebuild the list from the folder; a file gone from the folder is
         simply not shown."""
+        was_searching = bool(self._find_query)
+        state = self._view_state()
+        if was_searching and self._find_state is not None:
+            old_order, old_current, old_selected = self._find_state
+            order, current, selected = state
+            seen = set(order)
+            state = (order + [s for s in old_order if s not in seen],
+                     current or old_current, selected if current else old_selected)
+        self.cancel_find()
+        self._find_query = _find_text(self.find.text().strip())
+        self.skipped.hide()
+        if self._find_query:
+            # Do not render/load a project here: matching is metadata-only.
+            self._find_state = state
+            self.list.clear()
+            self.empty.setText('Finding annotations…')
+            self.empty.show()
+            self._find_requested = self._find_epoch
+            self._find_timer.start(0)       # coalesce changes in this event turn
+            return
         files = self.store.files()
+        message = 'Captures could not be previewed.'
+        if not files:
+            try:
+                if not self.store.library_snapshot().captures:
+                    message = EMPTY_TEXT
+            except OSError:
+                message = 'Recent captures could not be read.'
+        self.empty.setText(message)
+        self._display_files(files, state=state)
+        self._find_state = None
+
+    def _display_files(self, files, *, searching=False, state=None):
         dpr = max(1.0, self.devicePixelRatioF())
         now = QDateTime.currentDateTime()
-        state = self._view_state()
+        state = self._view_state() if state is None else state
         self.list.clear()
-        keep = {}
+        keep = dict(self._thumbs) if searching else {}
+        cached = {key[0]: pm for key, pm in self._thumbs.items()} if searching else {}
         small = QFont(self.list.font())
         small.setPixelSize(round(11 * theme.ui_scale()))
         for path in files:
-            key = _thumb_key(path)
-            if key is None:
-                continue
-            pm = self._thumbs.get(key) or thumbnail(path, THUMB, dpr)
-            if pm.isNull():
-                continue
-            keep[key] = pm
+            if searching:
+                # Search never reads a picture, including a matched project's
+                # base. An uncached/unreadable thumbnail gets an empty icon.
+                pm = cached.get(str(path), QPixmap())
+            else:
+                key = _thumb_key(path)
+                if key is None:
+                    continue
+                pm = self._thumbs.get(key) or thumbnail(path, THUMB, dpr)
+                if pm.isNull():
+                    continue
+                keep[key] = pm
             item = QListWidgetItem(pm, time_label(taken_at(path), now))
             item.setData(Qt.UserRole, str(path))
             item.setToolTip(path.name)
@@ -2481,9 +2853,43 @@ class RecentPane(QDockWidget):
         self.empty.setVisible(self.list.count() == 0)
         self._settle_view(state)
 
+    def cancel_find(self):
+        self._find_epoch += 1
+        self._find_timer.stop()
+        self._find_requested = None
+        for cancel in self._find_tasks.values():
+            cancel.set()
+
+    def find_pending(self):
+        return (self._find_timer.isActive() or self._find_requested is not None
+                or any(not c.is_set() for c in self._find_tasks.values()))
+
+    def _start_find(self):
+        epoch = self._find_requested
+        if epoch is None or len(self._find_tasks) >= 2:
+            return
+        self._find_requested = None
+        cancel = self._find_tasks[epoch] = threading.Event()
+        self._find_pool.start(_FindJob(self.store, self._find_query, epoch, cancel, self._finder))
+
+    def _find_finished(self, epoch, paths, skipped, error):
+        self._find_tasks.pop(epoch, None)
+        if epoch == self._find_epoch and self._find_query:
+            self.empty.setText(error or NO_MATCH_TEXT)
+            self._display_files(paths, searching=True, state=self._find_state)
+            self.skipped.setText(f'{skipped} capture' + ('s' if skipped != 1 else '') + ' could not be searched.')
+            self.skipped.setVisible(skipped > 0)
+        self._start_find()              # only the latest pending request survives
+
     def refresh_one(self, path) -> None:
         """Draw one capture's thumbnail again (after an autosave of it),
         not the whole list; a capture not listed yet refreshes the list."""
+        if self._find_query:
+            stem = Path(path).stem.casefold()
+            self._thumbs = {k: pm for k, pm in self._thumbs.items()
+                            if Path(k[0]).stem.casefold() != stem}
+            self.refresh()
+            return
         mine = {os.path.normcase(str(png_for(path))),
                 os.path.normcase(str(editable_for(path)))}
         dpr = max(1.0, self.devicePixelRatioF())
@@ -2540,7 +2946,10 @@ class RecentPane(QDockWidget):
         a_open.setEnabled(path is not None)
         a_save.setEnabled(path is not None)
         a_delete.setEnabled(path is not None)
-        a_clear.setEnabled(self.list.count() > 0)
+        try:
+            a_clear.setEnabled(bool(self.store.library_snapshot().captures))
+        except OSError:
+            a_clear.setEnabled(False)
         a_open.triggered.connect(lambda: self.openRequested.emit(path))
         a_save.triggered.connect(lambda: self.saveRequested.emit(path))
         a_delete.triggered.connect(lambda: self.delete(path))
@@ -2561,7 +2970,8 @@ class RecentPane(QDockWidget):
                 self.store.delete(Path(path))
             except OSError as e:
                 self._failed(str(e))
-            self.deleted.emit([str(png_for(path))])
+            else:
+                self.deleted.emit([str(png_for(path))])
         self.refresh()
 
     def show_folder(self) -> bool:
@@ -2574,16 +2984,28 @@ class RecentPane(QDockWidget):
 
     def clear(self) -> bool:
         """Every kept capture goes, after one question."""
+        try:
+            snapshot = self.store.library_snapshot()
+        except OSError as error:
+            self._failed(str(error))
+            return False
+        if not snapshot.captures:
+            return False
         answer = QMessageBox.question(
-            self, "Annotshot", CLEAR_QUESTION,
+            self, "Annotshot", CLEAR_QUESTION.format(count=len(snapshot.captures)),
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if answer != QMessageBox.Yes:
             return False
-        gone = [str(png_for(p)) for p in self.store.files()]
-        self.store.clear()
-        self.deleted.emit(gone)
+        success = True
+        try:
+            gone = self.store.clear(snapshot)
+        except OSError as error:
+            gone = getattr(error, 'removed', [])
+            self._failed(str(error))
+            success = False
+        self.deleted.emit([str(png_for(p)) for p in gone])
         self.refresh()
-        return True
+        return success
 
 
 def _mtime(path: Path) -> int:
